@@ -5600,6 +5600,28 @@ async function runAsyncUnitTests() {
         const a = mk(w, 'A');
         w.runner.play(10, H);
         await tick();
+    await uta('Tasks runner — task message shows title / checklist text literally once rendered as chat markdown, agent gets it byte-for-byte', async () => {
+      const { Marked } = require('marked');
+      const md = new Marked({ breaks: true, gfm: true });
+      const text = (html) => html.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').trim();
+      const titles = ['Backlog A <img src=x onerror=alert(1)>', '**x** and _y_ ~~z~~', 'run `npm test` & [link](http://e.x)', '`edge`', 'a ``double`` b', 'plain title'];
+      for (const title of titles) {
+        const msg = composeTaskMessage({ id: 5, seq: 1, title, description: '', checklist: [{ text: title, done: false }] });
+        const [head, list] = msg.split('\n\n');
+        const h = md.parse(head);
+        assert.ok(!/<img|<em|<del|<a /.test(h) && (h.match(/<strong>/g) || []).length === 1, `${title} → ${h}`);
+        assert.strictEqual(text(h), `Task #1: ${title}`, `rendered head of ${title}`);
+        const l = md.parse(list);
+        assert.ok(!/<img|<em|<del|<a |<strong>/.test(l), `${title} → ${l}`);
+        assert.strictEqual(text(l).split('\n').pop().trim(), title, `rendered checklist item of ${title}`);
+        // What the agent reads: the exact title inside (at most) one code span.
+        const raw = head.slice('**Task #1: '.length, -2);
+        const m = raw.match(/^(`+)( ?)([\s\S]*)\2\1$/);
+        assert.strictEqual(m ? m[3] : raw, title);
+      }
+      assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Task #1: plain title**'), 'no code span when nothing to escape');
+    });
+
         assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
         assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 });
         const t = w.tasks.get(10, a.id).body;
