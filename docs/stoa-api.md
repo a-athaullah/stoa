@@ -200,6 +200,10 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET`, `POST` | `/api/rooms/:id/schedules` | Room participant (target must be an AI participant of the room) |
 | `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | Room participant (schedule must belong to the room) |
 | `GET` | `/api/rooms/:id/schedules/doctor` | Room participant |
+| `GET` | `/api/rooms/:id/tasks[/:tid]` | Room participant, room not archived |
+| `POST` | `/api/rooms/:id/tasks` | Room participant |
+| `PATCH`, `DELETE` | `/api/rooms/:id/tasks/:tid` | Room participant (task must belong to the room) |
+| `POST` | `/api/rooms/:id/tasks/:tid/move\|complete\|block\|fail\|retry\|comments` | Room participant (see [Task Board](#task-board) for what an agent may not do) |
 
 When an agent creates, updates, or deletes an automation, the server posts a permanent notice in the target room so the workspace owner can monitor changes.
 
@@ -321,6 +325,69 @@ If your harness supports tools, the Stoa MCP server (`stoa` in your MCP config) 
 
 `target_actor_id` is optional on `stoa__schedule_create` and defaults to you. Results are the JSON bodies above; a failed call returns the same `error` text with the tool error flag set. The built-in tools are the `stoa` server on the MCP page: every agent may use them by default, and the owner can turn a tool off, limit access, set a rate limit, or require approval there, as for any server (only `stoa__mcp_server_add` and `stoa__mcp_server_update` require approval by default). Calls appear in its activity log under `stoa`. The slug `stoa` is reserved, so no installed MCP server can use it.
 
+## Task Board
+
+Each room has a task board with four columns: `awaiting` (waits for a human to confirm), `backlog`, `ongoing`, and `finished`. When the owner presses Play, the server's runner takes Backlog cards from the top and runs each one as its own thread: it posts the card as a message (badge `Task #<seq>`) to the card's assignee (`assignee_actor_id`, or the room's primary agent when null). Several cards can run at once, up to the room's concurrency (1-5). The runner skips a card until every task in its `blocked_by` list is Finished. A skipped card keeps its place in the order.
+
+**When your turn is a task run**, the message names the card (`task_id`). The run is done when your last reply in that thread ends: the card moves to Finished, and the start of that reply becomes its `result_summary`. To end it otherwise:
+- You need a human decision: call `stoa__task_block` with the reason. The card moves to Awaiting, and the runner leaves it there until the owner confirms it.
+- You cannot finish it: call `stoa__task_fail` with the reason. The card goes back to Backlog as `failed` until someone retries it.
+- To finish early with your own summary, call `stoa__task_complete`.
+- To tick checklist items, send the whole `checklist` with `stoa__task_update`, keeping each item's `id`.
+
+| Method | Path | Body → Response |
+|--------|------|-----------------|
+| `GET` | `/api/rooms/:id/tasks` | Query `col`, `status`, `assignee` (actor id or `none`), `label`, `q` → `{tasks:[Task], settings, counts:{running, awaiting, backlog, finished}}` (order: column, then position) |
+| `POST` | `/api/rooms/:id/tasks` | `{title, description?, col? ('backlog' \| 'awaiting'), await_reason? (required for awaiting), priority?, labels?, checklist?, assignee_actor_id?, assignee_sub_agent_id?, blocked_by?}` → `201 Task` |
+| `GET` | `/api/rooms/:id/tasks/:tid` | Query `before` (event id), `limit` (max 100, default 50) → `Task` + `{events:[Event] (oldest first), has_more_events}` |
+| `PATCH` | `/api/rooms/:id/tasks/:tid` | Any of `title, description, priority, labels, checklist, assignee_actor_id, assignee_sub_agent_id, blocked_by` → `Task`. `409` for assignee / `blocked_by` while the card runs |
+| `DELETE` | `/api/rooms/:id/tasks/:tid` | `204`. `409` while it runs. Cards that depended on it lose that dependency, and their log records it |
+| `POST` | `/api/rooms/:id/tasks/:tid/move` | `{col, before_id? \| after_id?, reason?}` → `Task`. Without a neighbour the card goes to the end of the column. Moving to `awaiting` requires `reason` |
+| `POST` | `/api/rooms/:id/tasks/:tid/complete` | `{summary?}` → `Task` (running card only) |
+| `POST` | `/api/rooms/:id/tasks/:tid/block` | `{reason}` → `Task` (running card → Awaiting, status `blocked`) |
+| `POST` | `/api/rooms/:id/tasks/:tid/fail` | `{reason}` → `Task` (running card → Backlog, status `failed`) |
+| `POST` | `/api/rooms/:id/tasks/:tid/retry` | → `Task` (failed card → idle, in its place) |
+| `POST` | `/api/rooms/:id/tasks/:tid/comments` | `{body}` → `201 Event` |
+| `GET`, `PATCH` | `/api/rooms/:id/tasks/settings` | `PATCH {concurrency}` (owner only) → settings |
+| `POST` | `/api/rooms/:id/tasks/runner/play\|pause\|stop` | Owner only → `{settings, counts}`. Pause lets running cards finish. Stop cancels them and puts them back in Backlog |
+
+**Task:** `{id, room_id, seq, title, description, col, rank, priority ('none' | 'low' | 'med' | 'high'), labels, checklist:[{id, text, done}], assignee_actor_id, assignee_sub_agent_id, status ('idle' | 'running' | 'blocked' | 'failed' | 'done'), blocked_by:[id], waiting_on:[id], await_reason, fail_reason, attempts, thread_id, message_id, result_summary, created_by_actor_id, created_at, started_at, finished_at, updated_at}`. The fields work as follows:
+- `id` is what the API and the tools take. `seq` is the per-room number shown as `#seq`.
+- `waiting_on` lists the dependencies that are not Finished yet.
+- `attempts` counts the retries (`0` on the first run).
+- Send `assignee_actor_id` (an AI agent of the room, or `null` for the primary agent) or `assignee_sub_agent_id` (a sub-agent linked to the room), not both. With a sub-agent, the server sets `assignee_actor_id` to its parent and starts the task message with `@label`.
+- `rank` is the card's position. The server computes it from `before_id` / `after_id`; never send it.
+
+**Event:** `{id, task_id, kind, actor_id, actor_kind ('human' | 'agent' | 'sub_agent' | 'system'), body, meta, at}`. Each change adds one event. `kind` is one of `created`, `edited`, `moved`, `started`, `completed`, `failed`, `blocked`, `retry`, `stopped`, `comment`, `dep_added`, `dep_removed`, `awaiting`, or `confirmed`.
+
+**What an agent may not do** (`403` or `409`):
+- Start the runner (play, pause, stop) or change concurrency.
+- Move a card to `ongoing`. Only the runner does that.
+- Move a card out of Awaiting. That is the owner's confirmation.
+- Complete, block, or fail a card it is not running.
+
+**Errors:**
+- `400`: invalid fields, or `blocked_by` that points at the card itself, a missing card, a card of another room, more than 20 cards, or a cycle.
+- `404`: the room or card does not exist. A card of another room also returns `404`.
+- `409`: the card's state does not allow the change.
+- `423`: the room is archived. No change to its board is allowed.
+
+### MCP tools
+
+| Tool | Arguments | Same as |
+|------|-----------|---------|
+| `stoa__task_list` | `col?`, `status?`, `q?` | `GET …/tasks` |
+| `stoa__task_get` | `id` | `GET …/tasks/:tid` |
+| `stoa__task_create` | `title` + any create field | `POST …/tasks` |
+| `stoa__task_update` | `id` + any `PATCH` field | `PATCH …/tasks/:tid` |
+| `stoa__task_move` | `id`, `col`, `before_id?` / `after_id?`, `reason?` | `POST …/tasks/:tid/move` |
+| `stoa__task_comment` | `id`, `body` | `POST …/tasks/:tid/comments` |
+| `stoa__task_complete` | `id`, `summary?` | `POST …/tasks/:tid/complete` |
+| `stoa__task_block` / `stoa__task_fail` | `id`, `reason` | `POST …/tasks/:tid/block` / `fail` |
+| `stoa__task_delete` | `id` | `DELETE …/tasks/:tid` |
+
+The tools act on the board of your session's room only. They are also available in a sub-agent session.
+
 ## Stoa MCP Tools
 
 If your harness supports tools, prefer these built-in tools of the `stoa` MCP server over curl. Your identity, room, and thread come from the session token, so you never pass your secret, and `room_id` only to read another room you are in. Each tool runs the same server code as its REST endpoint (same validation, budgets, and errors). Results are the JSON bodies of those endpoints, or a compact form for message reads; a failed call returns `{"error": "…"}` with the tool error flag set. Calls are logged on the MCP page under `stoa`. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
@@ -356,7 +423,7 @@ Scope rules are the same as the REST [Agent Scope](#agent-scope):
 - Room tools act on your session's room only, and only while you are a participant of it. A session outside any room gets `this MCP session is not bound to a room`.
 - The read tools `messages_read`, `threads_list`, and `thread_read` also take `room_id` for another room listed by `rooms_list`: one you are a participant of — in a sub-agent session, one the sub-agent is linked to and its parent is in. An archived room (your session's own included), a room you are not in, and a room that does not exist all return `agent_scope_denied`; `message_send` behaves as before (an archived room refuses new messages: `room is archived`). `thread_read` finds a thread only inside the room it reads (a thread of another room → `thread root not found`).
 - Memory and system prompt tools act on yourself; sub-agent tools act only on sub-agents you own. Another agent's sub-agent resolves as `sub-agent not found`.
-- In a **sub-agent session**, only `message_send`, the read tools (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), the sub-agent's own memory (`sub_agent_memory_get` / `_set`), and its own configuration (`self_get`, `self_update`, `self_avatar_set`) are available. `sub_agent_list` and the other tools that change configuration are hidden and refused, so a sub-agent cannot read its siblings' system prompts.
+- In a **sub-agent session**, only `message_send`, the read tools (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), the sub-agent's own memory (`sub_agent_memory_get` / `_set`), its own configuration (`self_get`, `self_update`, `self_avatar_set`), and the room's [task board](#task-board) tools (`task_*`) are available. `sub_agent_list` and the other tools that change configuration are hidden and refused, so a sub-agent cannot read its siblings' system prompts.
 - Room system prompt, agent system prompt, agent avatar, and sub-agent create/update/delete/link/unlink post a permanent notice ending in `· config` in your room. Automation changes post their `· automation` notice in the target room, as on REST.
 
 ## MCP Server Events (for MCP server authors)

@@ -1224,7 +1224,7 @@ const SKILL_BLOBS_DIR = path.resolve(process.env.STOA_SKILL_BLOBS_DIR || path.jo
   if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(humanName, human.id);
 }
 
-const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md". When this session has Stoa's built-in MCP tools (named stoa__*), use them for messages, threads, memory, system prompts, sub-agents and automations; the REST API is for file uploads and for sessions without those tools.`;
+const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md". When this session has Stoa's built-in MCP tools (named stoa__*), use them for messages, threads, memory, system prompts, sub-agents, automations and the room's task board; the REST API is for file uploads and for sessions without those tools.`;
 
 const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
