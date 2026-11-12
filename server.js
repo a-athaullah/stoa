@@ -1669,12 +1669,21 @@ const mcpUpstreams = createUpstreamManager({
 // Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
-const roomTasks = createRoomTasks({ db, broadcast });
+const roomTasks = createRoomTasks({
+  db, broadcast,
+  primaryActorId: (roomId) => roomPrimaryActorId(roomId),
+  // completion_mode 'agent': stoa__task_complete also marks the card's thread complete, the same write and
+  // event as the owner's PUT /threads/:id/complete. roomMessages is created below; only called at runtime.
+  completeThread: (roomId, rootId) => {
+    const r = roomMessages.setThreadCompleted(roomId, rootId, true);
+    if (r.status === 200) broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
+  },
+});
 // Task board runner (lib/room-tasks-runner.js). The callbacks run after boot, so the run machinery
 // defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
 const roomTasksRunner = createRoomTasksRunner({
   db, tasks: roomTasks,
-  dispatch: (roomId, text, automation) => handleHumanMessage(roomId, text, null, null, null, null, null, automation),
+  dispatch: (roomId, text, automation, threadId = null) => handleHumanMessage(roomId, text, null, null, null, null, threadId, automation),
   threadBusy: taskThreadBusy,
   abortThread: abortThreadRuns,
   agentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
@@ -1682,6 +1691,8 @@ const roomTasksRunner = createRoomTasksRunner({
   agentLang: (actorId) => agentLangOf(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(actorId) || {}),
   settleMs: parseInt(process.env.TASK_SETTLE_MS, 10) || 3000,
   noReplyMs: parseInt(process.env.TASK_NO_REPLY_MS, 10) || 120000,
+  nudgeMs: parseInt(process.env.TASK_DECIDE_NUDGE_MS, 10) || 600000,
+  maxMs: parseInt(process.env.TASK_DECIDE_MAX_MS, 10) || 10800000,
 });
 // Poll: ends runs whose thread went quiet and retries runners waiting on a thread slot or an agent.
 // Same gate as the scheduler loop.
