@@ -17371,6 +17371,71 @@ async function run() {
     assert.ok(!e.stopped, 'with the board closed Esc reaches the global handler (stop generation)');
   });
 
+  await test('task board UI — rename: renaming the room from its header (and its rollback on failure) or from elsewhere (room_updated) retitles the open board as text; other rooms never do', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class Node {
+      constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.listeners = {}; this.textContent = ''; this.isContentEditable = false;
+        const set = new Set(); this.classList = { add: (...c) => c.forEach(x => set.add(x)), remove: (...c) => c.forEach(x => set.delete(x)), contains: c => set.has(c), toggle: (c, on) => { if (on === undefined ? !set.has(c) : on) set.add(c); else set.delete(c); } }; }
+      set className(v) { this.cls = v; } get className() { return this.cls || ''; }
+      set innerHTML(v) { this.children = []; } get innerHTML() { return ''; }
+      append(...c) { this.children.push(...c); } appendChild(c) { this.children.push(c); return c; } replaceChildren(...c) { this.children = c; }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; }
+      addEventListener(t, f) { this.listeners[t] = f; } focus() {} getClientRects() { return { length: 1 }; } closest() { return null; }
+    }
+    const els = {};
+    const reg = id => { const n = new Node('div'); n.id = id; els[id] = n; return n; };
+    const header = reg('chat-header');
+    const boardTitle = reg('tb-title-room');
+    const findName = () => header.children.flatMap(c => [c, ...c.children]).find(c => c.cls === 'h-room-name') || null;
+    let patch = { ok: true };
+    const sent = [];
+    const ctx = {
+      console, URLSearchParams, setTimeout: () => 0, clearTimeout() {},
+      localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, getElementById: id => els[id] || null, querySelectorAll: () => [], createElement: t => new Node(t), createElementNS: (ns, t) => new Node(t),
+        createTextNode: t => ({ textContent: t }), body: new Node('body'),
+        querySelector: s => (s === '#chat-header .h-room-name' ? findName() : null) },
+      window: { addEventListener() {}, matchMedia: () => ({ matches: false }) },
+      showToast() {}, roomParticipantsCache: {}, roomSubAgentsCache: {}, isPrimaryParticipant: () => false,
+      fetch: async (url, o) => { sent.push([url, o && o.method, o && o.body]); if (!patch.ok) throw new Error('offline'); return patch; },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/api.js', 'public/js/tasks/board.js', 'public/js/rooms/header.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    run('tasksRender = () => {}; buildHeaderActivityCtl = () => document.createElement("div"); refreshRoomList = () => {}; resyncActors = () => {}; _onGlobalWsReconnectAfterRestart = () => {}');
+    const socks = [];
+    ctx.WebSocket = class { constructor() { socks.push(this); } send() {} };
+    ctx.location = { protocol: 'http:', host: 'x' };
+
+    const room = { id: 5, title: 'Checkout v2 launch' };
+    ctx.currentRoomId = 5; ctx.currentRoomData = room;
+    run('tasksOnRoomOpen(currentRoomData)');
+    ctx.renderChatHeader(room, []);
+    assert.strictEqual(boardTitle.textContent, 'Checkout v2 launch');
+    const name = findName;
+
+    name().textContent = '<b>x</b> Renamed & <i>y</i>';
+    await name().listeners.blur();
+    assert.deepStrictEqual(sent.at(-1), ['/api/rooms/5', 'PATCH', JSON.stringify({ title: '<b>x</b> Renamed & <i>y</i>' })]);
+    assert.strictEqual(boardTitle.textContent, '<b>x</b> Renamed & <i>y</i>', 'a header rename (no header rebuild) retitles the board, as text');
+
+    patch = { ok: false };
+    name().textContent = 'Will fail';
+    await name().listeners.blur();
+    assert.deepStrictEqual([room.title, name().textContent, boardTitle.textContent], Array(3).fill('<b>x</b> Renamed & <i>y</i>'), 'a failed rename rolls the board title back too');
+
+    ctx.initGlobalWs();
+    const ws = msg => socks.at(-1).onmessage({ data: JSON.stringify(msg) });
+    await ws({ type: 'room_updated', room_id: 5, title: 'From another tab' });
+    assert.deepStrictEqual([room.title, name().textContent, boardTitle.textContent], Array(3).fill('From another tab'), 'a rename elsewhere reaches the room data, its header and the board');
+    await ws({ type: 'room_updated', room_id: 9, title: 'Other room' });
+    assert.strictEqual(boardTitle.textContent, 'From another tab', 'another room\'s rename leaves this board alone');
+    name().isContentEditable = true; name().textContent = 'typing…';
+    await ws({ type: 'room_updated', room_id: 5, title: 'Mid edit' });
+    assert.deepStrictEqual([name().textContent, boardTitle.textContent], ['typing…', 'Mid edit'], 'a rename event never overwrites the name being edited');
+  });
+
   await test('task board UI — timestamps: server UTC (SQLite, no zone) is shown in local time, the year only when it differs, durations, and empty or bad values show nothing', async () => {
     const vm = require('vm');
     const fs = require('fs');

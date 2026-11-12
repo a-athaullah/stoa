@@ -43,6 +43,7 @@ function renderChatHeader(room, participants) {
     if (newTitle && newTitle !== room.title) {
       const oldTitle = room.title;
       room.title = newTitle;
+      tasksRoomRenamed(room.id, newTitle);
       try {
         const r = await fetch(`/api/rooms/${room.id}`, {
           method: 'PATCH',
@@ -50,7 +51,7 @@ function renderChatHeader(room, participants) {
           body: JSON.stringify({ title: newTitle }),
         });
         if (!r.ok) throw new Error('rename failed');
-      } catch { showToast('Failed to rename room', { error: true }); room.title = oldTitle; name.textContent = oldTitle; }
+      } catch { showToast('Failed to rename room', { error: true }); room.title = oldTitle; name.textContent = oldTitle; tasksRoomRenamed(room.id, oldTitle); }
     } else {
       name.textContent = room.title;
     }

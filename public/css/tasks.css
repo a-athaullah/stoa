@@ -341,4 +341,5 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 }
 @media (max-width: 680px) {
   .tb-head { padding: 14px 16px 12px 8px; }
+  .tb-close { width: 36px; height: 36px; margin: -3px; }
 }

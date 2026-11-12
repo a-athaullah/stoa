@@ -454,10 +454,7 @@ function tasksRailButton(mkBtn) {
 }
 
 function tasksHeaderControls(room) {
-  if (room && room.id === tasksUi.roomId) {
-    tasksUi.roomTitle = room.title || '';
-    tbPaintTitle();
-  }
+  if (room) tasksRoomRenamed(room.id, room.title);
   const b = tbEl('button', 'tb-nav-btn tb-hbtn');
   b.type = 'button';
   b.id = 'tb-hbtn';
@@ -466,6 +463,12 @@ function tasksHeaderControls(room) {
   b.addEventListener('click', () => tasksToggleView());
   tbPaintNavBtn(b);
   return b;
+}
+
+function tasksRoomRenamed(roomId, title) {
+  if (roomId !== tasksUi.roomId) return;
+  tasksUi.roomTitle = title || '';
+  tbPaintTitle();
 }
 
 function tbPaintTitle() {
