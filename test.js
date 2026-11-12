@@ -2420,6 +2420,95 @@ async function runAsyncUnitTests() {
     catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
   }
 
+  // Workspace tree (lib/workspace-tree.js): same tree as the old sync walk, without blocking the loop.
+  {
+    const fsW = require('fs'), osW = require('os'), pathW = require('path');
+    const { buildFileTree, gitModified, gitDiff, createFileListService, parseMaxDepth } = require('./lib/workspace-tree');
+    const mk = () => fsW.mkdtempSync(pathW.join(osW.tmpdir(), 'stoa-wt-'));
+    const touch = (root, rel, body = 'x') => { const f = pathW.join(root, rel); fsW.mkdirSync(pathW.dirname(f), { recursive: true }); fsW.writeFileSync(f, body); };
+
+    await uta('workspace tree — shape and order: folders (sorted, ignore list skipped) then files; depth cap 3; top level open', async () => {
+      const root = mk();
+      try {
+        touch(root, 'b.md'); touch(root, 'Makefile'); touch(root, 'a.js');
+        touch(root, 'zeta/z.txt'); touch(root, 'alpha/one/two/three/four/deep.txt');
+        for (const ig of ['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']) touch(root, `${ig}/hidden.js`);
+        const tree = await buildFileTree(root);
+        assert.deepStrictEqual(tree.map(n => n.name), ['alpha', 'zeta', 'a.js', 'b.md', 'Makefile']);
+        assert.deepStrictEqual(tree.map(n => n.t), ['folder', 'folder', 'js', 'md', 'file']);
+        assert.deepStrictEqual([tree[0].open, tree[0].depth], [true, 0]);
+        const two = tree[0].children[0].children[0];
+        assert.deepStrictEqual([two.name, two.depth, two.open], ['two', 2, false]);
+        const three = two.children[0];
+        assert.deepStrictEqual([three.name, three.depth], ['three', 3]);
+        assert.deepStrictEqual(three.children, [], 'beyond max depth 3: a folder with no children');
+        assert.ok(!JSON.stringify(tree).includes('deep.txt'), 'nothing below the cap');
+        assert.ok(!JSON.stringify(tree).includes('hidden.js'), 'ignored dirs skipped');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — max_depth 0 lists the top level only; parseMaxDepth accepts integers 0-3 only', async () => {
+      const root = mk();
+      try {
+        touch(root, 'src/lib/a.js'); touch(root, 'r.txt');
+        assert.deepStrictEqual(await buildFileTree(root, 0), [{ t: 'folder', name: 'src', depth: 0, open: true, children: [] }, { t: 'txt', name: 'r.txt', depth: 0 }]);
+        assert.deepStrictEqual((await buildFileTree(root, 1))[0].children, [{ t: 'folder', name: 'lib', depth: 1, open: false, children: [] }]);
+        assert.deepStrictEqual([0, 1, 2, 3].map(parseMaxDepth), [0, 1, 2, 3]);
+        for (const bad of [undefined, null, -1, 4, 1.5, '1', NaN, {}]) assert.strictEqual(parseMaxDepth(bad), 3, String(bad));
+        assert.deepStrictEqual(await buildFileTree(pathW.join(root, 'missing')), [], 'unreadable dir → []');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — a large walk leaves the event loop free (max tick gap well under the walk time)', async () => {
+      const root = mk();
+      try {
+        for (let i = 0; i < 40; i++) for (let j = 0; j < 40; j++) touch(root, `d${i}/e${j}/f.txt`);
+        let last = performance.now(), maxGap = 0;
+        const timer = setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - last); last = now; }, 1);
+        const t0 = performance.now();
+        const tree = await buildFileTree(root);
+        const took = performance.now() - t0;
+        await new Promise(r => setTimeout(r, 5)); // let the tick after the walk record its gap
+        clearInterval(timer);
+        assert.strictEqual(tree.length, 40);
+        assert.strictEqual(tree[39].children.length, 40);
+        assert.ok(maxGap < took / 2, `max loop gap ${maxGap.toFixed(1)} ms over a ${took.toFixed(1)} ms walk`);
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — concurrent requests for one path share a walk; the next request walks again', async () => {
+      const root = mk();
+      try {
+        touch(root, 'a.txt');
+        const list = createFileListService();
+        const p1 = list(root), p2 = list(root), p3 = list(root, 0);
+        assert.strictEqual(p1, p2, 'same (path, depth) in flight → same promise');
+        assert.notStrictEqual(p1, p3, 'other depth → own walk');
+        const r1 = await p1;
+        await p3;
+        touch(root, 'b.txt');
+        const r2 = await list(root);
+        assert.deepStrictEqual(r1.tree.map(n => n.name), ['a.txt']);
+        assert.deepStrictEqual(r2.tree.map(n => n.name), ['a.txt', 'b.txt'], 'finished walk is not cached');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — git status/diff async: modified paths and diff in a repo; outside a repo [] and a rejected diff', async () => {
+      const root = mk();
+      try {
+        const { execFileSync } = require('child_process');
+        const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+        const g = (...a) => execFileSync('git', a, { cwd: root, env, stdio: 'ignore' });
+        assert.deepStrictEqual(await gitModified(root), [], 'not a repo → []');
+        await assert.rejects(gitDiff(root), /not a git repository|Command failed/i);
+        g('init', '-q'); touch(root, 'kept.txt', 'one\n'); g('add', '.'); g('commit', '-qm', 'c');
+        touch(root, 'kept.txt', 'two\n'); touch(root, 'new.txt');
+        assert.deepStrictEqual((await gitModified(root)).sort(), ['kept.txt', 'new.txt']);
+        assert.match(await gitDiff(root), /-one\n\+two/);
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
   console.log('  [Async Fetch Tests]');
 
   await uta('createSemanticIndex — worker that cannot start → state failed, search resolves null (keyword fallback)', async () => {
@@ -20100,6 +20189,93 @@ async function run() {
 
     await test('room switch — teardown', async () => {
       if (rs?.ws && rs.ws.readyState !== 3) rs.ws.close();
+    });
+  }
+
+  // Workspace panel over WS: file_list / git_diff for a workdir on the server's disk run async
+  // (lib/workspace-tree.js); abs_path stays bounded to the workdir; max_depth trims the tree.
+  console.log('\n[Workspace file_list]');
+  {
+    const fsW = require('fs'), osW = require('os');
+    const { execFileSync } = require('child_process');
+    let fl = null, flRoomId = null, flHuman = null, flRoot = null;
+    const ask = async (payload, type = 'file_list') => {
+      const r = waitForWsMessage(flHuman, m => m.type === type, 10000);
+      flHuman.send(JSON.stringify(payload));
+      return r;
+    };
+
+    await test('file_list — setup: git workdir with a nested tree and a modified file', async () => {
+      flRoot = fsW.realpathSync(fsW.mkdtempSync(path.join(osW.tmpdir(), 'stoa-test-file-list-')));
+      const put = (rel, body) => { const f = path.join(flRoot, rel); fsW.mkdirSync(path.dirname(f), { recursive: true }); fsW.writeFileSync(f, body); };
+      put('src/lib/util.js', 'one\n'); put('README.md', '# r\n'); put('node_modules/dep/index.js', 'x');
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+      const g = (...a) => execFileSync('git', a, { cwd: flRoot, env, stdio: 'ignore' });
+      g('init', '-q'); g('add', 'src', 'README.md'); g('commit', '-qm', 'c');
+      put('src/lib/util.js', 'two\n');
+      fl = await createOnlineTestAgent('__test-file-list', flRoot);
+      assert.ok(fl?.workdirId, 'online test agent with the workdir');
+      const r = await req('POST', '/api/rooms', { title: '__file-list-room__', workdir_id: fl.workdirId, participant_ids: [fl.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      flRoomId = r.body.id;
+      testRoomIds.push(flRoomId);
+      flHuman = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      const hist = waitForWsMessage(flHuman, m => m.type === 'history');
+      flHuman.send(JSON.stringify({ type: 'join_room', room_id: flRoomId }));
+      await hist;
+    });
+
+    await test('file_list — tree (ignore list skipped) + git modified, served by the server itself', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      let proxied = false;
+      const spy = (raw) => { if (JSON.parse(raw.toString()).type === 'proxy_file_list') proxied = true; };
+      fl.ws.on('message', spy);
+      try {
+        const m = await ask({ type: 'file_list' });
+        assert.strictEqual(m.error, undefined, m.error);
+        assert.strictEqual(m.root, flRoot);
+        assert.deepStrictEqual(m.tree.map(n => n.name), ['src', 'README.md'], 'node_modules skipped, folders first');
+        assert.deepStrictEqual(m.tree[0].children[0], { t: 'folder', name: 'lib', depth: 1, open: false, children: [{ t: 'js', name: 'util.js', depth: 2 }] });
+        assert.deepStrictEqual(m.modified, ['src/lib/util.js']);
+        assert.strictEqual(proxied, false, 'local workdir: no agent round trip');
+      } finally { fl.ws.off('message', spy); }
+    });
+
+    await test('file_list — max_depth 0 trims to the top level; abs_path inside the workdir lists that folder', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      const top = await ask({ type: 'file_list', max_depth: 0 });
+      assert.deepStrictEqual(top.tree[0], { t: 'folder', name: 'src', depth: 0, open: true, children: [] });
+      const bad = await ask({ type: 'file_list', max_depth: '0' });
+      assert.strictEqual(bad.tree[0].children.length, 1, 'non-integer max_depth → full tree');
+      const sub = await ask({ type: 'file_list', abs_path: path.join(flRoot, 'src') });
+      assert.strictEqual(sub.root, path.join(flRoot, 'src'));
+      assert.deepStrictEqual(sub.tree.map(n => n.name), ['lib']);
+    });
+
+    await test('file_list — abs_path outside the workdir (incl. ../ traversal) is never walked by the server', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      for (const abs of [osW.tmpdir(), path.join(flRoot, '..'), `${flRoot}-sibling`]) {
+        const proxied = waitForWsMessage(fl.ws, m => m.type === 'proxy_file_list', 5000);
+        flHuman.send(JSON.stringify({ type: 'file_list', abs_path: abs }));
+        const p = await proxied;
+        assert.strictEqual(p.workdir, abs, 'handed to the workdir owner agent, not listed from the server disk');
+        fl.ws.send(JSON.stringify({ type: 'proxy_file_list_result', request_id: p.request_id, error: 'denied by test agent' }));
+        assert.strictEqual((await waitForWsMessage(flHuman, m => m.type === 'file_list', 5000)).error, 'denied by test agent');
+      }
+    });
+
+    await test('git_diff — parsed diff of the modified file, async', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      const m = await ask({ type: 'git_diff' }, 'git_diff');
+      assert.strictEqual(m.error, undefined, m.error);
+      assert.deepStrictEqual(m.files.map(f => [f.name, f.add, f.del]), [['src/lib/util.js', 1, 1]]);
+      assert.deepStrictEqual(m.files[0].hunks.filter(h => h.k !== 'hunk'), [{ k: 'del', text: 'one' }, { k: 'add', text: 'two' }]);
+    });
+
+    await test('file_list — teardown', async () => {
+      if (flHuman) flHuman.close();
+      if (fl?.ws && fl.ws.readyState !== 3) fl.ws.close();
+      if (flRoot) fsW.rmSync(flRoot, { recursive: true, force: true });
     });
   }
 

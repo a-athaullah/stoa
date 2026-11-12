@@ -8,7 +8,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { pipeline } = require('stream');
-const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
@@ -32,6 +31,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sendJson } = require('./lib/http-compress');
+const { createFileListService, parseMaxDepth, gitDiff } = require('./lib/workspace-tree');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
 const { recordToolStep } = require('./lib/tool-steps');
@@ -5325,6 +5325,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
 // switch; compressed they shrink ~7-14x. Small frames (streaming deltas, typing, pings) stay below the
 // threshold and skip zlib. No context takeover on either side: no 32 KB zlib window held per socket,
 // and each message compresses on its own, which is what large one-off payloads need anyway.
+const workspaceFileList = createFileListService();
 const wss = new WebSocketServer({
   server,
   perMessageDeflate: {
@@ -6779,14 +6780,12 @@ wss.on('connection', (ws, req) => {
       const isLocal = fs.existsSync(targetPath);
       const isBounded = !msg.abs_path || path.resolve(targetPath).startsWith(path.resolve(wd.path) + path.sep) || path.resolve(targetPath) === path.resolve(wd.path);
       if (isLocal && isBounded) {
-        const tree = buildFileTree(targetPath, targetPath, 0, 3);
-        let modified = [];
         try {
-
-          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
-          modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
-        } catch {}
-        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
+          const { tree, modified } = await workspaceFileList(targetPath, parseMaxDepth(msg.max_depth));
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
+        } catch (e) {
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'file_list', error: e.message }));
+        }
       } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
@@ -6843,11 +6842,9 @@ wss.on('connection', (ws, req) => {
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
       if (fs.existsSync(wd.path)) {
         try {
-
-          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
-          const parsed = parseGitDiff(diff);
-          ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
-        } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+          const parsed = parseGitDiff(await gitDiff(wd.path));
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
+        } catch (e) { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
       } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
@@ -7315,26 +7312,6 @@ function isPathSafe(filePath, workdir) {
     }
   } catch {}
   return true;
-}
-
-const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']);
-
-function buildFileTree(dirPath, rootPath, depth, maxDepth) {
-  if (depth > maxDepth) return [];
-  let entries;
-  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
-  const result = [];
-  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
-  for (const d of dirs) {
-    const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
-    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
-  }
-  for (const f of files) {
-    const ext = path.extname(f.name).slice(1);
-    result.push({ t: ext || 'file', name: f.name, depth });
-  }
-  return result;
 }
 
 function parseGitDiff(raw) {
