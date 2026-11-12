@@ -165,6 +165,8 @@ x-file-name: 文件名.扩展名
 | `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | 房间参与者（定时任务必须属于该房间） |
 | `GET` | `/api/rooms/:id/schedules/doctor` | 房间参与者 |
 
+`GET /api/rooms/:id/messages` 最多返回 `limit` 行（1-100，默认 50），按从旧到新排列。带 `before=<消息 ID>` 时返回该消息之前的 `limit` 行；否则返回 `since=<消息 ID>`（默认 `0`，即房间开头）之后的前 `limit` 行，因此翻到下一页时把 `since` 设为收到的最后一个 ID。`scope=all` 包含线程回复；默认只列出线程根消息，每行带有 `thread` 摘要。请求带 `Accept-Encoding: gzip` 时，超过 1 KB 的 JSON 响应会以 gzip 压缩。
+
 每当代理创建、更新或删除自动化时，服务器会在目标房间发布永久通知。连接的创建/编辑/删除、邮件测试和 Slack 连接仍需会话登录。
 
 已归档的房间无法被任何代理读取：其消息和线程会返回 `403 agent_scope_denied`，与不在该房间的情况相同。其他端点不受影响（向已归档房间发送消息一直以来都会被 `400 room is archived` 拒绝）。取消归档后该房间可重新读取。

@@ -8,7 +8,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { pipeline } = require('stream');
-const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
@@ -31,6 +30,8 @@ const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
+const { sendJson } = require('./lib/http-compress');
+const { createFileListService, parseMaxDepth, gitDiff } = require('./lib/workspace-tree');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
 const { recordToolStep } = require('./lib/tool-steps');
@@ -2603,7 +2604,7 @@ const server = http.createServer(async (req, res) => {
       const r = roomMessages.feed(roomId, {
         before: url.searchParams.get('before'),
         since: url.searchParams.get('since') ?? '0',
-        limit: Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100),
+        limit: feedLimit(url.searchParams.get('limit')),
         scopeAll: url.searchParams.get('scope') === 'all',
       });
       return json(res, r.body, r.status);
@@ -5320,7 +5321,20 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
 // ─── WebSocket server ─────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server });
+// permessage-deflate: join_room history and room lists are 100-200 KB of repetitive JSON per room
+// switch; compressed they shrink ~7-14x. Small frames (streaming deltas, typing, pings) stay below the
+// threshold and skip zlib. No context takeover on either side: no 32 KB zlib window held per socket,
+// and each message compresses on its own, which is what large one-off payloads need anyway.
+const workspaceFileList = createFileListService();
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: {
+    threshold: 1024,
+    serverNoContextTakeover: true,
+    clientNoContextTakeover: true,
+    concurrencyLimit: 10,
+  },
+});
 const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
@@ -6766,14 +6780,12 @@ wss.on('connection', (ws, req) => {
       const isLocal = fs.existsSync(targetPath);
       const isBounded = !msg.abs_path || path.resolve(targetPath).startsWith(path.resolve(wd.path) + path.sep) || path.resolve(targetPath) === path.resolve(wd.path);
       if (isLocal && isBounded) {
-        const tree = buildFileTree(targetPath, targetPath, 0, 3);
-        let modified = [];
         try {
-
-          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
-          modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
-        } catch {}
-        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
+          const { tree, modified } = await workspaceFileList(targetPath, parseMaxDepth(msg.max_depth));
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
+        } catch (e) {
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'file_list', error: e.message }));
+        }
       } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
@@ -6830,11 +6842,9 @@ wss.on('connection', (ws, req) => {
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
       if (fs.existsSync(wd.path)) {
         try {
-
-          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
-          const parsed = parseGitDiff(diff);
-          ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
-        } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+          const parsed = parseGitDiff(await gitDiff(wd.path));
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
+        } catch (e) { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
       } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
@@ -7304,33 +7314,14 @@ function isPathSafe(filePath, workdir) {
   return true;
 }
 
-const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']);
-
-function buildFileTree(dirPath, rootPath, depth, maxDepth) {
-  if (depth > maxDepth) return [];
-  let entries;
-  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
-  const result = [];
-  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
-  for (const d of dirs) {
-    const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
-    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
-  }
-  for (const f of files) {
-    const ext = path.extname(f.name).slice(1);
-    result.push({ t: ext || 'file', name: f.name, depth });
-  }
-  return result;
-}
-
 function parseGitDiff(raw) {
   if (!raw.trim()) return [];
   const files = [];
   let current = null;
   for (const line of raw.split('\n')) {
     if (line.startsWith('diff --git')) {
-      const match = line.match(/b\/(.+)$/);
+      // Last " b/" of "diff --git a/<path> b/<path>": a bare /b\/(.+)$/ matched the "b/" inside lib/, web/.
+      const match = line.match(/^diff --git a\/.* b\/(.+)$/);
       current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
       files.push(current);
     } else if (line.startsWith('@@') && current) {
@@ -8581,9 +8572,14 @@ function publicHealthBody() {
   return { ok: pending === 0 && failed === 0, db: 'ok', migrations: { pending, failed } };
 }
 
+// GET /api/rooms/:id/messages page size: 1-100, default 50 (missing, non-numeric or < 1).
+function feedLimit(raw) {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, 100) : 50;
+}
+
 function json(res, data, status = 200) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
+  sendJson(res.req, res, status, JSON.stringify(data));
 }
 
 function readBody(req, maxBytes = 10 * 1024 * 1024) {

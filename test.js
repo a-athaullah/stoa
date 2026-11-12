@@ -2393,6 +2393,22 @@ function runUnitTests() {
     }
   });
 
+  // Accept-Encoding parsing for gzipped JSON responses (lib/http-compress.js).
+  const { acceptsGzip } = require('./lib/http-compress');
+  ut('acceptsGzip — gzip token, case and whitespace insensitive', () => {
+    for (const h of ['gzip', 'GZIP', 'deflate, gzip', 'gzip, deflate, br', ' br ;q=1 , gzip ; q=0.5']) assert.strictEqual(acceptsGzip(h), true, h);
+  });
+  ut('acceptsGzip — q=0 refuses, even with a * wildcard', () => {
+    for (const h of ['gzip;q=0', 'gzip;q=0.0, deflate', '*, gzip;q=0', 'gzip; q=0']) assert.strictEqual(acceptsGzip(h), false, h);
+  });
+  ut('acceptsGzip — * allows gzip unless refused; other codings alone do not', () => {
+    assert.strictEqual(acceptsGzip('*'), true);
+    assert.strictEqual(acceptsGzip('br, *;q=0.1'), true);
+    assert.strictEqual(acceptsGzip('*;q=0'), false);
+    for (const h of ['deflate', 'br', 'identity', 'x-gzip', 'gzipx', '']) assert.strictEqual(acceptsGzip(h), false, h);
+    for (const h of [undefined, null, 42, ['gzip']]) assert.strictEqual(acceptsGzip(h), false, String(h));
+  });
+
   return { p, f };
 }
 
@@ -2402,6 +2418,95 @@ async function runAsyncUnitTests() {
   async function uta(name, fn) {
     try { await fn(); console.log(`  ✓ ${name}`); p++; }
     catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
+  }
+
+  // Workspace tree (lib/workspace-tree.js): same tree as the old sync walk, without blocking the loop.
+  {
+    const fsW = require('fs'), osW = require('os'), pathW = require('path');
+    const { buildFileTree, gitModified, gitDiff, createFileListService, parseMaxDepth } = require('./lib/workspace-tree');
+    const mk = () => fsW.mkdtempSync(pathW.join(osW.tmpdir(), 'stoa-wt-'));
+    const touch = (root, rel, body = 'x') => { const f = pathW.join(root, rel); fsW.mkdirSync(pathW.dirname(f), { recursive: true }); fsW.writeFileSync(f, body); };
+
+    await uta('workspace tree — shape and order: folders (sorted, ignore list skipped) then files; depth cap 3; top level open', async () => {
+      const root = mk();
+      try {
+        touch(root, 'b.md'); touch(root, 'Makefile'); touch(root, 'a.js');
+        touch(root, 'zeta/z.txt'); touch(root, 'alpha/one/two/three/four/deep.txt');
+        for (const ig of ['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']) touch(root, `${ig}/hidden.js`);
+        const tree = await buildFileTree(root);
+        assert.deepStrictEqual(tree.map(n => n.name), ['alpha', 'zeta', 'a.js', 'b.md', 'Makefile']);
+        assert.deepStrictEqual(tree.map(n => n.t), ['folder', 'folder', 'js', 'md', 'file']);
+        assert.deepStrictEqual([tree[0].open, tree[0].depth], [true, 0]);
+        const two = tree[0].children[0].children[0];
+        assert.deepStrictEqual([two.name, two.depth, two.open], ['two', 2, false]);
+        const three = two.children[0];
+        assert.deepStrictEqual([three.name, three.depth], ['three', 3]);
+        assert.deepStrictEqual(three.children, [], 'beyond max depth 3: a folder with no children');
+        assert.ok(!JSON.stringify(tree).includes('deep.txt'), 'nothing below the cap');
+        assert.ok(!JSON.stringify(tree).includes('hidden.js'), 'ignored dirs skipped');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — max_depth 0 lists the top level only; parseMaxDepth accepts integers 0-3 only', async () => {
+      const root = mk();
+      try {
+        touch(root, 'src/lib/a.js'); touch(root, 'r.txt');
+        assert.deepStrictEqual(await buildFileTree(root, 0), [{ t: 'folder', name: 'src', depth: 0, open: true, children: [] }, { t: 'txt', name: 'r.txt', depth: 0 }]);
+        assert.deepStrictEqual((await buildFileTree(root, 1))[0].children, [{ t: 'folder', name: 'lib', depth: 1, open: false, children: [] }]);
+        assert.deepStrictEqual([0, 1, 2, 3].map(parseMaxDepth), [0, 1, 2, 3]);
+        for (const bad of [undefined, null, -1, 4, 1.5, '1', NaN, {}]) assert.strictEqual(parseMaxDepth(bad), 3, String(bad));
+        assert.deepStrictEqual(await buildFileTree(pathW.join(root, 'missing')), [], 'unreadable dir → []');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — a large walk leaves the event loop free (max tick gap well under the walk time)', async () => {
+      const root = mk();
+      try {
+        for (let i = 0; i < 40; i++) for (let j = 0; j < 40; j++) touch(root, `d${i}/e${j}/f.txt`);
+        let last = performance.now(), maxGap = 0;
+        const timer = setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - last); last = now; }, 1);
+        const t0 = performance.now();
+        const tree = await buildFileTree(root);
+        const took = performance.now() - t0;
+        await new Promise(r => setTimeout(r, 5)); // let the tick after the walk record its gap
+        clearInterval(timer);
+        assert.strictEqual(tree.length, 40);
+        assert.strictEqual(tree[39].children.length, 40);
+        assert.ok(maxGap < took / 2, `max loop gap ${maxGap.toFixed(1)} ms over a ${took.toFixed(1)} ms walk`);
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — concurrent requests for one path share a walk; the next request walks again', async () => {
+      const root = mk();
+      try {
+        touch(root, 'a.txt');
+        const list = createFileListService();
+        const p1 = list(root), p2 = list(root), p3 = list(root, 0);
+        assert.strictEqual(p1, p2, 'same (path, depth) in flight → same promise');
+        assert.notStrictEqual(p1, p3, 'other depth → own walk');
+        const r1 = await p1;
+        await p3;
+        touch(root, 'b.txt');
+        const r2 = await list(root);
+        assert.deepStrictEqual(r1.tree.map(n => n.name), ['a.txt']);
+        assert.deepStrictEqual(r2.tree.map(n => n.name), ['a.txt', 'b.txt'], 'finished walk is not cached');
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    await uta('workspace tree — git status/diff async: modified paths and diff in a repo; outside a repo [] and a rejected diff', async () => {
+      const root = mk();
+      try {
+        const { execFileSync } = require('child_process');
+        const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+        const g = (...a) => execFileSync('git', a, { cwd: root, env, stdio: 'ignore' });
+        assert.deepStrictEqual(await gitModified(root), [], 'not a repo → []');
+        await assert.rejects(gitDiff(root), /not a git repository|Command failed/i);
+        g('init', '-q'); touch(root, 'kept.txt', 'one\n'); g('add', '.'); g('commit', '-qm', 'c');
+        touch(root, 'kept.txt', 'two\n'); touch(root, 'new.txt');
+        assert.deepStrictEqual((await gitModified(root)).sort(), ['kept.txt', 'new.txt']);
+        assert.match(await gitDiff(root), /-one\n\+two/);
+      } finally { fsW.rmSync(root, { recursive: true, force: true }); }
+    });
   }
 
   console.log('  [Async Fetch Tests]');
@@ -8003,7 +8108,7 @@ async function run() {
       assert.strictEqual(evt.feed_pos, p2 + 0.5, 'completion event carries the new position');
       assert.deepStrictEqual(db.prepare('SELECT id, feed_pos FROM messages WHERE id=?').get(run.message_id), { id: run.message_id, feed_pos: p2 + 0.5 }, 'id unchanged');
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-3), [p1, p2, run.message_id]);
-      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all`)).body).slice(-3), [p1, p2, run.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all&limit=100`)).body).slice(-3), [p1, p2, run.message_id]);
     });
 
     await test('reply order — before/since cursors stay message ids, resolved to the display position (thread + feed)', async () => {
@@ -8046,7 +8151,7 @@ async function run() {
       assert.strictEqual(evt.feed_pos, s2 + 0.5);
       const woken = await wake.catch(() => null); // the parent is woken with the result (wake_parent)
       if (woken) await finish(woken, 'ro parent woken');
-      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages`)).body);
+      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages?limit=100`)).body);
       assert.deepStrictEqual(feed.slice(feed.indexOf(s1), feed.indexOf(s1) + 3), [s1, s2, m.message_id]);
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?before=${m.message_id}&limit=2`)).body), [s1, s2]);
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?since=${s2}`)).body)[0], m.message_id);
@@ -10841,7 +10946,7 @@ async function run() {
     await test('Agent scope — proactive message: own room 200, room without the agent 403', async () => {
       const ok = await asAgent(agA, 'POST', `/api/rooms/${roomA}/message`, { content: 'scope ok' });
       assert.strictEqual(ok.status, 200, ok.raw);
-      const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=5`);
+      const hist = await req('GET', `/api/rooms/${roomA}/messages?before=${Number.MAX_SAFE_INTEGER}&limit=5`);
       assert.ok(JSON.stringify(hist.body).includes('scope ok'), 'message must be stored');
       denied(await asAgent(agA, 'POST', `/api/rooms/${otherRoom}/message`, { content: 'intrude' }), 'message other room');
     });
@@ -16581,6 +16686,7 @@ async function run() {
       document: { getElementById: byId, visibilityState: 'visible' },
       setQueuePosition() {}, setRunReply() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
       scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
+      wsPanelIsOpen: () => false,
     };
     vm.createContext(ctx);
     for (const f of ['public/js/chat/append.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
@@ -16671,6 +16777,7 @@ async function run() {
       setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
       setThreadProcessing: id => processing.add(id), clearThreadProcessing: id => processing.delete(id),
       refreshRoomList() {},
+      wsPanelIsOpen: () => false,
     };
     vm.createContext(ctx);
     const markdownJs = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
@@ -19962,6 +20069,216 @@ async function run() {
     await test('message order — teardown', async () => {
       if (human) human.close();
       if (qo?.ws && qo.ws.readyState !== 3) qo.ws.close();
+    });
+  }
+
+  // Room switch payload: since-mode pages honour `limit`, the feed carries the thread summary once
+  // (in `thread`), large JSON goes out gzipped when the client asks, and join_room history travels
+  // over permessage-deflate.
+  console.log('\n[Room switch payload]');
+  {
+    const db = require('./db');
+    const zlib = require('zlib');
+    let rs = null, rsRoomId = null, rsPart = null, rsRoot = null;
+    const rsIds = [];
+    const getRaw = (urlPath, headers = {}) => new Promise((resolve, reject) => {
+      const r = http.request({ hostname: HOST, port: PORT, path: urlPath, method: 'GET', headers: { Cookie: cookieHeader(), ...headers } }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+
+    await test('room switch — setup: room with 105 root rows and one thread', async () => {
+      rs = await createOnlineTestAgent('__test-room-switch', '/tmp/stoa-test-room-switch');
+      assert.ok(rs?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__room-switch-payload__', workdir_id: rs.workdirId, participant_ids: [rs.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      rsRoomId = r.body.id;
+      testRoomIds.push(rsRoomId);
+      rsPart = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rsRoomId).id;
+      const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'complete',?)");
+      db.transaction(() => {
+        for (let i = 0; i < 105; i++) rsIds.push(Number(ins.run(rsRoomId, rsPart, `__rs_${i}__ ` + 'room switch payload row '.repeat(4), null).lastInsertRowid));
+        rsRoot = rsIds[104];
+        ins.run(rsRoomId, rsPart, '__rs_reply_a__', rsRoot);
+        ins.run(rsRoomId, rsPart, '__rs_reply_b__', rsRoot);
+      })();
+    });
+
+    await test('room switch — GET messages since-mode returns `limit` rows, pages forward, default 50, cap 100', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const ids = async (qs) => (await req('GET', `/api/rooms/${rsRoomId}/messages${qs}`)).body.map(m => m.id);
+      assert.deepStrictEqual(await ids('?limit=3'), rsIds.slice(0, 3), 'oldest 3 after since=0');
+      assert.deepStrictEqual(await ids(`?since=${rsIds[2]}&limit=3`), rsIds.slice(3, 6), 'next page from the last id');
+      assert.deepStrictEqual(await ids(''), rsIds.slice(0, 50), 'no limit → 50, not 500');
+      for (const bad of ['0', '-5', 'abc', '']) assert.deepStrictEqual(await ids(`?limit=${bad}`), rsIds.slice(0, 50), `limit=${bad} → default 50`);
+      assert.deepStrictEqual(await ids('?limit=500'), rsIds.slice(0, 100), 'capped at 100');
+      assert.strictEqual((await ids(`?since=${rsIds[100]}&scope=all&limit=100`)).length, 6, 'scope=all: 4 roots + 2 replies after the cursor');
+    });
+
+    await test('room switch — feed and join_room history carry the thread summary only in `thread`', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const dropped = ['thread_count', 'thread_last_at', 'thread_active', 'thread_participant_ids', 'thread_has_error', 'thread_sub_agent_participants', 'thread_done_at', 'thread_completed_at', 'thread_completed_through'];
+      const humanActor = db.prepare('SELECT actor_id FROM room_participants WHERE id=?').get(rsPart).actor_id;
+      const check = (row, where) => {
+        assert.ok(row, `${where}: thread root present`);
+        assert.strictEqual(row.thread.count, 2, `${where}: reply count`);
+        assert.deepStrictEqual(row.thread.participant_ids, [humanActor], `${where}: participants`);
+        assert.strictEqual(row.thread.completed, false, `${where}: open thread`);
+        for (const k of dropped) assert.ok(!(k in row), `${where}: ${k} dropped`);
+      };
+      const feed = (await req('GET', `/api/rooms/${rsRoomId}/messages?before=${rsRoot + 100}&limit=5`)).body;
+      check(feed.find(m => m.id === rsRoot), 'feed');
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      try {
+        const hist = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        const h = await hist;
+        assert.strictEqual(h.messages.length, 100, 'history = last 100 roots');
+        check(h.messages.find(m => m.id === rsRoot), 'history');
+      } finally { ws.close(); }
+    });
+
+    await test('room switch — JSON API gzipped when accepted (>1 KB), identical body; plain otherwise', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const urlPath = `/api/rooms/${rsRoomId}/messages?limit=100`;
+      const plain = await getRaw(urlPath);
+      assert.strictEqual(plain.status, 200);
+      assert.strictEqual(plain.headers['content-encoding'], undefined, 'no Accept-Encoding → identity');
+      assert.ok(plain.buf.length > 1024, 'body above the threshold');
+      assert.strictEqual(Number(plain.headers['content-length']), plain.buf.length, 'content-length = body');
+      const gz = await getRaw(urlPath, { 'Accept-Encoding': 'gzip, deflate, br' });
+      assert.strictEqual(gz.status, 200);
+      assert.strictEqual(gz.headers['content-encoding'], 'gzip');
+      assert.match(gz.headers.vary || '', /Accept-Encoding/i);
+      assert.strictEqual(gz.headers['content-type'], 'application/json');
+      assert.strictEqual(Number(gz.headers['content-length']), gz.buf.length, 'content-length = compressed size');
+      assert.ok(gz.buf.length * 3 < plain.buf.length, `compressed ${gz.buf.length} vs ${plain.buf.length}`);
+      assert.deepStrictEqual(JSON.parse(zlib.gunzipSync(gz.buf).toString()), JSON.parse(plain.buf.toString()), 'same JSON after gunzip');
+      const refused = await getRaw(urlPath, { 'Accept-Encoding': 'gzip;q=0' });
+      assert.strictEqual(refused.headers['content-encoding'], undefined, 'gzip;q=0 → identity');
+      const small = await getRaw(`/api/rooms/${rsRoomId}/threads/999999999`, { 'Accept-Encoding': 'gzip' });
+      assert.ok(small.buf.length < 1024, `small body ${small.buf.length}`);
+      assert.strictEqual(small.headers['content-encoding'], undefined, 'below 1 KB → identity');
+      assert.ok(JSON.parse(small.buf.toString()).error, 'plain JSON error body');
+    });
+
+    await test('room switch — WS negotiates permessage-deflate; history arrives compressed; a client without it still works', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      try {
+        assert.match(ws.extensions, /permessage-deflate/, `extensions: ${ws.extensions}`);
+        const before = ws._socket.bytesRead;
+        const hist = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        const h = await hist;
+        const wire = ws._socket.bytesRead - before; // can include a few small frames sent after history
+        const json = Buffer.byteLength(JSON.stringify(h));
+        assert.ok(wire * 3 < json, `wire ${wire} bytes vs history JSON ${json}`);
+      } finally { ws.close(); }
+      const plainWs = new WebSocket(`ws://${HOST}:${PORT}`, { headers: { Cookie: cookieHeader() }, perMessageDeflate: false });
+      try {
+        await new Promise((res, rej) => { plainWs.on('open', res); plainWs.on('error', rej); });
+        assert.strictEqual(plainWs.extensions, '', 'no extension negotiated');
+        const hist = waitForWsMessage(plainWs, m => m.type === 'history');
+        plainWs.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        assert.strictEqual((await hist).messages.length, 100);
+      } finally { plainWs.close(); }
+    });
+
+    await test('room switch — teardown', async () => {
+      if (rs?.ws && rs.ws.readyState !== 3) rs.ws.close();
+    });
+  }
+
+  // Workspace panel over WS: file_list / git_diff for a workdir on the server's disk run async
+  // (lib/workspace-tree.js); abs_path stays bounded to the workdir; max_depth trims the tree.
+  console.log('\n[Workspace file_list]');
+  {
+    const fsW = require('fs'), osW = require('os');
+    const { execFileSync } = require('child_process');
+    let fl = null, flRoomId = null, flHuman = null, flRoot = null;
+    const ask = async (payload, type = 'file_list') => {
+      const r = waitForWsMessage(flHuman, m => m.type === type, 10000);
+      flHuman.send(JSON.stringify(payload));
+      return r;
+    };
+
+    await test('file_list — setup: git workdir with a nested tree and a modified file', async () => {
+      flRoot = fsW.realpathSync(fsW.mkdtempSync(path.join(osW.tmpdir(), 'stoa-test-file-list-')));
+      const put = (rel, body) => { const f = path.join(flRoot, rel); fsW.mkdirSync(path.dirname(f), { recursive: true }); fsW.writeFileSync(f, body); };
+      put('src/lib/util.js', 'one\n'); put('README.md', '# r\n'); put('node_modules/dep/index.js', 'x');
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+      const g = (...a) => execFileSync('git', a, { cwd: flRoot, env, stdio: 'ignore' });
+      g('init', '-q'); g('add', 'src', 'README.md'); g('commit', '-qm', 'c');
+      fsW.writeFileSync(path.join(flRoot, '.git/info/exclude'), 'node_modules/\n'); // no global gitignore on the test server
+      put('src/lib/util.js', 'two\n');
+      fl = await createOnlineTestAgent('__test-file-list', flRoot);
+      assert.ok(fl?.workdirId, 'online test agent with the workdir');
+      const r = await req('POST', '/api/rooms', { title: '__file-list-room__', workdir_id: fl.workdirId, participant_ids: [fl.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      flRoomId = r.body.id;
+      testRoomIds.push(flRoomId);
+      flHuman = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      const hist = waitForWsMessage(flHuman, m => m.type === 'history');
+      flHuman.send(JSON.stringify({ type: 'join_room', room_id: flRoomId }));
+      await hist;
+    });
+
+    await test('file_list — tree (ignore list skipped) + git modified, served by the server itself', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      let proxied = false;
+      const spy = (raw) => { if (JSON.parse(raw.toString()).type === 'proxy_file_list') proxied = true; };
+      fl.ws.on('message', spy);
+      try {
+        const m = await ask({ type: 'file_list' });
+        assert.strictEqual(m.error, undefined, m.error);
+        assert.strictEqual(m.root, flRoot);
+        assert.deepStrictEqual(m.tree.map(n => n.name), ['src', 'README.md'], 'node_modules skipped, folders first');
+        assert.deepStrictEqual(m.tree[0].children[0], { t: 'folder', name: 'lib', depth: 1, open: false, children: [{ t: 'js', name: 'util.js', depth: 2 }] });
+        assert.deepStrictEqual(m.modified, ['src/lib/util.js']);
+        assert.strictEqual(proxied, false, 'local workdir: no agent round trip');
+      } finally { fl.ws.off('message', spy); }
+    });
+
+    await test('file_list — max_depth 0 trims to the top level; abs_path inside the workdir lists that folder', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      const top = await ask({ type: 'file_list', max_depth: 0 });
+      assert.deepStrictEqual(top.tree[0], { t: 'folder', name: 'src', depth: 0, open: true, children: [] });
+      const bad = await ask({ type: 'file_list', max_depth: '0' });
+      assert.strictEqual(bad.tree[0].children.length, 1, 'non-integer max_depth → full tree');
+      const sub = await ask({ type: 'file_list', abs_path: path.join(flRoot, 'src') });
+      assert.strictEqual(sub.root, path.join(flRoot, 'src'));
+      assert.deepStrictEqual(sub.tree.map(n => n.name), ['lib']);
+    });
+
+    await test('file_list — abs_path outside the workdir (incl. ../ traversal) is never walked by the server', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      for (const abs of [osW.tmpdir(), path.join(flRoot, '..'), `${flRoot}-sibling`]) {
+        const proxied = waitForWsMessage(fl.ws, m => m.type === 'proxy_file_list', 5000);
+        flHuman.send(JSON.stringify({ type: 'file_list', abs_path: abs }));
+        const p = await proxied;
+        assert.strictEqual(p.workdir, abs, 'handed to the workdir owner agent, not listed from the server disk');
+        fl.ws.send(JSON.stringify({ type: 'proxy_file_list_result', request_id: p.request_id, error: 'denied by test agent' }));
+        assert.strictEqual((await waitForWsMessage(flHuman, m => m.type === 'file_list', 5000)).error, 'denied by test agent');
+      }
+    });
+
+    await test('git_diff — parsed diff of the modified file, async', async () => {
+      if (!flHuman) { console.log('    (skipped)'); return; }
+      const m = await ask({ type: 'git_diff' }, 'git_diff');
+      assert.strictEqual(m.error, undefined, m.error);
+      assert.deepStrictEqual(m.files.map(f => [f.name, f.add, f.del]), [['src/lib/util.js', 1, 1]]);
+      assert.deepStrictEqual(m.files[0].hunks.filter(h => h.k !== 'hunk'), [{ k: 'del', text: 'one' }, { k: 'add', text: 'two' }]);
+    });
+
+    await test('file_list — teardown', async () => {
+      if (flHuman) flHuman.close();
+      if (fl?.ws && fl.ws.readyState !== 3) fl.ws.close();
+      if (flRoot) fsW.rmSync(flRoot, { recursive: true, force: true });
     });
   }
 

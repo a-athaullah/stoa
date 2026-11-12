@@ -11,6 +11,7 @@ function scrollToBottom(force) {
 async function loadOlderMessages() {
   if (loadingOlder || noMoreOlder || !oldestMessageId || !currentRoomId) return;
   loadingOlder = true;
+  const generation = feedGeneration;
 
   const container = document.getElementById('messages');
   const inner     = document.getElementById('messages-inner');
@@ -24,6 +25,8 @@ async function loadOlderMessages() {
     const msgs = await fjson(`/api/rooms/${currentRoomId}/messages?before=${oldestMessageId}&limit=50`);
 
     spinner.remove();
+    // The feed was rebuilt (room switch or fresh history) while this page loaded.
+    if (generation !== feedGeneration) { loadingOlder = false; return; }
 
     if (!msgs.length) { noMoreOlder = true; loadingOlder = false; return; }
 

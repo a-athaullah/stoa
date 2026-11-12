@@ -13,8 +13,16 @@ function _updateQueuePill(n) {
   }
 }
 
+function disconnectWS() {
+  if (!ws) return;
+  ws.onclose = null;
+  ws.onmessage = null;
+  ws.close();
+}
+
 function connectWS(roomId) {
-  if (ws) { ws.onclose = null; ws.close(); }
+  disconnectWS();
+  wsResetForRoom(roomId);
   setConnected(false);
   window.currentBusyInputMode = 'interrupt';
   _updateQueuePill(0);
@@ -24,15 +32,14 @@ function connectWS(roomId) {
   ws.onopen = () => {
     wsReconnectDelay = 3000;
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
-    ws.send(JSON.stringify({ type: 'file_list' }));
-    ws.send(JSON.stringify({ type: 'git_diff' }));
+    if (wsPanelIsOpen()) wsRequestWorkspace();
     setConnected(true);
     tasksOnSocketOpen(roomId);
   };
 
   ws.onmessage = e => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
-    handleWsMessage(msg);
+    handleWsMessage(msg, e.data);
   };
 
   ws.onclose = () => {
@@ -50,7 +57,88 @@ function runRowContainer(threadId) {
   return (typeof activeThreadId !== 'undefined' && activeThreadId === threadId) ? document.getElementById('thread-body') : null;
 }
 
-function handleWsMessage(msg) {
+// ── Feed cache ─────────────────────────────────────────────────────────────
+// The raw history frame of the last FEED_CACHE_MAX rooms opened. Switching back paints the feed
+// from it at once; when the fresh frame is byte-identical the feed is kept, otherwise rebuilt.
+// Live events of a room arrive only while it is open, so a cached frame is never patched: the
+// fresh history frame always wins.
+const FEED_CACHE_MAX = 5;
+const feedCache = new Map();
+let feedPainted = null;
+let feedGeneration = 0;
+
+function feedCachePut(roomId, raw) {
+  feedCache.delete(roomId);
+  feedCache.set(roomId, raw);
+  while (feedCache.size > FEED_CACHE_MAX) feedCache.delete(feedCache.keys().next().value);
+}
+
+// Paints the cached feed of roomId (no run state: that waits for the live frame). Returns whether it did.
+function paintCachedFeed(roomId) {
+  const raw = feedCache.get(roomId);
+  feedPainted = null;
+  if (!raw) return false;
+  let msg;
+  try { msg = JSON.parse(raw); } catch { feedCache.delete(roomId); return false; }
+  feedCachePut(roomId, raw);
+  renderHistoryFeed(msg.messages);
+  scrollToBottom(true);
+  feedPainted = { roomId, raw };
+  return true;
+}
+
+function renderHistoryFeed(messages) {
+  feedGeneration++;
+  const inner = document.getElementById('messages-inner');
+  inner.innerHTML = '';
+  oldestMessageId = null;
+  noMoreOlder = false;
+  resetDaySeparator();
+  clearThreadSummaries();
+  clearThreadPanel();
+  clearQueuePositions();
+  // Root messages in feed; broadcast rows for thread messages with broadcast_reason
+  const frag = document.createDocumentFragment();
+  messages.forEach(m => {
+    if (m.thread_id) {
+      if (m.broadcast_reason) appendFeedBroadcastRow(m, frag);
+      return;
+    }
+    appendFeedRootRow(m, frag);
+  });
+  inner.appendChild(frag);
+  attachThreadChips(messages);
+  initDayFloater();
+  if (messages.length > 0) oldestMessageId = messages[0].id;
+  noMoreOlder = messages.length < 100;
+  messages.forEach(tasksNoteMessage);
+}
+
+function applyHistoryRuns(messages) {
+  for (const m of messages) {
+    if (m.state === 'streaming' || m.state === 'requesting') {
+      setRunReply(m.id, m);
+      if (m.thread_id) {
+        if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen() && !(typeof tasksKeepThreadClosed === 'function' && tasksKeepThreadClosed(m.thread_id))) {
+          openThread(m.thread_id, null, { history: 'replace' });
+        }
+        if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
+          const tbody = document.getElementById('thread-body');
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
+        }
+      } else {
+        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
+      }
+      if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
+      else setComposerProcessing(m.id);
+    }
+  }
+  scrollToBottom(true);
+  routerOnHistory();
+  if (typeof mcpApprovalsLoad === 'function') { mcpApprovalsReset(); mcpApprovalsLoad(currentRoomId); }
+}
+
+function handleWsMessage(msg, raw) {
   if (msg.type === 'auth_error') {
     showToast(msg.message || 'Session expired. Please sign in again.', { error: true, duration: 4000 });
     // Reload in place: the login overlay shows on the same URL, so a permalink survives sign-in.
@@ -62,52 +150,14 @@ function handleWsMessage(msg) {
     return;
   }
   if (msg.type === 'history') {
-    const inner = document.getElementById('messages-inner');
-    inner.innerHTML = '';
-    oldestMessageId = null;
-    noMoreOlder = false;
-    resetDaySeparator();
-    if (typeof clearThreadSummaries === 'function') clearThreadSummaries();
-    if (typeof clearThreadPanel === 'function') clearThreadPanel();
-    clearQueuePositions();
-    // Root messages in feed; broadcast rows for thread messages with broadcast_reason
-    msg.messages.forEach(m => {
-      if (m.thread_id) {
-        if (m.broadcast_reason && typeof appendFeedBroadcastRow === 'function') appendFeedBroadcastRow(m);
-        return;
-      }
-      if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
-      else appendMessage(m);
-    });
-    // Attach thread chips and make roots clickable
-    if (typeof attachThreadChips === 'function') attachThreadChips(msg.messages);
-    initDayFloater();
-    if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
-    noMoreOlder = msg.messages.length < 100;
-    if (typeof tasksNoteMessage === 'function') msg.messages.forEach(tasksNoteMessage);
-    for (const m of msg.messages) {
-      if (m.state === 'streaming' || m.state === 'requesting') {
-        setRunReply(m.id, m);
-        if (m.thread_id) {
-          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen() && !(typeof tasksKeepThreadClosed === 'function' && tasksKeepThreadClosed(m.thread_id))) {
-            openThread(m.thread_id, null, { history: 'replace' });
-          }
-          if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
-            const tbody = document.getElementById('thread-body');
-            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
-          }
-        } else {
-          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
-        }
-        if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
-        else setComposerProcessing(m.id);
-      }
-    }
-    scrollToBottom(true);
-    routerOnHistory();
-    if (typeof mcpApprovalsLoad === 'function') { mcpApprovalsReset(); mcpApprovalsLoad(currentRoomId); }
+    const roomId = currentRoomId;
+    if (!(raw && feedPainted && feedPainted.roomId === roomId && feedPainted.raw === raw)) renderHistoryFeed(msg.messages);
+    if (raw) { feedCachePut(roomId, raw); feedPainted = { roomId, raw }; }
+    applyHistoryRuns(msg.messages);
     return;
   }
+  // Any other event can change the feed, so the next history frame is rendered in full.
+  feedPainted = null;
 
   if (msg.type === 'message_new') {
     const m = msg.message;
@@ -288,10 +338,7 @@ function handleWsMessage(msg) {
     // Update thread chip if this was a thread reply
     if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     refreshRoomList();
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'file_list' }));
-      ws.send(JSON.stringify({ type: 'git_diff' }));
-    }
+    if (wsPanelIsOpen()) wsRequestWorkspace();
     if (document.visibilityState !== 'visible') {
       const el = document.getElementById('msg-' + msg.message_id);
       const actorName = el?.querySelector('.h-msg-name')?.textContent || 'Agent';
@@ -414,11 +461,12 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'file_list') {
-    if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
+    if (msg.error) { console.warn('[ws] file_list error:', msg.error); wsTreeArrived(); return; }
     wsFileTreeData = msg.tree || [];
     wsFileTreeRoot = msg.root || '';
     wsModifiedFiles = new Set(msg.modified || []);
-    if (wsActiveView === 'files') wsRenderContent();
+    wsTreeArrived();
+    if (wsActiveView === 'files' && wsPanelIsOpen()) wsRenderContent();
     return;
   }
 
@@ -452,15 +500,8 @@ function handleWsMessage(msg) {
   if (msg.type === 'git_diff') {
     if (msg.error) { console.warn('[ws] git_diff error:', msg.error); return; }
     wsGitDiffData = msg.files || [];
-    const gitTab = document.querySelector('[data-ws-pin="git"]');
-    if (gitTab) {
-      let badge = gitTab.querySelector('.ws-git-badge');
-      if (wsGitDiffData.length) {
-        if (!badge) { badge = document.createElement('span'); badge.className = 'ws-git-badge'; gitTab.appendChild(badge); }
-        badge.textContent = wsGitDiffData.length;
-      } else if (badge) { badge.remove(); }
-    }
-    if (wsActiveView === 'git') wsRenderContent();
+    wsRenderGitBadge();
+    if (wsActiveView === 'git' && wsPanelIsOpen()) wsRenderContent();
     return;
   }
 

@@ -89,14 +89,69 @@ function triggerDownload(name, content, base64, ext) {
   URL.revokeObjectURL(url);
 }
 
+// The file tree and git diff are fetched only while the panel is open: a large workdir is
+// megabytes of JSON and tens of thousands of rows, too heavy for every room switch or reply.
+let wsTreeRoomId = null;
+let wsTreeLoaded = false;
+let wsRootWaiters = [];
+const WS_ROOT_WAIT_MS = 3000;
+
+function wsPanelIsOpen() {
+  return !!document.getElementById('workspace-panel')?.classList.contains('open');
+}
+
+function wsRequestWorkspace() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'file_list' }));
+  ws.send(JSON.stringify({ type: 'git_diff' }));
+}
+
+function wsRenderGitBadge() {
+  const gitTab = document.querySelector('[data-ws-pin="git"]');
+  if (!gitTab) return;
+  let badge = gitTab.querySelector('.ws-git-badge');
+  if (wsGitDiffData.length) {
+    if (!badge) { badge = document.createElement('span'); badge.className = 'ws-git-badge'; gitTab.appendChild(badge); }
+    badge.textContent = wsGitDiffData.length;
+  } else if (badge) { badge.remove(); }
+}
+
+function wsResetForRoom(roomId) {
+  if (wsTreeRoomId === roomId) return;
+  wsTreeRoomId = roomId;
+  wsTreeLoaded = false;
+  wsRootWaiters = [];
+  wsFileTreeData = [];
+  wsFileTreeRoot = '';
+  wsModifiedFiles = new Set();
+  wsGitDiffData = [];
+  wsRenderGitBadge();
+  if (wsPanelIsOpen() && (wsActiveView === 'files' || wsActiveView === 'git')) wsRenderContent();
+}
+
+function wsTreeArrived() {
+  wsTreeLoaded = true;
+  const waiters = wsRootWaiters;
+  wsRootWaiters = [];
+  waiters.forEach(fn => fn());
+}
+
+// Runs fn once the workdir root of the current room is known (paths are made relative to it),
+// or right away when no answer can come.
+function wsWhenRootKnown(fn) {
+  if (wsTreeLoaded || !ws || ws.readyState !== 1) { fn(); return; }
+  const roomId = wsTreeRoomId;
+  let done = false;
+  const run = () => { if (done || wsTreeRoomId !== roomId) return; done = true; fn(); };
+  wsRootWaiters.push(run);
+  setTimeout(run, WS_ROOT_WAIT_MS);
+}
+
 let wsRefreshTimer = null;
 function wsScheduleRefresh() {
   if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
   wsRefreshTimer = setTimeout(() => {
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'file_list' }));
-      ws.send(JSON.stringify({ type: 'git_diff' }));
-    }
+    if (wsPanelIsOpen()) wsRequestWorkspace();
     wsRefreshTimer = null;
   }, 5000);
 }
@@ -108,8 +163,8 @@ function toggleWorkspacePanel() {
   if (isOpen) {
     const saved = localStorage.getItem('stoa-ws-panel-width');
     if (saved) panel.style.setProperty('--ws-panel-width', saved);
-    if (ws && wsActiveView === 'files') ws.send(JSON.stringify({ type: 'file_list' }));
-    if (ws && wsActiveView === 'git') ws.send(JSON.stringify({ type: 'git_diff' }));
+    wsRequestWorkspace();
+    if (wsActiveView === 'files' || wsActiveView === 'git') wsRenderContent();
     if (!window._cm && !wsCmLoading) wsLoadCodeMirror();
   }
 }

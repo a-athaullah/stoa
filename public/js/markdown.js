@@ -361,6 +361,12 @@ function makeFileLink(codeEl, filePath) {
 }
 
 function openFileFromPath(absOrRelPath) {
+  const panel = document.getElementById('workspace-panel');
+  if (!panel.classList.contains('open')) toggleWorkspacePanel();
+  wsWhenRootKnown(() => openFileFromPathInRoot(absOrRelPath));
+}
+
+function openFileFromPathInRoot(absOrRelPath) {
   let filePath = absOrRelPath.replace(/\\/g, '/').replace(/\/+$/, '');
   let isAbsolute = /^\//.test(filePath) || /^[A-Za-z]:/.test(filePath);
   if (wsFileTreeRoot) {
@@ -370,8 +376,6 @@ function openFileFromPath(absOrRelPath) {
       isAbsolute = false;
     }
   }
-  const panel = document.getElementById('workspace-panel');
-  if (!panel.classList.contains('open')) toggleWorkspacePanel();
   const ext = wsGetExt(filePath);
   if (!ext) {
     if (ws && ws.readyState === 1) {

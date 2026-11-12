@@ -85,19 +85,25 @@ function wsRenderFileTree(container, nodes, parentPath) {
 
       const childContainer = document.createElement('div');
       childContainer.style.display = node.open ? '' : 'none';
+      const folderRelPath = parentPath ? parentPath + '/' + node.name : node.name;
+      // Children are built on first expand: a closed folder can hold thousands of rows.
+      let childrenBuilt = false;
+      const buildChildren = () => {
+        if (childrenBuilt || !node.children) return;
+        childrenBuilt = true;
+        wsRenderFileTree(childContainer, node.children, folderRelPath);
+      };
+      if (node.open) buildChildren();
 
       row.onclick = () => {
         node.open = !node.open;
+        if (node.open) buildChildren();
         chevron.classList.toggle('open', node.open);
         childContainer.style.display = node.open ? '' : 'none';
       };
-      const folderRelPath = parentPath ? parentPath + '/' + node.name : node.name;
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); wsShowCtxMenu(e.clientX, e.clientY, folderRelPath, true); });
 
       container.appendChild(row);
-      if (node.children) {
-        wsRenderFileTree(childContainer, node.children, parentPath ? parentPath + '/' + node.name : node.name);
-      }
       container.appendChild(childContainer);
     } else {
       const spacer = document.createElement('span');
