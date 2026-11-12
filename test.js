@@ -5839,7 +5839,7 @@ async function runAsyncUnitTests() {
       const w = world();
       try {
         const tools = Object.fromEntries(taskMcpTools(w.tasks).map(t => [t.name, t]));
-        assert.deepStrictEqual(Object.keys(tools).sort(), ['task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_update']);
+        assert.deepStrictEqual(Object.keys(tools).sort(), ['task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update']);
         assert.ok(!('room_id' in tools.task_create.inputSchema.properties));
         const call = (name, ident, args) => { const r = tools[name].call(ident, args); return { err: !!r.isError, body: JSON.parse(r.content[0].text) }; };
         const me = { roomId: 10, actorId: 2, subAgentId: null };
@@ -5862,6 +5862,42 @@ async function runAsyncUnitTests() {
         assert.deepStrictEqual(call('task_delete', me, { id: c.body.id }).body, { ok: true });
         w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
         assert.match(call('task_create', me, { title: 'x' }).body.error, /archived/);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks MCP task_retry — an agent retries a failed card (same core as HTTP retry); not failed, other room, archived room refused', async () => {
+      const w = world();
+      try {
+        const tools = Object.fromEntries(taskMcpTools(w.tasks).map(t => [t.name, t]));
+        const call = (name, ident, args) => { const r = tools[name].call(ident, args); return { err: !!r.isError, body: JSON.parse(r.content[0].text) }; };
+        const me = { roomId: 10, actorId: 2, subAgentId: null };
+        const a = mk(w, 'A'); mk(w, 'B');
+        call('task_move', me, { id: a.id, col: 'ongoing' });
+        const failed = call('task_fail', me, { id: a.id, reason: 'boom' }).body;
+        assert.deepStrictEqual([failed.col, failed.status, failed.fail_reason], ['backlog', 'failed', 'boom']);
+        assert.match(call('task_retry', me, { id: mk(w, 'C').id }).body.error, /only a failed task/);
+        assert.strictEqual(call('task_retry', me, {}).body.error, 'id required');
+        const other = mk(w, 'room 11 card', {}, 11);
+        w.db.prepare("UPDATE room_tasks SET status='failed', fail_reason='x' WHERE id=?").run(other.id);
+        assert.strictEqual(call('task_retry', me, { id: other.id }).body.error, 'task not found', 'id of another room');
+        assert.strictEqual(call('task_retry', { roomId: 11, actorId: 2 }, { id: other.id }).body.error, 'agent_scope_denied', 'not a participant of room 11');
+        assert.strictEqual(w.tasks.get(11, other.id).body.status, 'failed');
+        const r = call('task_retry', { roomId: 10, actorId: 2, subAgentId: 7 }, { id: a.id });
+        assert.strictEqual(r.err, false, JSON.stringify(r.body));
+        assert.deepStrictEqual([r.body.col, r.body.status, r.body.fail_reason, r.body.attempts], ['backlog', 'idle', null, failed.attempts + 1]);
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['A', 'B', 'C'], 'back in its place, not appended');
+        const ev = w.tasks.get(10, a.id).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.actor_kind, ev.actor_id, ev.meta.attempts], ['retry', 'sub_agent', 2, failed.attempts + 1]);
+        assert.strictEqual(call('task_retry', me, { id: a.id }).err, true, 'idle now: a second retry is refused');
+        // Startable again: the runner takes it first.
+        w.runner.play(10, H);
+        await tick();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
+        w.runner.stop(10, H);
+        w.db.prepare("UPDATE room_tasks SET status='failed' WHERE id=?").run(a.id);
+        w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
+        assert.match(call('task_retry', me, { id: a.id }).body.error, /archived/);
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'failed');
       } finally { w.close(); }
     });
   }
@@ -21599,7 +21635,7 @@ async function run() {
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
-      'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_update',
+      'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',

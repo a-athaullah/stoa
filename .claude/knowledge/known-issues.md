@@ -298,6 +298,7 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 - The runner's no-reply / quiet-thread check and the startup reaper skip claimed cards: no server turn carries them. Stop still returns them to Backlog.
 - `claimed_by_*` stay on the card after its run (history, like `thread_id`); `runStart` clears them, and `checkWorking` decides by them only while the card runs.
 - A running card moved by the agent working on it: `finished` = complete, `awaiting` = block, `backlog` = release (claimed cards only; a runner run would be picked again at once).
+- Retry of a failed card is open to any room participant, human or agent (HTTP `retry` + MCP `stoa__task_retry`, both `core.retry`). Not limited to the agent that failed it: the card is idle afterwards and nobody works on it yet.
 
 **Implication:** An agent that tries to call `POST /api/rooms/:id/tasks/runner/play` with agent credentials gets 403.
 

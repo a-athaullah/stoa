@@ -351,7 +351,7 @@ POST   /api/rooms/:id/tasks/:tid/move        → Task  (agent: backlog→ongoing
 POST   /api/rooms/:id/tasks/:tid/complete    → Task  (running card; agent: its runner thread or its own claim)
 POST   /api/rooms/:id/tasks/:tid/block       → Task  (running card → Awaiting)
 POST   /api/rooms/:id/tasks/:tid/fail        → Task  (running card → Backlog failed)
-POST   /api/rooms/:id/tasks/:tid/retry       → Task  (failed card → idle)
+POST   /api/rooms/:id/tasks/:tid/retry       → Task  (failed card → idle; any room participant, MCP stoa__task_retry)
 POST   /api/rooms/:id/tasks/:tid/comments    → 201 Event
 GET,PATCH  /api/rooms/:id/tasks/settings     → {settings}  (PATCH: owner only)
 POST   /api/rooms/:id/tasks/runner/play      → {settings, counts}  (owner only)

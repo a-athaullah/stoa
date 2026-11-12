@@ -331,7 +331,7 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 
 **When your turn is a task run**, the message names the card (`task_id`). The run is done when your last reply in that thread ends: the card moves to Finished, and the start of that reply becomes its `result_summary`. To end it otherwise:
 - You need a human decision: call `stoa__task_block` with the reason. The card moves to Awaiting, and the runner leaves it there until the owner confirms it.
-- You cannot finish it: call `stoa__task_fail` with the reason. The card goes back to Backlog as `failed` until someone retries it.
+- You cannot finish it: call `stoa__task_fail` with the reason. The card goes back to Backlog as `failed` until someone retries it (`stoa__task_retry`, any agent of the room or the owner).
 - To finish early with your own summary, call `stoa__task_complete`.
 - To tick checklist items, send the whole `checklist` with `stoa__task_update`, keeping each item's `id`.
 
@@ -368,7 +368,7 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 **What an agent may not do** (`403` or `409`):
 - Start the runner (play, pause, stop) or change concurrency.
 - Complete, block, fail, or move out of Ongoing a card it is not working on (a runner run in its thread, or a card it started itself). A parent agent may act on its sub-agent's card.
-- Start a card that is not idle in Backlog (a failed card needs `retry` first) or that waits on an unfinished dependency.
+- Start a card that is not idle in Backlog (a failed card needs `stoa__task_retry` first) or that waits on an unfinished dependency.
 
 The owner moves a card to `ongoing` only with Play (`409` otherwise), and a running card leaves Ongoing only through Stop, complete, block, or fail.
 
@@ -390,6 +390,7 @@ The owner moves a card to `ongoing` only with Play (`409` otherwise), and a runn
 | `stoa__task_comment` | `id`, `body` | `POST …/tasks/:tid/comments` |
 | `stoa__task_complete` | `id`, `summary?` | `POST …/tasks/:tid/complete` |
 | `stoa__task_block` / `stoa__task_fail` | `id`, `reason` | `POST …/tasks/:tid/block` / `fail` |
+| `stoa__task_retry` | `id` | `POST …/tasks/:tid/retry` |
 | `stoa__task_delete` | `id` | `DELETE …/tasks/:tid` |
 
 The tools act on the board of your session's room only. They are also available in a sub-agent session.
