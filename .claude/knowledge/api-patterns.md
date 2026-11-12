@@ -698,6 +698,11 @@ function readBody(req) {
 
 ## Response Patterns
 
+### Compression
+- `json(res, data, status)` goes through `lib/http-compress.js` `sendJson`: body ≥ 1 KB + `Accept-Encoding` allowing gzip (q > 0) → `Content-Encoding: gzip`; always `Vary: Accept-Encoding` + `Content-Length`. zlib error → plain body. Responses written by hand (`res.writeHead` + `res.end`) are not compressed; send big JSON through `json()`.
+- WebSocket: `permessage-deflate` (threshold 1 KB, no context takeover on either side). A client that does not offer it (`perMessageDeflate: false`) still connects uncompressed.
+- Room feed rows (`feed()` roots mode, join_room `history`) carry the thread summary only in `thread`; the raw `thread_*` summary columns and the completion marker (`thread_completed_at/_through`) are dropped. `GET /api/rooms/:id/messages` since-mode honours `limit` (1-100, default 50).
+
 ### Success (JSON)
 ```javascript
 res.writeHead(200, { 'Content-Type': 'application/json' });

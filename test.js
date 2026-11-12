@@ -2393,6 +2393,22 @@ function runUnitTests() {
     }
   });
 
+  // Accept-Encoding parsing for gzipped JSON responses (lib/http-compress.js).
+  const { acceptsGzip } = require('./lib/http-compress');
+  ut('acceptsGzip — gzip token, case and whitespace insensitive', () => {
+    for (const h of ['gzip', 'GZIP', 'deflate, gzip', 'gzip, deflate, br', ' br ;q=1 , gzip ; q=0.5']) assert.strictEqual(acceptsGzip(h), true, h);
+  });
+  ut('acceptsGzip — q=0 refuses, even with a * wildcard', () => {
+    for (const h of ['gzip;q=0', 'gzip;q=0.0, deflate', '*, gzip;q=0', 'gzip; q=0']) assert.strictEqual(acceptsGzip(h), false, h);
+  });
+  ut('acceptsGzip — * allows gzip unless refused; other codings alone do not', () => {
+    assert.strictEqual(acceptsGzip('*'), true);
+    assert.strictEqual(acceptsGzip('br, *;q=0.1'), true);
+    assert.strictEqual(acceptsGzip('*;q=0'), false);
+    for (const h of ['deflate', 'br', 'identity', 'x-gzip', 'gzipx', '']) assert.strictEqual(acceptsGzip(h), false, h);
+    for (const h of [undefined, null, 42, ['gzip']]) assert.strictEqual(acceptsGzip(h), false, String(h));
+  });
+
   return { p, f };
 }
 
@@ -8003,7 +8019,7 @@ async function run() {
       assert.strictEqual(evt.feed_pos, p2 + 0.5, 'completion event carries the new position');
       assert.deepStrictEqual(db.prepare('SELECT id, feed_pos FROM messages WHERE id=?').get(run.message_id), { id: run.message_id, feed_pos: p2 + 0.5 }, 'id unchanged');
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-3), [p1, p2, run.message_id]);
-      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all`)).body).slice(-3), [p1, p2, run.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all&limit=100`)).body).slice(-3), [p1, p2, run.message_id]);
     });
 
     await test('reply order — before/since cursors stay message ids, resolved to the display position (thread + feed)', async () => {
@@ -8046,7 +8062,7 @@ async function run() {
       assert.strictEqual(evt.feed_pos, s2 + 0.5);
       const woken = await wake.catch(() => null); // the parent is woken with the result (wake_parent)
       if (woken) await finish(woken, 'ro parent woken');
-      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages`)).body);
+      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages?limit=100`)).body);
       assert.deepStrictEqual(feed.slice(feed.indexOf(s1), feed.indexOf(s1) + 3), [s1, s2, m.message_id]);
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?before=${m.message_id}&limit=2`)).body), [s1, s2]);
       assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?since=${s2}`)).body)[0], m.message_id);
@@ -10841,7 +10857,7 @@ async function run() {
     await test('Agent scope — proactive message: own room 200, room without the agent 403', async () => {
       const ok = await asAgent(agA, 'POST', `/api/rooms/${roomA}/message`, { content: 'scope ok' });
       assert.strictEqual(ok.status, 200, ok.raw);
-      const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=5`);
+      const hist = await req('GET', `/api/rooms/${roomA}/messages?before=${Number.MAX_SAFE_INTEGER}&limit=5`);
       assert.ok(JSON.stringify(hist.body).includes('scope ok'), 'message must be stored');
       denied(await asAgent(agA, 'POST', `/api/rooms/${otherRoom}/message`, { content: 'intrude' }), 'message other room');
     });
@@ -19962,6 +19978,128 @@ async function run() {
     await test('message order — teardown', async () => {
       if (human) human.close();
       if (qo?.ws && qo.ws.readyState !== 3) qo.ws.close();
+    });
+  }
+
+  // Room switch payload: since-mode pages honour `limit`, the feed carries the thread summary once
+  // (in `thread`), large JSON goes out gzipped when the client asks, and join_room history travels
+  // over permessage-deflate.
+  console.log('\n[Room switch payload]');
+  {
+    const db = require('./db');
+    const zlib = require('zlib');
+    let rs = null, rsRoomId = null, rsPart = null, rsRoot = null;
+    const rsIds = [];
+    const getRaw = (urlPath, headers = {}) => new Promise((resolve, reject) => {
+      const r = http.request({ hostname: HOST, port: PORT, path: urlPath, method: 'GET', headers: { Cookie: cookieHeader(), ...headers } }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+
+    await test('room switch — setup: room with 105 root rows and one thread', async () => {
+      rs = await createOnlineTestAgent('__test-room-switch', '/tmp/stoa-test-room-switch');
+      assert.ok(rs?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__room-switch-payload__', workdir_id: rs.workdirId, participant_ids: [rs.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      rsRoomId = r.body.id;
+      testRoomIds.push(rsRoomId);
+      rsPart = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rsRoomId).id;
+      const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'complete',?)");
+      db.transaction(() => {
+        for (let i = 0; i < 105; i++) rsIds.push(Number(ins.run(rsRoomId, rsPart, `__rs_${i}__ ` + 'room switch payload row '.repeat(4), null).lastInsertRowid));
+        rsRoot = rsIds[104];
+        ins.run(rsRoomId, rsPart, '__rs_reply_a__', rsRoot);
+        ins.run(rsRoomId, rsPart, '__rs_reply_b__', rsRoot);
+      })();
+    });
+
+    await test('room switch — GET messages since-mode returns `limit` rows, pages forward, default 50, cap 100', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const ids = async (qs) => (await req('GET', `/api/rooms/${rsRoomId}/messages${qs}`)).body.map(m => m.id);
+      assert.deepStrictEqual(await ids('?limit=3'), rsIds.slice(0, 3), 'oldest 3 after since=0');
+      assert.deepStrictEqual(await ids(`?since=${rsIds[2]}&limit=3`), rsIds.slice(3, 6), 'next page from the last id');
+      assert.deepStrictEqual(await ids(''), rsIds.slice(0, 50), 'no limit → 50, not 500');
+      for (const bad of ['0', '-5', 'abc', '']) assert.deepStrictEqual(await ids(`?limit=${bad}`), rsIds.slice(0, 50), `limit=${bad} → default 50`);
+      assert.deepStrictEqual(await ids('?limit=500'), rsIds.slice(0, 100), 'capped at 100');
+      assert.strictEqual((await ids(`?since=${rsIds[100]}&scope=all&limit=100`)).length, 6, 'scope=all: 4 roots + 2 replies after the cursor');
+    });
+
+    await test('room switch — feed and join_room history carry the thread summary only in `thread`', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const dropped = ['thread_count', 'thread_last_at', 'thread_active', 'thread_participant_ids', 'thread_has_error', 'thread_sub_agent_participants', 'thread_done_at', 'thread_completed_at', 'thread_completed_through'];
+      const humanActor = db.prepare('SELECT actor_id FROM room_participants WHERE id=?').get(rsPart).actor_id;
+      const check = (row, where) => {
+        assert.ok(row, `${where}: thread root present`);
+        assert.strictEqual(row.thread.count, 2, `${where}: reply count`);
+        assert.deepStrictEqual(row.thread.participant_ids, [humanActor], `${where}: participants`);
+        assert.strictEqual(row.thread.completed, false, `${where}: open thread`);
+        for (const k of dropped) assert.ok(!(k in row), `${where}: ${k} dropped`);
+      };
+      const feed = (await req('GET', `/api/rooms/${rsRoomId}/messages?before=${rsRoot + 100}&limit=5`)).body;
+      check(feed.find(m => m.id === rsRoot), 'feed');
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      try {
+        const hist = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        const h = await hist;
+        assert.strictEqual(h.messages.length, 100, 'history = last 100 roots');
+        check(h.messages.find(m => m.id === rsRoot), 'history');
+      } finally { ws.close(); }
+    });
+
+    await test('room switch — JSON API gzipped when accepted (>1 KB), identical body; plain otherwise', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const urlPath = `/api/rooms/${rsRoomId}/messages?limit=100`;
+      const plain = await getRaw(urlPath);
+      assert.strictEqual(plain.status, 200);
+      assert.strictEqual(plain.headers['content-encoding'], undefined, 'no Accept-Encoding → identity');
+      assert.ok(plain.buf.length > 1024, 'body above the threshold');
+      assert.strictEqual(Number(plain.headers['content-length']), plain.buf.length, 'content-length = body');
+      const gz = await getRaw(urlPath, { 'Accept-Encoding': 'gzip, deflate, br' });
+      assert.strictEqual(gz.status, 200);
+      assert.strictEqual(gz.headers['content-encoding'], 'gzip');
+      assert.match(gz.headers.vary || '', /Accept-Encoding/i);
+      assert.strictEqual(gz.headers['content-type'], 'application/json');
+      assert.strictEqual(Number(gz.headers['content-length']), gz.buf.length, 'content-length = compressed size');
+      assert.ok(gz.buf.length * 3 < plain.buf.length, `compressed ${gz.buf.length} vs ${plain.buf.length}`);
+      assert.deepStrictEqual(JSON.parse(zlib.gunzipSync(gz.buf).toString()), JSON.parse(plain.buf.toString()), 'same JSON after gunzip');
+      const refused = await getRaw(urlPath, { 'Accept-Encoding': 'gzip;q=0' });
+      assert.strictEqual(refused.headers['content-encoding'], undefined, 'gzip;q=0 → identity');
+      const small = await getRaw(`/api/rooms/${rsRoomId}/threads/999999999`, { 'Accept-Encoding': 'gzip' });
+      assert.ok(small.buf.length < 1024, `small body ${small.buf.length}`);
+      assert.strictEqual(small.headers['content-encoding'], undefined, 'below 1 KB → identity');
+      assert.ok(JSON.parse(small.buf.toString()).error, 'plain JSON error body');
+    });
+
+    await test('room switch — WS negotiates permessage-deflate; history arrives compressed; a client without it still works', async () => {
+      if (!rsRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      try {
+        assert.match(ws.extensions, /permessage-deflate/, `extensions: ${ws.extensions}`);
+        const before = ws._socket.bytesRead;
+        const hist = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        const h = await hist;
+        const wire = ws._socket.bytesRead - before; // can include a few small frames sent after history
+        const json = Buffer.byteLength(JSON.stringify(h));
+        assert.ok(wire * 3 < json, `wire ${wire} bytes vs history JSON ${json}`);
+      } finally { ws.close(); }
+      const plainWs = new WebSocket(`ws://${HOST}:${PORT}`, { headers: { Cookie: cookieHeader() }, perMessageDeflate: false });
+      try {
+        await new Promise((res, rej) => { plainWs.on('open', res); plainWs.on('error', rej); });
+        assert.strictEqual(plainWs.extensions, '', 'no extension negotiated');
+        const hist = waitForWsMessage(plainWs, m => m.type === 'history');
+        plainWs.send(JSON.stringify({ type: 'join_room', room_id: rsRoomId }));
+        assert.strictEqual((await hist).messages.length, 100);
+      } finally { plainWs.close(); }
+    });
+
+    await test('room switch — teardown', async () => {
+      if (rs?.ws && rs.ws.readyState !== 3) rs.ws.close();
     });
   }
 

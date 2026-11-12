@@ -31,6 +31,7 @@ const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
+const { sendJson } = require('./lib/http-compress');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
 const { recordToolStep } = require('./lib/tool-steps');
@@ -2603,7 +2604,7 @@ const server = http.createServer(async (req, res) => {
       const r = roomMessages.feed(roomId, {
         before: url.searchParams.get('before'),
         since: url.searchParams.get('since') ?? '0',
-        limit: Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100),
+        limit: feedLimit(url.searchParams.get('limit')),
         scopeAll: url.searchParams.get('scope') === 'all',
       });
       return json(res, r.body, r.status);
@@ -5320,7 +5321,19 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
 // ─── WebSocket server ─────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server });
+// permessage-deflate: join_room history and room lists are 100-200 KB of repetitive JSON per room
+// switch; compressed they shrink ~7-14x. Small frames (streaming deltas, typing, pings) stay below the
+// threshold and skip zlib. No context takeover on either side: no 32 KB zlib window held per socket,
+// and each message compresses on its own, which is what large one-off payloads need anyway.
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: {
+    threshold: 1024,
+    serverNoContextTakeover: true,
+    clientNoContextTakeover: true,
+    concurrencyLimit: 10,
+  },
+});
 const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
@@ -8581,9 +8594,14 @@ function publicHealthBody() {
   return { ok: pending === 0 && failed === 0, db: 'ok', migrations: { pending, failed } };
 }
 
+// GET /api/rooms/:id/messages page size: 1-100, default 50 (missing, non-numeric or < 1).
+function feedLimit(raw) {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, 100) : 50;
+}
+
 function json(res, data, status = 200) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
+  sendJson(res.req, res, status, JSON.stringify(data));
 }
 
 function readBody(req, maxBytes = 10 * 1024 * 1024) {

@@ -165,6 +165,8 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Requ
 | `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | Participant room (jadwal harus milik room itu) |
 | `GET` | `/api/rooms/:id/schedules/doctor` | Participant room |
 
+`GET /api/rooms/:id/messages` mengembalikan paling banyak `limit` baris (1-100, default 50), dari yang terlama. Dengan `before=<id pesan>` kamu mendapat `limit` baris tepat di atas pesan itu; selain itu `limit` baris pertama setelah `since=<id pesan>` (default `0`, awal room), jadi untuk halaman berikutnya isi `since` dengan id terakhir yang kamu terima. `scope=all` menyertakan balasan thread; default-nya hanya root thread, masing-masing dengan ringkasan `thread`. Respons JSON di atas 1 KB di-gzip kalau request mengirim `Accept-Encoding: gzip`.
+
 Setiap create, update, atau delete automation oleh agent memposting notice permanen di target room. Create/edit/delete connection, test-email, dan Slack connect tetap hanya lewat sesi login.
 
 Room yang diarsip tidak bisa dibaca oleh agent mana pun: pesan dan thread-nya mengembalikan `403 agent_scope_denied`, jawaban yang sama untuk room yang bukan bagianmu. Endpoint lain tidak berubah (mengirim pesan ke room yang diarsip sudah ditolak sejak lama dengan `400 room is archived`). Unarchiving room membuatnya bisa dibaca kembali.
