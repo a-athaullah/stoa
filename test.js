@@ -5622,6 +5622,39 @@ async function runAsyncUnitTests() {
       assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Task #1: plain title**'), 'no code span when nothing to escape');
     });
 
+    await uta('Tasks runner — task message keeps the description as markdown but shows raw HTML in it as text', async () => {
+      const { Marked } = require('marked');
+      const md = new Marked({ breaks: true, gfm: true });
+      const desc = (description) => {
+        const msg = composeTaskMessage({ id: 5, seq: 1, title: 't', description });
+        return md.parse(msg.split('\n\n---\n')[0].split('\n\n').slice(1).join('\n\n'));
+      };
+      const tag = /<(?!\/?(p|br|strong|em|ul|ol|li|a|code|pre|blockquote|h\d|del|input|hr)\b)[a-z/]/i;
+      for (const [input, shown] of [
+        ['Line **one** <img src=x onerror=alert(1)> 😀', '&lt;img src=x onerror=alert(1)&gt;'],
+        ['<script>alert(1)</script>', '&lt;script&gt;alert(1)&lt;/script&gt;'],
+        ['a <b>bold</b> b', '&lt;b&gt;bold&lt;/b&gt;'],
+        ['<div>\n<img src=x>\n</div>', '&lt;img src=x&gt;'],
+        ['- ```\n<img src=x>', '&lt;img src=x&gt;'],
+        ['\\\\<img src=x>', '\\&lt;img src=x&gt;'],
+        ['already \\<img src=x> escaped', 'already &lt;img src=x&gt; escaped'],
+        ['\\`<img src=x>`', '&lt;img src=x&gt;'],
+        ['`a\nb` <img src=x> `c`', '&lt;img src=x&gt;'],
+        ['```html\n<div>x</div>\n```\nafter <i>y</i>', '&lt;i&gt;y&lt;/i&gt;'],
+      ]) {
+        const h = desc(input);
+        assert.ok(!tag.test(h) && !/<img|<script|<b>|<i>|<div/.test(h), `${JSON.stringify(input)} → ${h}`);
+        assert.ok(h.includes(shown), `${JSON.stringify(input)} shows ${shown}: ${h}`);
+      }
+      // Ordinary markdown is untouched, code keeps its <, a < in prose stays readable.
+      const plain = 'Check **/var** and _logs_\n\n- one\n- [docs](https://e.x/a)\n\n```html\n<div>x</div>\n```\n\nsee <https://e.x> and `a<b`; 1 < 2';
+      const msg = composeTaskMessage({ id: 5, seq: 1, title: 't', description: plain });
+      assert.ok(msg.includes('```html\n<div>x</div>\n```'), 'fenced code unchanged');
+      const h = desc(plain);
+      assert.ok(h.includes('<strong>/var</strong>') && h.includes('<em>logs</em>') && h.includes('<li><a href="https://e.x/a">docs</a></li>'), h);
+      assert.ok(h.includes('<code class="language-html">&lt;div&gt;x&lt;/div&gt;') && h.includes('<a href="https://e.x">https://e.x</a>') && h.includes('1 &lt; 2'), h);
+    });
+
     await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
       const w = world();
       try {
