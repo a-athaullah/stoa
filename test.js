@@ -17282,6 +17282,95 @@ async function run() {
     assert.strictEqual(run('tasksUi.tasks.size'), 0, 'the old room\'s events are ignored after switching');
   });
 
+  await test('task board UI — slide: the board slides over the column and hides the chat only after the slide, closes from its header button, Esc (after the drawer) or the Tasks button with focus back on it, no motion when reduced or on room open, header shows the room name', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class Node {
+      constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.listeners = {}; this.textContent = ''; this.focused = 0; this.rects = 1;
+        const set = new Set(); this.classList = { add: (...c) => c.forEach(x => set.add(x)), remove: (...c) => c.forEach(x => set.delete(x)), contains: c => set.has(c), toggle: (c, on) => { if (on === undefined ? !set.has(c) : on) set.add(c); else set.delete(c); }, has: set }; }
+      set className(v) { this.classList.has.clear(); String(v).split(' ').filter(Boolean).forEach(c => this.classList.has.add(c)); }
+      append(...c) { this.children.push(...c); } appendChild(c) { this.children.push(c); return c; } replaceChildren(...c) { this.children = c; }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; }
+      addEventListener(t, f) { this.listeners[t] = f; } after() {} focus() { this.focused++; }
+      getBoundingClientRect() { return {}; } getClientRects() { return { length: this.rects }; } closest() { return null; }
+    }
+    const els = {};
+    const reg = (id, n = new Node('div')) => { n.id = id; els[id] = n; return n; };
+    const col = reg('chat-feed-col');
+    reg('task-board');
+    const rail = reg('rsb-tasks', new Node('button'));
+    const close = reg('tb-close', new Node('button'));
+    const title = reg('tb-title-room', new Node('span'));
+    const timers = [];
+    const keydown = [];
+    let reduced = false;
+    let overlay = null;
+    const body = new Node('body');
+    const ctx = {
+      console, URLSearchParams,
+      setTimeout: (f) => { timers.push(f); return timers.length; }, clearTimeout: id => { if (id) timers[id - 1] = null; },
+      localStorage: { _v: {}, getItem(k) { return this._v[k] ?? null; }, setItem(k, v) { this._v[k] = String(v); } },
+      document: { addEventListener: (t, f) => { if (t === 'keydown') keydown.push(f); }, getElementById: id => els[id] || null, querySelector: s => (s.startsWith('.ws-') ? overlay : null), querySelectorAll: () => [],
+        createElement: t => new Node(t), createElementNS: (ns, t) => new Node(t), body, documentElement: new Node('html') },
+      window: { addEventListener() {}, matchMedia: () => ({ matches: reduced }) },
+      showToast() {}, fetch: () => new Promise(() => {}),
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/api.js', 'public/js/tasks/board.js', 'public/js/tasks/drawer.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    run('tasksRender = () => {}; tasksUi.roomId = 5');
+    const has = c => col.classList.contains(c);
+    const state = () => ['tb-mode', 'tb-shown', 'tb-covered'].filter(has).join(' ');
+    const flushTimers = () => { const fs2 = timers.splice(0); fs2.forEach(f => f && f()); };
+    const esc = target => { const e = { key: 'Escape', target, defaultPrevented: false, stopped: false, stopImmediatePropagation() { this.stopped = true; }, preventDefault() {} }; keydown.forEach(f => f(e)); return e; };
+
+    run('tasksToggleView()');
+    assert.strictEqual(state(), 'tb-mode tb-shown', 'opening slides the board in while the chat stays visible underneath');
+    assert.strictEqual(close.focused, 1, 'opening from the Tasks button moves focus to the board\'s close button');
+    flushTimers();
+    assert.strictEqual(state(), 'tb-mode tb-shown tb-covered', 'after the slide the chat underneath is hidden');
+    assert.strictEqual(ctx.localStorage.getItem('stoa-task-view'), JSON.stringify({ 5: 'board' }), 'the per-room view is stored');
+
+    close.listeners = {};
+    run('tbCloseBoard()');
+    assert.strictEqual(state(), 'tb-mode', 'closing shows the chat at once and slides the board out');
+    assert.strictEqual(rail.focused, 1, 'focus returns to the visible Tasks button');
+    run("tasksSetView('board')");
+    flushTimers();
+    assert.strictEqual(state(), 'tb-mode tb-shown tb-covered', 'reopening during the slide-out cancels the pending hide');
+
+    run('tasksOnRoomOpen({ id: 5, title: "Alpha" })');
+    assert.strictEqual(state(), 'tb-mode tb-shown tb-covered', 'room open restores the stored board view without motion');
+    run('tasksOnRoomOpen({ id: 6, title: "Beta" })');
+    assert.strictEqual(state(), '', 'a room without a stored board opens in chat at once');
+    assert.strictEqual(timers.filter(Boolean).length, 0);
+    run('tasksHeaderControls({ id: 6, title: "<b>Gamma</b>" })');
+    assert.strictEqual(title.textContent, '<b>Gamma</b>', 'a header render (rename) updates the board title as text');
+    run('tasksHeaderControls({ id: 7, title: "Other" })');
+    assert.strictEqual(title.textContent, '<b>Gamma</b>', 'another room\'s header never renames this board');
+
+    reduced = true;
+    run("tasksSetView('board', { store: false })");
+    assert.strictEqual(state(), 'tb-mode tb-shown tb-covered', 'reduced motion: no slide');
+    reduced = false;
+
+    run('tasksUi.openId = 3');
+    let e = esc(body);
+    assert.ok(e.stopped && run('tasksUi.openId') === null && run('tasksBoardOpen()'), 'Esc closes the drawer first, the board stays');
+    const threadInput = new Node('div');
+    e = esc(threadInput);
+    assert.ok(!e.stopped && run('tasksBoardOpen()'), 'Esc in the thread panel is left to the thread (stop or close)');
+    overlay = {};
+    e = esc(body);
+    assert.ok(!e.stopped && run('tasksBoardOpen()'), 'Esc with a workspace overlay open closes the overlay, not the board');
+    overlay = null;
+    rail.focused = 0;
+    e = esc(body);
+    assert.ok(e.stopped && !run('tasksBoardOpen()') && rail.focused === 1, 'Esc then closes the board, focus on the Tasks button');
+    e = esc(body);
+    assert.ok(!e.stopped, 'with the board closed Esc reaches the global handler (stop generation)');
+  });
+
   await test('task board UI — timestamps: server UTC (SQLite, no zone) is shown in local time, the year only when it differs, durations, and empty or bad values show nothing', async () => {
     const vm = require('vm');
     const fs = require('fs');

@@ -96,7 +96,7 @@ function renderChatHeader(room, participants) {
 
   header.appendChild(info);
 
-  if (room.id) header.appendChild(tasksHeaderControls());
+  if (room.id) header.appendChild(tasksHeaderControls(room));
   if (room.id) header.appendChild(buildHeaderActivityCtl(room));
 }
 
