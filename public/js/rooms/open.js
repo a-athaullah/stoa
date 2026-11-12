@@ -17,6 +17,7 @@ async function openRoom(room, opts = {}) {
   currentRoomData = room;
   currentRoomWorkdirId = room.workdir_id || null;
   routeWrite(room.id, null, opts.history || 'push');
+  tasksOnRoomOpen(room);
   clearRouteNotFound();
   clearRoomDisplay();
   clearComposerProcessing();

@@ -16333,6 +16333,89 @@ async function run() {
     assert.strictEqual(is(null, { id: 1 }), false);
   });
 
+  await test('task board UI — board belongs to the current room: snapshot and WS events of another room are ignored, a late snapshot after a room switch is dropped, moves send neighbours (never rank) and refuse Ongoing/running', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const calls = [];
+    const pending = [];
+    const toasts = [];
+    const ctx = {
+      console, setTimeout, clearTimeout, URLSearchParams,
+      localStorage: { _v: {}, getItem(k) { return this._v[k] ?? null; }, setItem(k, v) { this._v[k] = String(v); } },
+      document: { addEventListener() {}, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], activeElement: null, body: { classList: { add() {}, remove() {} }, appendChild() {} } },
+      window: { addEventListener() {}, innerWidth: 1440, innerHeight: 900 },
+      showToast: (m, o) => toasts.push([m, !!(o && o.error)]), showLogin() {},
+      currentRoomData: { id: 5, primary_actor_id: 2 }, roomParticipantsCache: { 5: [{ actor_id: 2, type: 'ai', name: 'Ara' }] }, roomSubAgentsCache: {},
+      allActors: [], isPrimaryParticipant: (p, room) => p.actor_id === room.primary_actor_id,
+      fetch: (url, opts) => { calls.push([url, (opts && opts.method) || 'GET', opts && opts.body ? JSON.parse(opts.body) : null]); return new Promise(r => pending.push(r)); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/api.js', 'public/js/tasks/board.js', 'public/js/tasks/drawer.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const val = s => JSON.parse(run('JSON.stringify(' + s + ')'));
+    const reply = (status, body) => pending.shift()({ ok: status < 300, status, json: async () => body });
+    const flush = () => new Promise(r => setTimeout(r, 0));
+    const task = (id, seq, col, rank, extra = {}) => ({ id, room_id: 5, seq, title: 'T' + seq, col, rank, status: col === 'finished' ? 'done' : 'idle', labels: [], checklist: [], blocked_by: [], waiting_on: [], ...extra });
+    const upsert = (roomId, t) => run(`tasksHandleWs({ type: 'task_upsert', room_id: ${roomId}, task: ${JSON.stringify(t)} })`);
+
+    run('tasksOnRoomOpen({ id: 5 })');
+    let p = run('tasksOnSocketOpen(5)');
+    assert.deepStrictEqual(calls.pop().slice(0, 2), ['/api/rooms/5/tasks', 'GET']);
+    reply(200, { tasks: [
+      task(1, 1, 'backlog', '0030'), task(2, 2, 'backlog', '0010'), task(3, 3, 'backlog', '0020', { waiting_on: [9] }),
+      task(4, 4, 'ongoing', '0010', { status: 'running' }), task(5, 5, 'awaiting', '0010'),
+      task(6, 6, 'finished', '0010', { finished_at: '2026-11-11 10:00:00' }), task(7, 7, 'finished', '0020', { finished_at: '2026-11-11 12:00:00' }),
+      { ...task(8, 8, 'backlog', '0000'), room_id: 6 },
+    ], settings: { concurrency: 2, running: true } });
+    await p;
+    assert.deepStrictEqual(val("tbColIds('backlog')"), [2, 3, 1], 'backlog follows server rank; the other room\'s task is dropped');
+    assert.deepStrictEqual(val("tbColIds('finished')"), [7, 6], 'finished: newest first');
+    assert.deepStrictEqual(val('tbCounts()'), { running: 1, awaiting: 1, backlog: 3 });
+    assert.strictEqual(run('tbStatusKey(tbTask(3))'), 'blocked');
+    assert.deepStrictEqual(val('tbBlockInfo(tbTask(3))'), { id: 9, hard: true }, 'a dependency that is not on the board blocks hard');
+
+    upsert(6, { ...task(1, 1, 'ongoing', '0010', { status: 'running' }), room_id: 6 });
+    run("tasksHandleWs({ type: 'task_delete', room_id: 6, task_id: 2 })");
+    assert.strictEqual(run('tbCounts().running'), 1, 'events of another room never touch this board');
+    assert.ok(run('tasksUi.tasks.has(2)'));
+    upsert(5, task(1, 1, 'ongoing', '0020', { status: 'running' }));
+    assert.strictEqual(run('tbCounts().running'), 2, 'an upsert of this room updates the counts behind the rail badge');
+
+    run("tasksMove(3, 'backlog', 0)");
+    const mv = calls.pop();
+    assert.deepStrictEqual([mv[0], mv[1]], ['/api/rooms/5/tasks/3/move', 'POST']);
+    assert.deepStrictEqual(mv[2], { col: 'backlog', before_id: 2 }, 'drop above a card: before_id = the card below, no rank');
+    assert.deepStrictEqual(val("tbColIds('backlog')"), [3, 2], 'the moved card shows at its target while the request runs');
+    reply(200, task(3, 3, 'backlog', '0005', { waiting_on: [9] }));
+    await flush(); await flush();
+    const n = calls.length;
+    run("tasksMove(3, 'backlog', 0)");
+    assert.strictEqual(calls.length, n, 'dropping a card where it already is sends nothing');
+    run("tasksMove(3, 'backlog', 5)");
+    assert.deepStrictEqual(calls.pop()[2], { col: 'backlog', after_id: 2 }, 'drop at the end: after_id = the card above');
+    reply(200, task(3, 3, 'backlog', '0040', { waiting_on: [9] }));
+    await flush(); await flush();
+    run("tasksMove(5, 'backlog', 0)");
+    assert.deepStrictEqual(calls.pop()[2], { col: 'backlog' }, 'confirming an Awaiting card sends no neighbours (server appends)');
+    reply(409, { error: 'Task changed' });
+    await flush(); await flush();
+    assert.deepStrictEqual(toasts.pop(), ['Task changed', true], 'the server error is shown');
+    assert.strictEqual(run('tasksUi.pending'), null, 'a failed move is rolled back');
+    const before = calls.length;
+    run("tasksMove(2, 'ongoing', 0)");
+    run("tasksMove(4, 'backlog', 0)");
+    assert.strictEqual(calls.length, before, 'Ongoing is runner-only and a running card cannot move');
+
+    p = run('tasksOnSocketOpen(5)');
+    run('tasksOnRoomOpen({ id: 6 })');
+    reply(200, { tasks: [task(10, 10, 'backlog', '0010')], settings: { concurrency: 1, running: false } });
+    await p;
+    assert.strictEqual(run('tasksUi.roomId'), 6);
+    assert.strictEqual(run('tasksUi.tasks.size'), 0, 'a snapshot that lands after a room switch is dropped');
+    upsert(5, task(11, 11, 'backlog', '0010'));
+    assert.strictEqual(run('tasksUi.tasks.size'), 0, 'the old room\'s events are ignored after switching');
+  });
+
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
     const vm = require('vm');
     const fs = require('fs');

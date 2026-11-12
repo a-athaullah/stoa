@@ -1,6 +1,7 @@
 // ── Room sidebar ────────────────────────────────────────────────────────────
 // Icon strip on the right edge: Search, Download, Workspace, and per-room
-// settings (Model Tier, Budget, Display, Schedules, Memory) via popovers.
+// settings (Model Tier, Budget, Display, Schedules, Memory) via popovers. Tasks swaps the feed for the
+// room's task board (tasks/board.js).
 
 let _rsbActiveBtn = null;
 let _rsbPopover = null;
@@ -178,6 +179,9 @@ function renderRoomSidebar(room, participants) {
   sidebar.appendChild(agentsBtn);
 
   sidebar.appendChild(mkDivider());
+
+  // ── Tasks (board view of this room)
+  sidebar.appendChild(tasksRailButton(mkBtn));
 
   // ── Model Tier
   const tierBtn = mkBtn('Model Tiers', ICONS.layers, () => openPopover(tierBtn, buildModelTierPanel));
