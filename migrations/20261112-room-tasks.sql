@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS room_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_room_tasks_col_rank ON room_tasks(room_id, col, rank);
 CREATE INDEX IF NOT EXISTS idx_room_tasks_status ON room_tasks(room_id, status);
+-- Foreign keys to actors / sub_agents: an actor or sub-agent delete updates its rows without a scan.
+CREATE INDEX IF NOT EXISTS idx_room_tasks_assignee ON room_tasks(assignee_actor_id) WHERE assignee_actor_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_room_tasks_assignee_sub ON room_tasks(assignee_sub_agent_id) WHERE assignee_sub_agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_room_tasks_created_by ON room_tasks(created_by_actor_id) WHERE created_by_actor_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS room_task_deps (
   task_id INTEGER NOT NULL REFERENCES room_tasks(id) ON DELETE CASCADE,
@@ -54,6 +58,8 @@ CREATE TABLE IF NOT EXISTS room_task_events (
   at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_room_task_events_task ON room_task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_room_task_events_room ON room_task_events(room_id);
+CREATE INDEX IF NOT EXISTS idx_room_task_events_actor ON room_task_events(actor_id) WHERE actor_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS room_task_settings (
   room_id INTEGER PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
