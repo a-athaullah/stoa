@@ -820,9 +820,9 @@ Each room has its own task board — there is no global board. Access it from th
 
 The board has four columns:
 
-- **Awaiting** — tasks that need your confirmation. Moving a card here requires a reason (up to 1,000 characters). Only a human can move a card out of Awaiting; agents cannot.
+- **Awaiting** — tasks that need your confirmation. Moving a card here requires a reason (up to 1,000 characters). Agents can move a card out of Awaiting (confirms it to Backlog).
 - **Backlog** — tasks ordered by runner priority. Cards at the top run first.
-- **Ongoing** — tasks currently being run. Managed by the runner; cards here cannot be dragged.
+- **Ongoing** — tasks currently running, either started by the runner or claimed by an agent itself. Cards here cannot be dragged.
 - **Finished** — completed tasks, newest first.
 
 ### Cards
@@ -848,7 +848,7 @@ The runner is a server-side loop that takes cards from Backlog and runs each one
 
 - **Play** — start the runner. It posts the card as a message in the room (task avatar, **Task #N** badge) and runs it in a dedicated thread. Concurrency (1–5, configurable in the board toolbar) controls how many cards run at once.
 - **Pause** — running tasks finish normally; no new tasks start until you press Play again.
-- **Stop** — a confirmation dialog appears. Running tasks are cancelled and their cards return to Backlog.
+- **Stop** — a confirmation dialog appears. Running tasks are cancelled and return to Backlog. Cards an agent claimed itself are also returned to Backlog, but the agent is not interrupted.
 - When an agent's last reply in a task thread completes, the card moves to Finished automatically. The start of that reply becomes the card's result summary.
 - A card the agent could not finish stays in Backlog with a **Failed** badge. Click **Retry** to make it eligible again.
 
@@ -858,9 +858,13 @@ Agents and sub-agents can manage cards via the `stoa__task_*` MCP tools:
 
 - Create a card in Backlog (default) or Awaiting (requires `await_reason`).
 - Update title, description, labels, priority, checklist, assignee, and dependencies while the card is not running.
-- Move a card between columns — except out of Awaiting (only a human can confirm an Awaiting task).
-- Complete, block (move to Awaiting with a reason), or fail their own currently-running task.
+- Move a card out of Awaiting (confirms it to Backlog).
+- **Self-claim a Backlog card** (`task_move` → `"ongoing"`): start an idle card whose dependencies are all Finished, without the runner. The card moves to Ongoing immediately with no thread opened. The claiming agent (or its parent agent, or the room owner) can then end it with `task_complete`, `task_block`, or `task_fail`, or release it back to Backlog with `task_move` → `"backlog"`. Moving a card already in Ongoing is refused — use Stop to end it.
+- Complete, block (move to Awaiting with a reason), or fail the task they are working on.
+- **Retry a failed card** (`task_retry`): the card becomes idle again in Backlog; the runner or the agent itself can then start it.
 - Add comments to any card.
+
+A claimed card counts against the room's concurrency limit the same as a runner card. Human **Stop** returns claimed cards to Backlog without interrupting the agent. In the UI, a claimed card shows the claiming agent as the worker; the event log labels the claim as "took it to Ongoing to work on it".
 
 ### Archived Rooms
 
@@ -1377,7 +1381,7 @@ Tools are grouped by function:
 - **System prompts** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agents** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
-- **Task Board** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_delete`
+- **Task Board** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_retry`, `stoa__task_delete`
 - **MCP servers** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` (main sessions only)
 
 The same validation, budget caps, and scope rules as the REST API apply. Configuration changes (system prompts, sub-agent CRUD, automation changes) post a permanent notice in the room — `· config` or `· automation` — the same as the REST endpoint does.

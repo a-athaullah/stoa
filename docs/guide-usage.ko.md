@@ -816,9 +816,9 @@ AI 에이전트가 메시지에서 파일 경로(예: `/home/user/project/file.p
 
 보드에는 네 개의 컬럼이 있습니다:
 
-- **Awaiting** — 확인이 필요한 태스크. 카드를 여기로 이동하려면 이유가 필요합니다(최대 1,000자). 에이전트는 Awaiting에서 카드를 이동할 수 없습니다 — 사람만 가능합니다.
+- **Awaiting** — 확인이 필요한 태스크. 카드를 여기로 이동하려면 이유가 필요합니다(최대 1,000자). 에이전트도 Awaiting에서 카드를 이동할 수 있습니다(Backlog로 확인).
 - **Backlog** — 러너 우선순위 순으로 정렬된 태스크. 위의 카드가 먼저 실행됩니다.
-- **Ongoing** — 현재 실행 중인 태스크. 러너가 관리하므로 드래그할 수 없습니다.
+- **Ongoing** — 현재 실행 중인 태스크로, 러너가 시작했거나 에이전트가 직접 클레임한 카드가 포함됩니다. 드래그할 수 없습니다.
 - **Finished** — 완료된 태스크, 최신순.
 
 ### 카드
@@ -844,7 +844,7 @@ AI 에이전트가 메시지에서 파일 경로(예: `/home/user/project/file.p
 
 - **Play** — 러너를 시작합니다. 카드를 룸에 메시지로 게시하고(태스크 아바타, **Task #N** 배지) 전용 스레드에서 실행합니다. 동시 실행 수(1–5, 보드 툴바에서 설정 가능)로 동시에 실행되는 카드 수를 제어합니다.
 - **Pause** — 실행 중인 태스크가 정상적으로 완료됩니다. Play를 다시 누를 때까지 새 태스크가 시작되지 않습니다.
-- **Stop** — 확인 대화상자가 나타납니다. 실행 중인 태스크가 취소되고 카드가 Backlog로 돌아갑니다.
+- **Stop** — 확인 대화상자가 나타납니다. 실행 중인 태스크가 취소되어 Backlog로 돌아갑니다. 에이전트가 직접 클레임한 카드도 Backlog로 반환되지만, 에이전트는 중단되지 않습니다.
 - 에이전트가 태스크 스레드에서 마지막 답변을 완료하면 카드가 자동으로 Finished로 이동합니다. 해당 답변의 시작 부분이 결과 요약이 됩니다.
 - 에이전트가 완료할 수 없었던 카드는 **Failed** 배지와 함께 Backlog에 남습니다. **Retry** 를 클릭하면 다시 실행 가능해집니다.
 
@@ -854,9 +854,13 @@ AI 에이전트가 메시지에서 파일 경로(예: `/home/user/project/file.p
 
 - Backlog(기본) 또는 Awaiting(`await_reason` 필수)에 카드를 생성.
 - 카드가 실행 중이 아닐 때 제목·설명·레이블·우선순위·체크리스트·담당자·의존성을 업데이트.
-- 컬럼 간 카드 이동 — Awaiting에서의 이동 제외(사람만 Awaiting 태스크를 확인 가능).
-- 현재 실행 중인 자신의 태스크를 완료, 차단(이유와 함께 Awaiting으로 이동), 또는 실패 처리.
+- Awaiting에서 카드 이동(Backlog로 확인).
+- **Backlog 카드 직접 클레임** (`task_move` → `"ongoing"`): 의존성이 모두 Finished인 유휴 카드를 러너 없이 시작합니다. 카드는 즉시 Ongoing으로 이동하며 스레드가 열리지 않습니다. 클레임한 에이전트(또는 부모 에이전트, 룸 오너)는 `task_complete`·`task_block`·`task_fail`로 종료하거나 `task_move` → `"backlog"`로 해제할 수 있습니다. 이미 Ongoing에 있는 카드 이동은 거부됩니다 — 종료하려면 Stop을 사용하세요.
+- 현재 담당하는 태스크를 완료, 차단(이유와 함께 Awaiting으로 이동), 또는 실패 처리.
+- **실패한 카드 재시도** (`task_retry`): 카드가 Backlog에서 다시 유휴 상태가 되며, 러너 또는 에이전트 자신이 시작할 수 있습니다.
 - 임의의 카드에 댓글 추가.
+
+클레임된 카드는 러너 카드와 동일하게 룸의 동시 실행 제한에 포함됩니다. 사람의 **Stop** 은 클레임된 카드를 Backlog로 반환하지만 에이전트를 중단하지 않습니다. UI에서는 클레임된 카드에 클레임한 에이전트가 작업자로 표시됩니다. 이벤트 로그에는 클레임 이벤트가 "took it to Ongoing to work on it"으로 기록됩니다.
 
 ### 보관된 룸
 
@@ -1373,7 +1377,7 @@ keep-alive 서버도 16개 슬롯 제한에 포함됩니다. 모든 16개 슬롯
 - **시스템 프롬프트** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **서브에이전트** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **자동화** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
-- **태스크 보드** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_delete`
+- **태스크 보드** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_retry`, `stoa__task_delete`
 - **MCP 서버** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update`（메인 세션 전용）
 
 유효성 검사·예산·스코프 규칙은 REST API와 동일합니다. 구성 변경(시스템 프롬프트, 서브에이전트 CRUD, 자동화 변경)은 룸에 영구 알림을 게시합니다 — `· config` 또는 `· automation` — REST 엔드포인트와 동일합니다.

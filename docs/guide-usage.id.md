@@ -821,9 +821,9 @@ Setiap room memiliki board tugas sendiri — tidak ada board global. Akses melal
 
 Board memiliki empat kolom:
 
-- **Awaiting** — task yang butuh konfirmasimu. Memindahkan card ke sini memerlukan alasan (hingga 1.000 karakter). Hanya manusia yang bisa memindahkan card keluar dari Awaiting; agent tidak bisa.
+- **Awaiting** — task yang butuh konfirmasimu. Memindahkan card ke sini memerlukan alasan (hingga 1.000 karakter). Agent bisa memindahkan card keluar dari Awaiting (konfirmasi ke Backlog).
 - **Backlog** — task diurutkan berdasarkan prioritas runner. Card di atas dijalankan lebih dulu.
-- **Ongoing** — task yang sedang dijalankan. Dikelola oleh runner; card di sini tidak bisa di-drag.
+- **Ongoing** — task yang sedang berjalan, bisa dimulai runner atau diklaim langsung oleh agent. Card di sini tidak bisa di-drag.
 - **Finished** — task yang selesai, terbaru dulu.
 
 ### Card
@@ -849,7 +849,7 @@ Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan 
 
 - **Play** — mulai runner. Runner memposting card sebagai pesan di room (avatar task, badge **Task #N**) dan menjalankannya di thread tersendiri. Konkurensi (1–5, dapat diatur di toolbar board) mengontrol berapa card yang berjalan bersamaan.
 - **Pause** — task yang berjalan selesai secara normal; task baru tidak dimulai sampai kamu menekan Play lagi.
-- **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan card-nya kembali ke Backlog.
+- **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan kembali ke Backlog. Card yang diklaim agent juga dikembalikan ke Backlog, tapi agent tidak diinterupsi.
 - Saat balasan terakhir agent di thread task selesai, card otomatis pindah ke Finished. Awal balasan itu menjadi ringkasan hasil card.
 - Card yang tidak bisa diselesaikan agent tetap di Backlog dengan badge **Failed**. Klik **Retry** untuk membuatnya bisa dijalankan kembali.
 
@@ -859,9 +859,13 @@ Agent dan sub-agent bisa mengelola card melalui tool MCP `stoa__task_*`:
 
 - Buat card di Backlog (default) atau Awaiting (memerlukan `await_reason`).
 - Perbarui judul, deskripsi, label, prioritas, checklist, assignee, dan dependensi saat card tidak sedang berjalan.
-- Pindahkan card antar kolom — kecuali keluar dari Awaiting (hanya manusia yang bisa konfirmasi task Awaiting).
-- Selesaikan, blokir (pindah ke Awaiting dengan alasan), atau gagalkan task mereka sendiri yang sedang berjalan.
+- Pindahkan card keluar dari Awaiting (konfirmasi ke Backlog).
+- **Klaim sendiri card Backlog** (`task_move` → `"ongoing"`): mulai card idle yang dependensinya sudah selesai semua, tanpa runner. Card langsung pindah ke Ongoing tanpa membuka thread. Agent yang mengklaim (atau induknya, atau pemilik room) bisa mengakhirinya dengan `task_complete`, `task_block`, atau `task_fail`, atau melepasnya kembali ke Backlog dengan `task_move` → `"backlog"`. Memindahkan card yang sudah di Ongoing akan ditolak — gunakan Stop untuk mengakhirinya.
+- Selesaikan, blokir (pindah ke Awaiting dengan alasan), atau gagalkan task yang sedang dikerjakan.
+- **Retry card yang gagal** (`task_retry`): card menjadi idle kembali di Backlog; runner atau agent itu sendiri kemudian bisa memulainya.
 - Tambahkan komentar ke card mana pun.
+
+Card yang diklaim terhitung dalam batas konkurensi room seperti card runner. **Stop** oleh manusia mengembalikan card klaiman ke Backlog tanpa menginterupsi agent. Di UI, card klaiman menampilkan agent pengklaim sebagai pengerja; log event menandai klaim sebagai "took it to Ongoing to work on it".
 
 ### Room yang Diarsip
 
@@ -1378,7 +1382,7 @@ Tool dikelompokkan berdasarkan fungsi:
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
-- **Board Tugas** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_delete`
+- **Board Tugas** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_retry`, `stoa__task_delete`
 - **Server MCP** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` (hanya sesi utama)
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.

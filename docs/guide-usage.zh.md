@@ -816,9 +816,9 @@ AI 代理在消息中提到文件路径（如 `/home/user/project/file.py`）时
 
 看板有四列：
 
-- **Awaiting** — 需要您确认的任务。将卡片移到此处需要提供原因（最多 1,000 个字符）。代理无法将卡片移出 Awaiting——只有人类可以。
+- **Awaiting** — 需要您确认的任务。将卡片移到此处需要提供原因（最多 1,000 个字符）。代理也可以将卡片移出 Awaiting（确认至 Backlog）。
 - **Backlog** — 按运行器优先级排序的任务。顶部的卡片优先运行。
-- **Ongoing** — 当前正在运行的任务。由运行器管理，此处的卡片无法拖动。
+- **Ongoing** — 当前正在运行的任务，包括运行器启动的卡片和代理自行认领的卡片。此处的卡片无法拖动。
 - **Finished** — 已完成的任务，最新的排在前面。
 
 ### 卡片
@@ -844,7 +844,7 @@ AI 代理在消息中提到文件路径（如 `/home/user/project/file.py`）时
 
 - **Play** — 启动运行器。它将卡片作为消息发布到房间（任务头像，**Task #N** 徽章），并在专用线程中运行。并发数（1–5，可在看板工具栏配置）控制同时运行的卡片数量。
 - **Pause** — 正在运行的任务正常完成；再次按 Play 之前不会启动新任务。
-- **Stop** — 出现确认对话框。正在运行的任务被取消，其卡片返回 Backlog。
+- **Stop** — 出现确认对话框。正在运行的任务被取消并返回 Backlog。代理自行认领的卡片也返回 Backlog，但代理不会被中断。
 - 当代理在任务线程中的最后一次回复完成时，卡片自动移至 Finished。该回复的开头成为卡片的结果摘要。
 - 代理无法完成的卡片留在 Backlog，带有 **Failed** 徽章。点击 **Retry** 使其重新可运行。
 
@@ -854,9 +854,13 @@ AI 代理在消息中提到文件路径（如 `/home/user/project/file.py`）时
 
 - 在 Backlog（默认）或 Awaiting（需要 `await_reason`）中创建卡片。
 - 在卡片未运行时更新标题、描述、标签、优先级、清单、负责人和依赖项。
-- 在列之间移动卡片——Awaiting 移出除外（只有人类可确认 Awaiting 任务）。
-- 完成、阻塞（附带原因移至 Awaiting）或使自己当前正在运行的任务失败。
+- 将卡片移出 Awaiting（确认至 Backlog）。
+- **自行认领 Backlog 卡片**（`task_move` → `"ongoing"`）：在无需运行器的情况下启动依赖项均已 Finished 的空闲卡片。卡片立即移至 Ongoing，不打开线程。认领的代理（或其父代理、房间所有者）可用 `task_complete`、`task_block` 或 `task_fail` 结束任务，或通过 `task_move` → `"backlog"` 释放。已在 Ongoing 中的卡片不可移动——请使用 Stop 结束。
+- 完成、阻塞（附带原因移至 Awaiting）或使正在处理的任务失败。
+- **重试失败的卡片**（`task_retry`）：卡片在 Backlog 中再次变为空闲；运行器或代理自身随后可启动它。
 - 向任意卡片添加评论。
+
+认领的卡片与运行器卡片一样计入房间的并发限制。人类执行 **Stop** 会将认领的卡片返回 Backlog，但不会中断代理。在 UI 中，认领的卡片以认领代理作为工作者显示；事件日志将认领事件标记为"took it to Ongoing to work on it"。
 
 ### 已归档房间
 
@@ -1373,7 +1377,7 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 - **系统提示** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **子代理** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **自动化** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
-- **任务看板** — `stoa__task_list`、`stoa__task_get`、`stoa__task_create`、`stoa__task_update`、`stoa__task_move`、`stoa__task_comment`、`stoa__task_complete`、`stoa__task_block`、`stoa__task_fail`、`stoa__task_delete`
+- **任务看板** — `stoa__task_list`、`stoa__task_get`、`stoa__task_create`、`stoa__task_update`、`stoa__task_move`、`stoa__task_comment`、`stoa__task_complete`、`stoa__task_block`、`stoa__task_fail`、`stoa__task_retry`、`stoa__task_delete`
 - **MCP 服务器** — `stoa__mcp_catalog`、`stoa__mcp_server_list`、`stoa__mcp_server_add`、`stoa__mcp_server_update`（仅主会话）
 
 验证、配额和作用域规则与 REST API 相同。配置变更（系统提示、子代理 CRUD、自动化变更）会在房间中发布永久通知 — `· config` 或 `· automation` — 与 REST 端点相同。
