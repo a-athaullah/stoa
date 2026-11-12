@@ -30,6 +30,7 @@ const tasksUi = {
   loaded: false,
   loadError: null,
   tasks: new Map(),
+  threadRoots: new Set(), // root message ids of runner messages in this room
   settings: { concurrency: 1, running: false },
   view: 'chat',
   filter: { assignee: new Set(), label: new Set(), status: new Set() },
@@ -218,11 +219,34 @@ function tasksOnRoomOpen(room) {
   });
   tasksUi.seq++;
   tasksUi.tasks = new Map();
+  tasksUi.threadRoots = new Set();
   tasksUi.busy = new Set();
   tasksUi.settings = { concurrency: 1, running: false };
   tasksUi.filter = { assignee: new Set(), label: new Set(), status: new Set() };
+  tbClearBoardDom();
   tasksSetView(tbStoredViews()[room.id] === 'board' ? 'board' : 'chat', { store: false, render: false });
   tasksRender();
+}
+
+// The previous room's cards must not stay in the DOM, even hidden behind the chat view.
+function tbClearBoardDom() {
+  const board = document.getElementById('tb-board');
+  if (board) board.replaceChildren();
+  const banner = document.getElementById('tb-banner');
+  if (banner) { banner.replaceChildren(); banner.hidden = true; }
+}
+
+// Root messages posted by the runner: their thread is a task thread even before task_upsert brings thread_id.
+function tasksNoteMessage(m) {
+  if (m && !m.thread_id && m.automation && Number.isInteger(m.automation.task_id) && m.room_id === tasksUi.roomId) tasksUi.threadRoots.add(m.id);
+}
+
+// The chat auto-opens a thread when an agent starts replying; a task thread must not cover the board.
+function tasksKeepThreadClosed(threadId) {
+  if (!tasksBoardOpen() || !threadId) return false;
+  if (tasksUi.threadRoots.has(threadId)) return true;
+  for (const t of tasksUi.tasks.values()) if (t.thread_id === threadId) return true;
+  return false;
 }
 
 // Called when the room socket joins (first open and every reconnect): events are not replayed.

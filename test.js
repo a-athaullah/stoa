@@ -16457,8 +16457,31 @@ async function run() {
     run("tasksMove(4, 'backlog', 0)");
     assert.strictEqual(calls.length, before, 'Ongoing is runner-only and a running card cannot move');
 
+    run("tasksNoteMessage({ id: 40, room_id: 5, thread_id: null, automation: { provider: 'task', task_id: 2, task_seq: 2 } })");
+    run("tasksNoteMessage({ id: 41, room_id: 5, thread_id: null, automation: null })");
+    upsert(5, task(4, 4, 'ongoing', '0010', { status: 'running', thread_id: 30 }));
+    run("tasksSetView('board', { store: false })");
+    assert.strictEqual(run('tasksKeepThreadClosed(40)'), true, 'board open: a runner thread does not auto-open, even before task_upsert brings thread_id');
+    assert.strictEqual(run('tasksKeepThreadClosed(30)'), true, 'board open: a known task thread does not auto-open');
+    assert.strictEqual(run('tasksKeepThreadClosed(41)'), false, 'an ordinary thread keeps auto-opening');
+    run("tasksSetView('chat', { store: false })");
+    assert.strictEqual(run('tasksKeepThreadClosed(40)'), false, 'chat view: task threads auto-open as before');
+
+    const oldCards = [{ dataset: { id: '1' } }, { dataset: { id: '2' } }];
+    const els = {
+      'tb-board': { children: oldCards, replaceChildren(...c) { this.children = c; } },
+      'tb-banner': { children: [{}], hidden: false, replaceChildren(...c) { this.children = c; } },
+    };
+    ctx.document.getElementById = id => els[id] || null;
     p = run('tasksOnSocketOpen(5)');
     run('tasksOnRoomOpen({ id: 6 })');
+    assert.strictEqual(els['tb-board'].children.length, 0, 'switching rooms removes the old room\'s card nodes, also while the chat view is shown');
+    assert.ok(els['tb-banner'].hidden && els['tb-banner'].children.length === 0);
+    assert.strictEqual(run('tasksUi.threadRoots.size'), 0);
+    run("tasksSetView('board', { store: false })");
+    assert.strictEqual(run('tasksKeepThreadClosed(40)'), false, 'the old room\'s task threads are forgotten');
+    run("tasksSetView('chat', { store: false })");
+    ctx.document.getElementById = () => null;
     reply(200, { tasks: [task(10, 10, 'backlog', '0010')], settings: { concurrency: 1, running: false } });
     await p;
     assert.strictEqual(run('tasksUi.roomId'), 6);
