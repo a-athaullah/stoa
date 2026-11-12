@@ -196,7 +196,7 @@ function tbStateBox(task) {
     return b;
   };
   const who = tbAssigneeFor(task).name;
-  if (k === 'running') return box('run', 'spin', who + ' is working on it', 'Started ' + tbHhmm(task.started_at) + ' · cannot be moved, use Stop');
+  if (k === 'running') return box('run', 'spin', who + ' is working on it', 'Started ' + tbWhen(task.started_at) + ' · cannot be moved, use Stop');
   if (k === 'failed') return box('fail', 'alert', 'Failed on attempt ' + (task.attempts || 1), task.fail_reason || '');
   if (k === 'awaiting') return box('await', 'clock', 'Waiting for your confirmation', task.await_reason || '');
   if (k === 'blocked') {
@@ -207,7 +207,7 @@ function tbStateBox(task) {
     const where = dep.status === 'failed' ? 'Failed' : TASK_COL_LABEL[dep.col];
     return box('wait', 'lock', bi.hard ? `Blocked: #${dep.seq} is in ${where}` : `Waiting for #${dep.seq} to finish`, dep.title);
   }
-  if (k === 'done' && task.finished_at) return box('', 'check', 'Finished ' + tbHhmm(task.finished_at), task.result_summary || '');
+  if (k === 'done' && task.finished_at) return box('', 'check', 'Finished ' + tbWhen(task.finished_at), task.result_summary || '');
   return null;
 }
 
@@ -276,6 +276,8 @@ function tbRenderDrawer() {
   row('Assignee', assSel);
   row('Labels', tbLabelsEditor(task, ro || busy));
   body.appendChild(meta);
+  const times = tbTimesSection(task);
+  if (times) body.appendChild(times);
 
   body.appendChild(tbDescSection(task, ro));
   body.appendChild(tbChecklistSection(task, ro || busy));
@@ -299,6 +301,21 @@ function tbRenderDrawer() {
   body.scrollTop = scroll;
 
   if (!ro) d.appendChild(tbDrawerFoot(task, k, busy));
+}
+
+// Created / Started / Finished (only those set) and the run time between Started and Finished.
+function tbTimesSection(task) {
+  const rows = [['Created', task.created_at], ['Started', task.started_at], ['Finished', task.finished_at]].filter(r => tbDate(r[1]));
+  if (!rows.length) return null;
+  const dl = tbEl('dl', 'tb-times');
+  for (const [label, iso] of rows) {
+    const dd = tbEl('dd');
+    dd.appendChild(tbTimeEl(iso, tbWhen(iso)));
+    dl.append(tbEl('dt', null, label), dd);
+  }
+  const took = tbDuration(task.started_at, task.finished_at);
+  if (took) dl.append(tbEl('dt', null, 'Took'), tbEl('dd', null, took));
+  return dl;
 }
 
 function tbLabelsEditor(task, disabled) {
@@ -506,7 +523,7 @@ function tbTabsSection(task, ro) {
       const txt = tbEl('div');
       txt.append(tbEl('b', null, who.name), document.createTextNode(' '), tbEl('span', 'tb-lt', tbEventText(ev)));
       li.appendChild(txt);
-      li.appendChild(tbEl('time', null, tbHhmm(ev.at)));
+      li.appendChild(tbTimeEl(ev.at, tbWhen(ev.at)));
       ul.appendChild(li);
     }
     ts.appendChild(ul);
@@ -522,7 +539,7 @@ function tbTabsSection(task, ro) {
       const cm = tbEl('div', 'tb-cm');
       const w = tbEl('div', 'tb-cm-who');
       const who = tbEventActor(c);
-      w.append(who.system ? tbRunnerAvatar() : tbAvatarFor(who, 20), tbEl('b', null, who.name), tbEl('time', null, tbHhmm(c.at)));
+      w.append(who.system ? tbRunnerAvatar() : tbAvatarFor(who, 20), tbEl('b', null, who.name), tbTimeEl(c.at, tbWhen(c.at)));
       cm.append(w, tbEl('p', null, c.body || ''));
       ts.appendChild(cm);
     }

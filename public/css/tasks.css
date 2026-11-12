@@ -181,6 +181,7 @@
 .tb-badge.fail { color: var(--h-red); }
 .tb-badge.await { color: var(--tb-indigo); }
 .tb-badge.ok { color: var(--h-ink-faint); }
+.tb-c-date { font-size: 11.5px; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tb-spin { animation: tb-spin 1s linear infinite; }
 @keyframes tb-spin { to { transform: rotate(360deg); } }
 .tb-prog { margin-left: auto; font-size: 11.5px; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 4px; }
@@ -223,6 +224,9 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 .tb-meta { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 10px; align-items: center; margin: 14px 0 0; font-size: 13px; }
 .tb-meta dt { color: var(--h-ink-faint); }
 .tb-meta dd { margin: 0; min-width: 0; }
+.tb-times { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 3px 10px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--h-hair-soft); font-size: 12.5px; color: var(--h-ink-mute); font-variant-numeric: tabular-nums; }
+.tb-times dt { color: var(--h-ink-faint); }
+.tb-times dd { margin: 0; min-width: 0; }
 .tb-meta select, .tb-dep-add {
   height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--h-hair-soft); background: var(--h-surface-hi);
   color: var(--h-ink); font: 13px var(--h-sans); max-width: 100%;
@@ -270,7 +274,7 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 .tb-tabs .tb-n { font-size: 11.5px; margin-left: 4px; }
 .tb-log { list-style: none; margin: 0; padding: 0; }
 .tb-log li { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 5px 0; font-size: 13px; overflow-wrap: anywhere; }
-.tb-log li time { font-size: 11.5px; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; padding-top: 2px; }
+.tb-log li time { font-size: 11.5px; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; padding-top: 2px; white-space: nowrap; }
 .tb-log li b, .tb-cm-who b { font-weight: 500; }
 .tb-lt { color: var(--h-ink-mute); }
 .tb-cm { padding: 8px 0; border-bottom: 1px solid var(--h-hair-soft); }

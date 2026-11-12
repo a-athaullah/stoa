@@ -74,9 +74,38 @@ function tbButton(cls, iconName, label) {
   tbSetBtn(b, iconName, label);
   return b;
 }
-function tbHhmm(iso) {
+// Task timestamps are SQLite UTC ('YYYY-MM-DD HH:MM:SS', no zone); tbDate parses them as UTC and these show local time.
+function tbYearOpt(d, now) { return d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }; }
+function tbDay(iso, now = new Date()) {
   const d = tbDate(iso);
-  return d ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  return d ? d.toLocaleDateString([], { day: 'numeric', month: 'short', ...tbYearOpt(d, now) }) : '';
+}
+function tbWhen(iso, now = new Date()) {
+  const d = tbDate(iso);
+  return d ? d.toLocaleString([], { day: 'numeric', month: 'short', ...tbYearOpt(d, now), hour: '2-digit', minute: '2-digit' }) : '';
+}
+function tbFull(iso) {
+  const d = tbDate(iso);
+  return d ? d.toLocaleString([], { dateStyle: 'full', timeStyle: 'short' }) : '';
+}
+function tbDuration(fromIso, toIso) {
+  const a = tbDate(fromIso), b = tbDate(toIso);
+  if (!a || !b || b < a) return '';
+  const s = Math.round((b - a) / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+  const days = Math.floor(h / 24);
+  return days + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '');
+}
+// <time> with the short text shown and the full local date and time on hover.
+function tbTimeEl(iso, text, cls) {
+  const t = tbEl('time', cls || null, text);
+  const d = tbDate(iso);
+  if (d) { t.dateTime = d.toISOString(); t.title = tbFull(iso); }
+  return t;
 }
 function tbDate(iso) {
   if (!iso) return null;
@@ -622,6 +651,8 @@ function tbRenderCard(id) {
   const foot = tbEl('div', 'tb-c-foot');
   const b = tbBadgeFor(task);
   if (b) foot.appendChild(b);
+  const doneOn = k === 'done' ? tbDay(task.finished_at) : '';
+  if (doneOn) foot.appendChild(tbTimeEl(task.finished_at, doneOn, 'tb-c-date'));
   const list = Array.isArray(task.checklist) ? task.checklist : [];
   const p = tbEl('span', 'tb-prog');
   if (list.length) p.append(tbIcon('checks'), tbEl('span', null, list.filter(x => x.done).length + '/' + list.length));
@@ -631,7 +662,7 @@ function tbRenderCard(id) {
   av.title = who.name;
   foot.appendChild(av);
   c.appendChild(foot);
-  c.setAttribute('aria-label', ['#' + task.seq, task.title, b ? b.textContent : '', who.name].filter(Boolean).join(', '));
+  c.setAttribute('aria-label', ['#' + task.seq, task.title, b ? b.textContent : '', doneOn ? 'finished ' + doneOn : '', who.name].filter(Boolean).join(', '));
   return c;
 }
 

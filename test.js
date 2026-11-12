@@ -16490,6 +16490,49 @@ async function run() {
     assert.strictEqual(run('tasksUi.tasks.size'), 0, 'the old room\'s events are ignored after switching');
   });
 
+  await test('task board UI — timestamps: server UTC (SQLite, no zone) is shown in local time, the year only when it differs, durations, and empty or bad values show nothing', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const prevTZ = process.env.TZ;
+    process.env.TZ = 'Asia/Jakarta';
+    try {
+      const ctx = { console, setTimeout, clearTimeout, localStorage: { getItem: () => null, setItem() {} },
+        document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} } };
+      vm.createContext(ctx);
+      for (const f of ['public/js/tasks/board.js', 'public/js/tasks/drawer.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+      const run = s => vm.runInContext(s, ctx);
+      const utc = Date.UTC(2026, 10, 11, 23, 30);
+      assert.strictEqual(run("tbDate('2026-11-11 23:30:00').getTime()"), utc, 'a zoneless SQLite timestamp is UTC');
+      assert.strictEqual(run("tbDate('2026-11-11T23:30:00Z').getTime()"), utc);
+      assert.strictEqual(run("tbDate('2026-11-11 23:30:00').getDate()"), 12, 'UTC+7: 23:30 UTC is the next local day');
+      assert.strictEqual(run("tbDate('2026-11-11 23:30:00').getHours()"), 6);
+      const now = "new Date(Date.UTC(2026, 10, 12, 3, 0))";
+      const opts = { day: 'numeric', month: 'short' };
+      assert.strictEqual(run(`tbDay('2026-11-11 23:30:00', ${now})`), new Date(utc).toLocaleDateString([], opts), 'Finished card: local day, no year this year');
+      assert.ok(!run(`tbDay('2026-11-11 23:30:00', ${now})`).includes('2026'));
+      assert.strictEqual(run(`tbWhen('2026-11-11 23:30:00', ${now})`), new Date(utc).toLocaleString([], { ...opts, hour: '2-digit', minute: '2-digit' }), 'log/comment: local date and time');
+      assert.ok(run(`tbDay('2025-03-01 10:00:00', ${now})`).includes('2025'), 'another year shows the year');
+      assert.ok(run(`tbWhen('2025-03-01 10:00:00', ${now})`).includes('2025'));
+      assert.strictEqual(run("tbFull('2026-11-11 23:30:00')"), new Date(utc).toLocaleString([], { dateStyle: 'full', timeStyle: 'short' }));
+      for (const v of ['null', 'undefined', "''", "'not a date'"]) {
+        assert.strictEqual(run(`tbDay(${v})`), '', 'empty date: ' + v);
+        assert.strictEqual(run(`tbWhen(${v})`), '');
+        assert.strictEqual(run(`tbFull(${v})`), '');
+        assert.strictEqual(run(`tbDuration('2026-11-11 10:00:00', ${v})`), '');
+        assert.strictEqual(run(`tbDuration(${v}, '2026-11-11 10:00:00')`), '');
+      }
+      assert.strictEqual(run("tbDuration('2026-11-11 10:00:00', '2026-11-11 10:00:45')"), '45s');
+      assert.strictEqual(run("tbDuration('2026-11-11 10:00:00', '2026-11-11 10:12:10')"), '12m');
+      assert.strictEqual(run("tbDuration('2026-11-11 10:00:00', '2026-11-11 11:05:00')"), '1h 5m');
+      assert.strictEqual(run("tbDuration('2026-11-11 10:00:00', '2026-11-11 12:00:00')"), '2h');
+      assert.strictEqual(run("tbDuration('2026-11-09 07:00:00', '2026-11-11 10:00:00')"), '2d 3h');
+      assert.strictEqual(run("tbDuration('2026-11-11 10:00:00', '2026-11-11 09:00:00')"), '', 'a finish before the start shows no duration');
+      assert.strictEqual(run('tbTimesSection({ created_at: null, started_at: null, finished_at: null })'), null, 'no dates: no times block');
+    } finally {
+      if (prevTZ === undefined) delete process.env.TZ; else process.env.TZ = prevTZ;
+    }
+  });
+
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
     const vm = require('vm');
     const fs = require('fs');
