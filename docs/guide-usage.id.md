@@ -847,7 +847,7 @@ Drag card dengan mouse untuk mengubah urutan atau berpindah kolom. Keyboard: tek
 
 Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan masing-masing dalam thread tersendiri.
 
-- **Play** — mulai runner. Runner memposting card sebagai pesan di room (avatar task, badge **Task #N**) dan menjalankannya di thread tersendiri. Konkurensi (1–5, dapat diatur di toolbar board) mengontrol berapa card yang berjalan bersamaan.
+- **Play** — mulai runner. Runner memposting pesan singkat di room (avatar task, badge **Task #N**): hanya judul card dan task id-nya. Agent membaca deskripsi dan checklist langsung dari board. Setiap card berjalan di thread tersendiri. Konkurensi (1–5, dapat diatur di toolbar board) mengontrol berapa card yang berjalan bersamaan.
 - **Pause** — task yang berjalan selesai secara normal; task baru tidak dimulai sampai kamu menekan Play lagi.
 - **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan kembali ke Backlog. Card yang diklaim agent juga dikembalikan ke Backlog, tapi agent tidak diinterupsi.
 - Saat balasan terakhir agent di thread task selesai, card otomatis pindah ke Finished. Awal balasan itu menjadi ringkasan hasil card.
