@@ -16566,6 +16566,38 @@ async function run() {
     }
   });
 
+  await test('task board UI — description: markdown renders (bold, list, link, code) but raw HTML shows as literal text, so <img>/<script> never reach the DOM', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const ctx = { console, setTimeout, clearTimeout, localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} },
+      sanitizeMarkdownHtml: h => h };
+    vm.createContext(ctx);
+    for (const f of ['public/vendor/marked.min.js', 'public/js/tasks/board.js', 'public/js/tasks/drawer.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const md = s => vm.runInContext(`tbDescriptionHtml(${JSON.stringify(s)})`, ctx);
+    const noTag = (html, tag) => assert.ok(!new RegExp('<' + tag + '[\\s>/]', 'i').test(html), `no <${tag}> element in ${html}`);
+    let h = md('Line **one** <img src=x onerror=alert(1)> 😀');
+    noTag(h, 'img');
+    assert.ok(h.includes('<strong>one</strong>'), 'bold still renders');
+    assert.ok(h.includes('&lt;img src=x onerror=alert(1)&gt;'), 'inline HTML is shown as text');
+    h = md('<script>alert(1)</script>\n\n- a\n- **b**');
+    noTag(h, 'script');
+    assert.ok(h.startsWith('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>'), 'block HTML becomes a text paragraph');
+    assert.ok(h.includes('<ul>') && h.includes('<li><strong>b</strong></li>'), 'list renders');
+    h = md('x <b>y</b> [docs](https://example.com) <https://a.example>');
+    noTag(h, 'b');
+    assert.ok(h.includes('&lt;b&gt;y&lt;/b&gt;'));
+    assert.ok(h.includes('<a href="https://example.com">docs</a>') && h.includes('<a href="https://a.example">https://a.example</a>'), 'links and autolinks still render');
+    h = md('<div>\n<img src="https://tracker.example/p.gif">\n</div>\n\npara');
+    noTag(h, 'div'); noTag(h, 'img');
+    assert.ok(h.includes('<p>para</p>'));
+    h = md('`<i>c</i>`\n\n```\n<p>\n```');
+    assert.ok(h.includes('<code>&lt;i&gt;c&lt;/i&gt;</code>'), 'code spans unchanged');
+    noTag(h, 'i'); noTag(h, 'p>\n');
+    const plain = 'Check **all** routes:\n\n1. one\n2. [two](https://x.example)\n\n> quote';
+    assert.strictEqual(md(plain), vm.runInContext(`marked.parse(${JSON.stringify(plain)})`, ctx), 'markdown without HTML renders exactly as before');
+  });
+
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
     const vm = require('vm');
     const fs = require('fs');
