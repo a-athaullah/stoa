@@ -221,7 +221,7 @@ Each room has a kanban board with four columns: `awaiting`, `backlog`, `ongoing`
 ### Design decisions
 - Fractional rank (8-byte REAL) + periodic rebalance; no collisions at normal use.
 - Task message uses provider `task` so the feed can render it with a Task badge.
-- `< ` in a code span inside the task description → `\<` in the composed message (inertHtml) to prevent Claude treating it as an HTML tag.
+- Task message (`composeTaskMessage`) = `[@label ]**Execute task #N: <title>**` + `(task_id X · read the card with stoa__task_get …)`, translated per agent language; `agent` mode appends `· ends only with stoa__task_complete / _block / _fail`. No description / checklist (owner decision 2026-11-12: the board is the source; the agent reads it with `task_get`). The title goes through `literal()` (code span) so markdown/HTML in it shows as typed. The completion rules for both modes live in the `task_get` / `task_complete` / `task_block` / `task_fail` tool descriptions (`RUN_END` in lib/room-tasks.js), keyed off that marker.
 - Quick-add from the Awaiting column auto-sets `await_reason = 'Added to Awaiting by hand'`.
 - Dependencies: runner skips a blocked card without moving it; card shows `blocked` status badge.
 
