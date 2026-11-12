@@ -14,6 +14,7 @@ const db = require('./db');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
 const { createRoomTasks, taskMcpTools } = require('./lib/room-tasks');
+const { createThreadCompleteDefer } = require('./lib/thread-complete-defer');
 const { createRoomTasksRunner } = require('./lib/room-tasks-runner');
 const { createRoomMessages } = require('./lib/room-messages');
 const { stripCodeSpans } = require('./lib/code-spans'); // a mention inside markdown code is an example, not a trigger
@@ -1669,15 +1670,21 @@ const mcpUpstreams = createUpstreamManager({
 // Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
+// Called from inside an agent turn, the mark waits for the turn to end (lib/thread-complete-defer.js), so
+// the turn's closing reply does not reopen the thread. activeSequences/roomMessages exist by call time.
+const threadCompleteDefer = createThreadCompleteDefer({
+  turnActive: (roomId, rootId) => activeSequences.has(`${roomId}:${rootId}`),
+  complete: (roomId, rootId) => {
+    const r = roomMessages.setThreadCompleted(roomId, rootId, true);
+    if (r.status === 200) broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
+  },
+});
 const roomTasks = createRoomTasks({
   db, broadcast,
   primaryActorId: (roomId) => roomPrimaryActorId(roomId),
   // completion_mode 'agent': stoa__task_complete also marks the card's thread complete, the same write and
   // event as the owner's PUT /threads/:id/complete. roomMessages is created below; only called at runtime.
-  completeThread: (roomId, rootId) => {
-    const r = roomMessages.setThreadCompleted(roomId, rootId, true);
-    if (r.status === 200) broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
-  },
+  completeThread: (roomId, rootId, opts) => threadCompleteDefer.request(roomId, rootId, opts),
 });
 // Task board runner (lib/room-tasks-runner.js). The callbacks run after boot, so the run machinery
 // defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
@@ -4861,6 +4868,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (typeof data.completed !== 'boolean') return json(res, { error: 'completed must be a boolean' }, 400);
     const r = roomMessages.setThreadCompleted(roomId, rootId, data.completed);
     if (r.status !== 200) return json(res, r.body, r.status);
+    threadCompleteDefer.cancel(roomId, rootId);
     broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
     return json(res, r.body);
   }
@@ -7567,6 +7575,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     }
   } finally {
     activeSequences.delete(seqKey);
+    if (threadId) threadCompleteDefer.turnEnded(roomId, threadId);
     roomIdleBus.emit('idle', roomId);
   }
 }
