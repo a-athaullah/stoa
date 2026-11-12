@@ -200,7 +200,10 @@ Each room has a kanban board with four columns: `awaiting`, `backlog`, `ongoing`
 ### Runner flow
 1. `play(roomId, who)` — humanOnly; sets `running=1` in `room_task_settings`, kicks `safeTick`.
 2. `safeTick` — picks Backlog candidates up to concurrency; skips cards with unfinished deps (`waiting_on` list); starts each card as a thread message (provider `task`, badge `Task #<seq>`), sets status `running`.
-3. Card ends when the agent's last reply in that thread completes (`threadBusy` → false after `settleMs`). The start of that reply becomes `result_summary`; card moves to `finished`.
+3. How a card ends = the room's `completion_mode` (`room_task_settings`, read live on every `checkRuns`):
+   - `quiet` (default): the agent's last reply in that thread completes (`threadBusy` → false for `settleMs`). The start of that reply becomes `result_summary`; card moves to `finished`.
+   - `agent`: a quiet thread ends nothing; only `task_complete` (Finished + thread marked complete via `completeThread` → `roomMessages.setThreadCompleted` + `thread_status`), `task_block` (Awaiting) or `task_fail` (failed). Only the card's agent decides (`checkWorking`: target = assignee or primary, sub-agent only the assigned one). Safety nets counted from the start of the quiet spell: `nudgeMs` (`TASK_DECIDE_NUDGE_MS`, default 10 min) → one reminder in the card's thread (dispatch with `threadId`); `maxMs` (`TASK_DECIDE_MAX_MS`, default 3 h) → `run.block` to Awaiting, reason `AGENT_UNDECIDED`, actor system, pinned to the thread. The reminder's own turn does not reset the `maxMs` clock (loop safety); any other activity (thread busy, or a new agent reply between polls) resets both.
+   - Switching mode drops the other mode's clock; already-posted task messages keep the old wording. `noReplyMs` applies in both modes.
 4. `pause(roomId, who)` — humanOnly; sets `running=0`; in-flight cards finish naturally.
 5. `stop(roomId, who)` — humanOnly; sets `running=0`; calls `abortThread` for each running card; calls `returnToBacklog` (status cleared).
 6. Reap on server startup: runner cards (`status='running'`, no `claimed_by_actor_id`) are returned to Backlog with reason `server restart`. A card an agent claimed stays running (no server turn carries it); the no-reply / quiet-thread check skips it too. It still takes a concurrency slot.
@@ -211,7 +214,8 @@ Each room has a kanban board with four columns: `awaiting`, `backlog`, `ongoing`
 - Moving out of `awaiting`: owner or agent (event `confirmed`, actor recorded). Owner decision 2026-11-12.
 - A running card: the agent working on it (runner thread, or its own claim) may move it to `finished` (= complete), `awaiting` (= block) or, for its own claim, `backlog` (= release). The owner uses Stop.
 - Runner controls (play/pause/stop) and concurrency change: human-only.
-- Complete/block/fail: only the agent working on that card (a message in its runner thread, or its claimer; a parent agent for its sub-agent's claim). The owner always.
+- Complete/block/fail: only the agent working on that card (a message in its runner thread, or its claimer; a parent agent for its sub-agent's claim). The owner always. `completion_mode='agent'` runner card: only the runner target (assignee / primary) or the assigned sub-agent; other agents in the thread → 403.
+- `completion_mode` change (`PATCH /tasks/settings`): human-only, `'quiet' | 'agent'`.
 - Archived room: 423 for all writes except runner pause/stop (halt flag).
 
 ### Design decisions
