@@ -8644,7 +8644,8 @@ server.listen(PORT, () => {
   const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
   if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
 
-  // Task board: no turn survives a restart, so running cards go back to Backlog and runners stay off.
+  // Task board: no turn survives a restart, so runner cards go back to Backlog and runners stay off
+  // (a card an agent started itself stays running: no server turn carries it).
   try {
     const reaped = roomTasksRunner.reap();
     if (reaped.returned || reaped.runnersOff) console.log(`[tasks] startup: ${reaped.returned} running task(s) back to Backlog, ${reaped.runnersOff} runner(s) off`);

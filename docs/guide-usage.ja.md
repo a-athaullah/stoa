@@ -816,9 +816,9 @@ AIエージェントがメッセージ内でファイルパス（例：`/home/us
 
 ボードには4つのカラムがあります:
 
-- **Awaiting** — あなたの確認が必要なタスク。カードをここに移動するには理由が必要です（最大1,000文字）。エージェントはAwaitingからカードを移動できません — 人間のみ可能です。
+- **Awaiting** — あなたの確認が必要なタスク。カードをここに移動するには理由が必要です（最大1,000文字）。エージェントもAwaitingからカードを移動できます（Backlogに確認）。
 - **Backlog** — ランナーの優先度順に並んだタスク。上のカードから先に実行されます。
-- **Ongoing** — 現在実行中のタスク。ランナーが管理するため、ドラッグできません。
+- **Ongoing** — 現在実行中のタスク。ランナーが開始したカードとエージェント自身がクレームしたカードが含まれます。ドラッグできません。
 - **Finished** — 完了したタスク、新しい順。
 
 ### カード
@@ -844,7 +844,7 @@ AIエージェントがメッセージ内でファイルパス（例：`/home/us
 
 - **Play** — ランナーを開始します。ルームにカードをメッセージとして投稿し（タスクアバター、**Task #N** バッジ）、専用スレッドで実行します。同時実行数（1〜5、ボードツールバーで設定可能）で同時に実行するカード数を制御します。
 - **Pause** — 実行中のタスクは正常に終了します。再びPlayを押すまで新しいタスクは開始されません。
-- **Stop** — 確認ダイアログが表示されます。実行中のタスクはキャンセルされ、カードはBacklogに戻ります。
+- **Stop** — 確認ダイアログが表示されます。実行中のタスクはキャンセルされてBacklogに戻ります。エージェント自身がクレームしたカードもBacklogに戻りますが、エージェントは中断されません。
 - エージェントのタスクスレッドへの最後の返信が完了すると、カードは自動的にFinishedに移動します。その返信の冒頭が結果サマリーになります。
 - エージェントが完了できなかったカードはBacklogに **Failed** バッジで残ります。**Retry** をクリックすると再実行可能になります。
 
@@ -854,9 +854,13 @@ AIエージェントがメッセージ内でファイルパス（例：`/home/us
 
 - Backlog（デフォルト）またはAwaiting（`await_reason` 必須）にカードを作成。
 - カードが実行中でないときに、タイトル・説明・ラベル・優先度・チェックリスト・担当者・依存関係を更新。
-- カラム間でカードを移動 — Awaitingからの移動を除く（人間のみ確認可能）。
-- 自分が現在実行中のタスクを完了、ブロック（理由を付けてAwaitingに移動）、または失敗にする。
+- Awaitingからカードを移動（Backlogに確認）。
+- **Backlogカードを自分で開始する** (`task_move` → `"ongoing"`): 依存関係がすべてFinishedになっているアイドル状態のカードをランナーなしで開始します。カードはすぐにOngoingに移動し、スレッドは開かれません。クレームしたエージェント（または親エージェント、ルームオーナー）は、`task_complete`・`task_block`・`task_fail` で終了するか、`task_move` → `"backlog"` でリリースできます。すでにOngoingにあるカードの移動は拒否されます — 終了するにはStopを使用してください。
+- 自分が担当するタスクを完了、ブロック（理由を付けてAwaitingに移動）、または失敗にする。
+- **失敗したカードをリトライする** (`task_retry`): カードはBacklogで再びアイドル状態になり、ランナーまたはエージェント自身が開始できます。
 - 任意のカードにコメントを追加。
+
+クレームされたカードは、ランナーカードと同様にルームの同時実行数制限にカウントされます。人間による **Stop** はクレームされたカードをBacklogに戻しますが、エージェントは中断されません。UIでは、クレームされたカードにクレームしたエージェントが作業者として表示されます。イベントログでは、クレームイベントが「took it to Ongoing to work on it」と記録されます。
 
 ### アーカイブ済みルーム
 
@@ -1373,7 +1377,7 @@ keep-alive サーバーも 16 スロットの制限に含まれます。16 ス�
 - **システムプロンプト** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **サブエージェント** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **オートメーション** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
-- **タスクボード** — `stoa__task_list`、`stoa__task_get`、`stoa__task_create`、`stoa__task_update`、`stoa__task_move`、`stoa__task_comment`、`stoa__task_complete`、`stoa__task_block`、`stoa__task_fail`、`stoa__task_delete`
+- **タスクボード** — `stoa__task_list`、`stoa__task_get`、`stoa__task_create`、`stoa__task_update`、`stoa__task_move`、`stoa__task_comment`、`stoa__task_complete`、`stoa__task_block`、`stoa__task_fail`、`stoa__task_retry`、`stoa__task_delete`
 - **MCP サーバー** — `stoa__mcp_catalog`、`stoa__mcp_server_list`、`stoa__mcp_server_add`、`stoa__mcp_server_update`（メインセッションのみ）
 
 バリデーション・バジェット・スコープのルールは REST API と同じです。設定変更（システムプロンプト、サブエージェントの CRUD、オートメーション変更）はルームに永続的なノーティスを投稿します — `· config` または `· automation` — REST エンドポイントと同様です。

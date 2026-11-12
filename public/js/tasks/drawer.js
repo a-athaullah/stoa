@@ -165,6 +165,7 @@ function tbEventText(ev) {
     case 'edited': return 'edited the ' + (Array.isArray(m.fields) && m.fields.length ? m.fields.join(', ') : 'card');
     case 'moved': return m.from_col && m.from_col === m.to_col ? 'reordered it in ' + col(m.to_col) : 'moved it to ' + col(m.to_col);
     case 'started': return 'started it in a new thread';
+    case 'claimed': return 'took it to Ongoing to work on it';
     case 'completed': return 'marked it done';
     case 'failed': return 'failed' + (reason ? ': ' + reason : '');
     case 'blocked': return 'blocked it' + (reason ? ': ' + reason : '');
@@ -195,7 +196,7 @@ function tbStateBox(task) {
     b.appendChild(txt);
     return b;
   };
-  const who = tbAssigneeFor(task).name;
+  const who = tbWorkerFor(task).name;
   if (k === 'running') return box('run', 'spin', who + ' is working on it', 'Started ' + tbWhen(task.started_at) + ' · cannot be moved, use Stop');
   if (k === 'failed') return box('fail', 'alert', 'Failed on attempt ' + (task.attempts || 1), task.fail_reason || '');
   if (k === 'awaiting') return box('await', 'clock', 'Waiting for your confirmation', task.await_reason || '');
@@ -293,7 +294,8 @@ function tbRenderDrawer() {
     if (typeof openThread === 'function') openThread(threadId);
   });
   th.appendChild(tb);
-  if (!task.thread_id) th.appendChild(tbEl('div', 'tb-note', 'The thread is created when the task starts.'));
+  const claimer = task.col !== 'backlog' ? tbClaimerFor(task) : null;
+  if (!task.thread_id) th.appendChild(tbEl('div', 'tb-note', claimer ? claimer.name + ' took this task without a thread.' : 'The thread is created when the task starts.'));
   body.appendChild(th);
 
   body.appendChild(tbTabsSection(task, ro));

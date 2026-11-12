@@ -207,6 +207,23 @@ function tbAssigneeFor(task) {
   return tbAssignees().find(a => a.key === key) || { key, name: key.startsWith('s:') ? 'Sub-agent' : 'Agent' };
 }
 
+// The agent that took the card into Ongoing itself (no runner thread); null for runner cards.
+function tbClaimerFor(task) {
+  if (!task || task.claimed_by_actor_id == null) return null;
+  const rid = tasksUi.roomId;
+  if (task.claimed_by_sub_agent_id != null) {
+    const sa = (roomSubAgentsCache[rid] || []).find(s => s.id === task.claimed_by_sub_agent_id);
+    return sa ? { name: sa.label, sub: sa } : { name: 'Sub-agent' };
+  }
+  const a = (roomParticipantsCache[rid] || []).find(p => p.actor_id === task.claimed_by_actor_id)
+    || allActors.find(x => x.id === task.claimed_by_actor_id);
+  return a ? { name: a.name, actor: a } : { name: 'Agent' };
+}
+// Who is working on it now: the claiming agent while a claimed card runs, otherwise the assignee.
+function tbWorkerFor(task) {
+  return (task.status === 'running' && tbClaimerFor(task)) || tbAssigneeFor(task);
+}
+
 function tbAvatarFor(entry, size) {
   if (entry && entry.sub) {
     const sa = entry.sub;
@@ -657,7 +674,7 @@ function tbRenderCard(id) {
   const p = tbEl('span', 'tb-prog');
   if (list.length) p.append(tbIcon('checks'), tbEl('span', null, list.filter(x => x.done).length + '/' + list.length));
   foot.appendChild(p);
-  const who = tbAssigneeFor(task);
+  const who = tbWorkerFor(task);
   const av = tbAvatarFor(who, 20);
   av.title = who.name;
   foot.appendChild(av);
@@ -859,7 +876,7 @@ function tbSetConcurrency(delta) {
   }, 350);
 }
 
-// Stop cancels the turns of running tasks, so it always asks first and names what will be stopped.
+// Stop cancels runner turns and sends every running card back to Backlog, so it always asks first and names what will be stopped.
 function tbOnStop() {
   const runningIds = [...tasksUi.tasks.values()].filter(t => t.status === 'running').sort(tbRankCmp).map(t => t.id);
   if (!runningIds.length) return;
@@ -869,7 +886,11 @@ function tbOnStop() {
   dlg.setAttribute('aria-describedby', 'tb-stop-desc');
   const h = tbEl('h2', null, 'Stop the runner?');
   h.id = 'tb-stop-title';
-  const p = tbEl('p', null, `${n === 1 ? 'The running task' : `The ${n} running tasks`} will be stopped too. ${n === 1 ? 'Its turn is' : 'Their turns are'} cancelled and the ${n === 1 ? 'card goes' : 'cards go'} back to Backlog.`);
+  const claimed = runningIds.filter(id => tbTask(id).claimed_by_actor_id != null).length;
+  const r = n - claimed;
+  const turns = !r ? '' : r === n ? (n === 1 ? ' Its turn is cancelled.' : ' Their turns are cancelled.') : (r === 1 ? ' The runner turn is cancelled.' : ` The ${r} runner turns are cancelled.`);
+  const own = !claimed ? '' : claimed === 1 ? ' An agent that took a card itself is not interrupted, only its card moves.' : ' Agents that took cards themselves are not interrupted, only their cards move.';
+  const p = tbEl('p', null, `${n === 1 ? 'The running task' : `The ${n} running tasks`} will be stopped too and ${n === 1 ? 'goes' : 'go'} back to Backlog.${turns}${own}`);
   p.id = 'tb-stop-desc';
   const ul = tbEl('ul', 'tb-dialog-list');
   for (const id of runningIds.slice(0, 5)) {

@@ -302,7 +302,9 @@ CREATE TABLE room_tasks (
   message_id INTEGER,
   result_summary TEXT,
   created_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
-  created_at TEXT, started_at TEXT, finished_at TEXT, updated_at TEXT
+  created_at TEXT, started_at TEXT, finished_at TEXT, updated_at TEXT,
+  claimed_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,         -- agent that started it itself
+  claimed_by_sub_agent_id INTEGER REFERENCES sub_agents(id) ON DELETE SET NULL  -- (20261112-task-claimed-by.sql)
 );
 
 -- Dependency edges (blocked_by list in the API)
