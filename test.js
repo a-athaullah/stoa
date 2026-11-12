@@ -5748,18 +5748,46 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks runner — sub-agent assignee: message starts with @label, target is its parent', async () => {
+    await uta('Tasks runner — sub-agent assignee: message starts with @label, target is its parent; message is title + task_id only', async () => {
       const w = world();
       try {
-        const t = mk(w, 'Probe disks', { assignee_sub_agent_id: 7, description: 'Check **/var**', checklist: [{ text: 'df -h' }] });
+        const desc = 'Check **/var** ' + 'disk usage on every host. '.repeat(40);
+        const t = mk(w, 'Probe disks', { assignee_sub_agent_id: 7, description: desc, checklist: [{ text: 'df -h on web-01' }, { text: 'du -sh /var/log' }] });
         w.runner.play(10, H);
         await tick();
         const d = w.deps.dispatched[0];
         assert.strictEqual(d.automation.target_actor_id, 2);
-        assert.ok(d.text.startsWith('@probe **Task #1: Probe disks**'), d.text);
-        assert.ok(d.text.includes('Check **/var**') && d.text.includes('- [ ] df -h') && d.text.includes(`task_id ${t.id}`) && d.text.includes('stoa__task_block'));
-        assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'id' }).includes('Kerjakan task ini'));
-        assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'constructor' }).includes('Work on this task'), 'unknown lang → en');
+        assert.strictEqual(d.text, `@probe **Execute task #1: Probe disks**\n(task_id ${t.id} · read the card with stoa__task_get before you start)`);
+        // The card body stays on the board: none of the description / checklist reaches the message.
+        assert.ok(!d.text.includes('/var') && !d.text.includes('df -h') && !d.text.includes('du -sh') && !d.text.includes('Checklist'), d.text);
+        assert.ok(d.text.length < 150, `short message (${d.text.length} chars) for a ${desc.length}-char description`);
+        // The agent can read what was left out with task_get.
+        const got = w.tasks.get(10, t.id).body;
+        assert.deepStrictEqual([got.description, got.checklist.map(c => c.text)], [desc, ['df -h on web-01', 'du -sh /var/log']]);
+        const id = composeTaskMessage({ ...t, seq: 3 }, { lang: 'id' });
+        assert.strictEqual(id, `**Kerjakan task #3: Probe disks**\n(task_id ${t.id} · baca kartunya dengan stoa__task_get sebelum mulai)`);
+        for (const lang of ['ja', 'ko', 'zh']) {
+          const m = composeTaskMessage({ ...t, seq: 3 }, { lang, mode: 'agent' });
+          assert.ok(m.includes('#3') && m.includes('Probe disks') && m.includes(`task_id ${t.id}`) && m.includes('stoa__task_get') && m.includes('stoa__task_complete / _block / _fail'), `${lang}: ${m}`);
+          assert.notStrictEqual(m, composeTaskMessage({ ...t, seq: 3 }, { mode: 'agent' }), `${lang} is translated`);
+        }
+        assert.strictEqual(composeTaskMessage({ ...t, seq: 3 }, { lang: 'constructor' }), composeTaskMessage({ ...t, seq: 3 }), 'unknown lang → en');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks MCP tools — task_get / complete / block / fail descriptions carry how a runner task ends in both completion modes', async () => {
+      const w = world();
+      try {
+        const tools = Object.fromEntries(taskMcpTools(w.tasks).map(t => [t.name, t.description]));
+        assert.ok(tools.task_get.includes('read it here (description, checklist) before you start'), tools.task_get);
+        for (const name of ['task_get', 'task_complete', 'task_block', 'task_fail']) {
+          const dsc = tools[name];
+          // quiet mode: the last reply ends it; agent mode keys off the marker the agent-mode message carries.
+          assert.ok(dsc.includes('by default your last reply in its thread finishes it'), name);
+          const marker = composeTaskMessage({ id: 1, seq: 1, title: 't' }, { mode: 'agent' }).split(' · ').pop().slice(0, -1);
+          assert.ok(dsc.includes(`says it ends only with stoa__task_complete / _block / _fail`) && marker === 'ends only with stoa__task_complete / _block / _fail', `${name} matches the message marker "${marker}"`);
+          assert.ok(dsc.includes('your last reply does NOT end it') && dsc.includes('never while a background job still runs') && dsc.includes('stoa__task_update'), name);
+        }
       } finally { w.close(); }
     });
 
@@ -5803,7 +5831,7 @@ async function runAsyncUnitTests() {
         w.runner.play(10, H);
         await tick();
         const text = w.deps.dispatched[0].text;
-        assert.ok(text.includes('The task ends only when you call stoa__task_complete') && !text.includes('Done = your last reply'), text);
+        assert.strictEqual(text, `**Execute task #${a.seq}: Deploy**\n(task_id ${a.id} · read the card with stoa__task_get before you start · ends only with stoa__task_complete / _block / _fail)`);
         w.reply(a.id, 2, 'deploy started in the background, waiting for it');
         for (let i = 0; i < 4; i++) { w.runner.checkRuns(); await sleepT(5); }
         const t = w.tasks.get(10, a.id).body;
@@ -6044,7 +6072,7 @@ async function runAsyncUnitTests() {
         const a = mk(w, 'A');
         w.runner.play(10, H);
         await tick();
-        assert.ok(w.deps.dispatched[0].text.includes('Done = your last reply'), 'quiet wording unchanged');
+        assert.ok(!w.deps.dispatched[0].text.includes('ends only with'), 'quiet message has no agent-mode marker');
         w.reply(a.id, 2, 'interim');
         w.runner.checkRuns(); // quiet clock started
         agentMode(w);
@@ -6079,59 +6107,26 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks runner — task message shows title / checklist text literally once rendered as chat markdown, agent gets it byte-for-byte', async () => {
+    await uta('Tasks runner — task message shows the title literally once rendered as chat markdown, agent gets it byte-for-byte', async () => {
       const { Marked } = require('marked');
       const md = new Marked({ breaks: true, gfm: true });
       const text = (html) => html.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').trim();
       const titles = ['Backlog A <img src=x onerror=alert(1)>', '**x** and _y_ ~~z~~', 'run `npm test` & [link](http://e.x)', '`edge`', 'a ``double`` b', 'plain title'];
       for (const title of titles) {
-        const msg = composeTaskMessage({ id: 5, seq: 1, title, description: '', checklist: [{ text: title, done: false }] });
-        const [head, list] = msg.split('\n\n');
-        const h = md.parse(head);
-        assert.ok(!/<img|<em|<del|<a /.test(h) && (h.match(/<strong>/g) || []).length === 1, `${title} → ${h}`);
-        assert.strictEqual(text(h), `Task #1: ${title}`, `rendered head of ${title}`);
-        const l = md.parse(list);
-        assert.ok(!/<img|<em|<del|<a |<strong>/.test(l), `${title} → ${l}`);
-        assert.strictEqual(text(l).split('\n').pop().trim(), title, `rendered checklist item of ${title}`);
-        // What the agent reads: the exact title inside (at most) one code span.
-        const raw = head.slice('**Task #1: '.length, -2);
-        const m = raw.match(/^(`+)( ?)([\s\S]*)\2\1$/);
-        assert.strictEqual(m ? m[3] : raw, title);
+        for (const mode of ['quiet', 'agent']) {
+          const msg = composeTaskMessage({ id: 5, seq: 1, title }, { mode });
+          const [head, tail] = msg.split('\n');
+          const h = md.parse(msg).replace(/<br>\n?/g, '\n');
+          assert.ok(!/<img|<em|<del|<a /.test(h) && (h.match(/<strong>/g) || []).length === 1, `${title} → ${h}`);
+          assert.strictEqual(text(h).split('\n')[0], `Execute task #1: ${title}`, `rendered head of ${title}`);
+          assert.strictEqual(text(h).split('\n')[1], tail, `the task_id line renders as typed (${mode})`);
+          // What the agent reads: the exact title inside (at most) one code span.
+          const raw = head.slice('**Execute task #1: '.length, -2);
+          const m = raw.match(/^(`+)( ?)([\s\S]*)\2\1$/);
+          assert.strictEqual(m ? m[3] : raw, title);
+        }
       }
-      assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Task #1: plain title**'), 'no code span when nothing to escape');
-    });
-
-    await uta('Tasks runner — task message keeps the description as markdown but shows raw HTML in it as text', async () => {
-      const { Marked } = require('marked');
-      const md = new Marked({ breaks: true, gfm: true });
-      const desc = (description) => {
-        const msg = composeTaskMessage({ id: 5, seq: 1, title: 't', description });
-        return md.parse(msg.split('\n\n---\n')[0].split('\n\n').slice(1).join('\n\n'));
-      };
-      const tag = /<(?!\/?(p|br|strong|em|ul|ol|li|a|code|pre|blockquote|h\d|del|input|hr)\b)[a-z/]/i;
-      for (const [input, shown] of [
-        ['Line **one** <img src=x onerror=alert(1)> 😀', '&lt;img src=x onerror=alert(1)&gt;'],
-        ['<script>alert(1)</script>', '&lt;script&gt;alert(1)&lt;/script&gt;'],
-        ['a <b>bold</b> b', '&lt;b&gt;bold&lt;/b&gt;'],
-        ['<div>\n<img src=x>\n</div>', '&lt;img src=x&gt;'],
-        ['- ```\n<img src=x>', '&lt;img src=x&gt;'],
-        ['\\\\<img src=x>', '\\&lt;img src=x&gt;'],
-        ['already \\<img src=x> escaped', 'already &lt;img src=x&gt; escaped'],
-        ['\\`<img src=x>`', '&lt;img src=x&gt;'],
-        ['`a\nb` <img src=x> `c`', '&lt;img src=x&gt;'],
-        ['```html\n<div>x</div>\n```\nafter <i>y</i>', '&lt;i&gt;y&lt;/i&gt;'],
-      ]) {
-        const h = desc(input);
-        assert.ok(!tag.test(h) && !/<img|<script|<b>|<i>|<div/.test(h), `${JSON.stringify(input)} → ${h}`);
-        assert.ok(h.includes(shown), `${JSON.stringify(input)} shows ${shown}: ${h}`);
-      }
-      // Ordinary markdown is untouched, code keeps its <, a < in prose stays readable.
-      const plain = 'Check **/var** and _logs_\n\n- one\n- [docs](https://e.x/a)\n\n```html\n<div>x</div>\n```\n\nsee <https://e.x> and `a<b`; 1 < 2';
-      const msg = composeTaskMessage({ id: 5, seq: 1, title: 't', description: plain });
-      assert.ok(msg.includes('```html\n<div>x</div>\n```'), 'fenced code unchanged');
-      const h = desc(plain);
-      assert.ok(h.includes('<strong>/var</strong>') && h.includes('<em>logs</em>') && h.includes('<li><a href="https://e.x/a">docs</a></li>'), h);
-      assert.ok(h.includes('<code class="language-html">&lt;div&gt;x&lt;/div&gt;') && h.includes('<a href="https://e.x">https://e.x</a>') && h.includes('1 &lt; 2'), h);
+      assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Execute task #1: plain title**\n'), 'no code span when nothing to escape');
     });
 
     await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
@@ -9584,7 +9579,7 @@ async function run() {
       const msg = tDb.prepare('SELECT content, automation_provider, automation_name, automation_id, task_id, task_seq, thread_id FROM messages WHERE id=?').get(running.message_id);
       assert.deepStrictEqual([msg.automation_provider, msg.automation_name, msg.automation_id, msg.task_id, msg.task_seq, msg.thread_id],
         ['task', 'Write the release notes', null, t1.id, 1, null]);
-      assert.ok(msg.content.includes('**Task #1: Write the release notes**') && msg.content.includes('- [ ] draft'), msg.content);
+      assert.strictEqual(msg.content, `**Execute task #1: Write the release notes**\n(task_id ${t1.id} · read the card with stoa__task_get before you start)`, 'checklist stays on the board');
       const newMsg = await waitFor(() => frames.find(f => f.type === 'message_new' && f.message.id === running.message_id));
       assert.deepStrictEqual(newMsg?.message.automation, { id: null, name: 'Write the release notes', provider: 'task', task_id: t1.id, task_seq: 1 });
       assert.ok(!('task_id' in newMsg.message), 'raw columns folded into automation');
@@ -9619,7 +9614,7 @@ async function run() {
         assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 200);
         const m = await trig;
         const running = await waitFor(() => { const c = card(t.id); return c.thread_id ? c : null; });
-        assert.ok(tDb.prepare('SELECT content FROM messages WHERE id=?').get(running.message_id).content.includes('The task ends only when you call stoa__task_complete'));
+        assert.ok(tDb.prepare('SELECT content FROM messages WHERE id=?').get(running.message_id).content.includes(`(task_id ${t.id} · read the card with stoa__task_get before you start · ends only with stoa__task_complete / _block / _fail)`));
         await completeRun(agA.ws, roomId, m);
         await new Promise(r => setTimeout(r, 1200)); // > TASK_SETTLE_MS + polls
         assert.deepStrictEqual([card(t.id).col, card(t.id).status], ['ongoing', 'running'], 'quiet thread ends nothing');
