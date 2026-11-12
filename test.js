@@ -15716,6 +15716,7 @@ async function run() {
       getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
       setComposerProcessing() {}, clearComposerProcessing() {}, setThreadProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {}, reloadRsbAgentsPanel() {},
       globalWs: null, WebSocket: { OPEN: 1 },
+      tasksHeaderControls: () => new El('span'), // public/js/tasks/board.js, not loaded here
     };
     vm.createContext(ctx);
     const md = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
@@ -17010,7 +17011,8 @@ async function run() {
     const ctx = { document: doc, window: { innerWidth: 1280, innerHeight: 800 }, localStorage: { getItem: () => null, removeItem() {} }, fjson,
       requestAnimationFrame: f => f(), setTimeout: f => f(), getAvailableModels: () => [], showToast() {}, console,
       humanActor: null, allActors: [], actorByName: {}, settingsActors: [], sRowStates: new Map(), currentRoomId: 1, roomParticipantsCache: {},
-      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {}, isPrimaryParticipant: () => false, makePrimaryBadge: () => new El('span') };
+      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {}, isPrimaryParticipant: () => false, makePrimaryBadge: () => new El('span'),
+      tasksRailButton: mkBtn => mkBtn('Tasks', '', () => {}) }; // public/js/tasks/board.js, not loaded here
     vm.createContext(ctx);
     for (const f of ['public/js/rooms/room-sidebar.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
     ctx.refreshRoomList = () => {};
