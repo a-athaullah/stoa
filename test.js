@@ -16788,6 +16788,37 @@ async function run() {
     assert.strictEqual(md(plain), vm.runInContext(`marked.parse(${JSON.stringify(plain)})`, ctx), 'markdown without HTML renders exactly as before');
   });
 
+  await test('task board UI — a card an agent claimed shows the claimer (actor / sub-agent) as its worker only while running; assignee field unchanged; claimed log label', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El { constructor(t) { this.tag = t; this.children = []; this.classList = { add() {}, remove() {} }; this.style = {}; this.dataset = {}; this.textContent = ''; } appendChild(c) { this.children.push(c); return c; } append(...c) { this.children.push(...c); } setAttribute() {} }
+    const txt = n => n == null ? '' : typeof n === 'string' ? n : (n.textContent || '') + (n.children || []).map(txt).join('|');
+    const ctx = { console, setTimeout, clearTimeout, localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, getElementById: () => null, createElement: t => new El(t), createTextNode: t => t, createElementNS: (ns, t) => new El(t) },
+      window: { addEventListener() {} },
+      roomParticipantsCache: { 5: [{ actor_id: 2, type: 'ai', name: 'Ara' }, { actor_id: 3, type: 'ai', name: 'Kira' }] },
+      roomSubAgentsCache: { 5: [{ id: 9, label: 'Sofia', parent_actor_id: 2 }] }, allActors: [{ id: 4, name: 'Idris' }],
+      currentRoomData: { id: 5, primary_actor_id: 2 }, isPrimaryParticipant: (p, r) => p.actor_id === r.primary_actor_id };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/board.js', 'public/js/tasks/drawer.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    run('tasksUi.roomId = 5');
+    const T = o => JSON.stringify({ id: 1, seq: 1, col: 'ongoing', status: 'running', assignee_actor_id: 3, claimed_by_actor_id: null, claimed_by_sub_agent_id: null,
+      labels: [], checklist: [], blocked_by: [], waiting_on: [], started_at: '2026-11-12 05:00:00', ...o });
+    const worker = o => run(`tbWorkerFor(${T(o)}).name`);
+    assert.strictEqual(worker({}), 'Kira', 'runner card: the assignee works on it');
+    assert.strictEqual(worker({ claimed_by_actor_id: 2 }), 'Ara', 'claimed by an agent');
+    assert.strictEqual(worker({ claimed_by_actor_id: 2, claimed_by_sub_agent_id: 9 }), 'Sofia', 'claimed by a sub-agent: the sub-agent, not its parent');
+    assert.strictEqual(worker({ claimed_by_actor_id: 4 }), 'Idris', 'claimer no longer in the room: found in allActors');
+    assert.strictEqual(worker({ claimed_by_actor_id: 77 }), 'Agent', 'unknown actor: generic name');
+    assert.strictEqual(worker({ claimed_by_actor_id: 2, claimed_by_sub_agent_id: 99 }), 'Sub-agent', 'unknown sub-agent: generic name');
+    assert.strictEqual(worker({ claimed_by_actor_id: 2, status: 'done', col: 'finished' }), 'Kira', 'the claim columns stay after the run; the claimer shows only while running');
+    assert.strictEqual(run(`tbAssigneeFor(${T({ claimed_by_actor_id: 2 })}).name`), 'Kira', 'the Assignee field still names the assignee');
+    assert.strictEqual(run("tbEventText({ kind: 'claimed', meta: { from_col: 'backlog', to_col: 'ongoing' } })"), 'took it to Ongoing to work on it');
+    assert.ok(txt(run(`tbStateBox(${T({ claimed_by_actor_id: 2, claimed_by_sub_agent_id: 9 })})`)).includes('Sofia is working on it'));
+    assert.ok(txt(run(`tbStateBox(${T({})})`)).includes('Kira is working on it'));
+  });
+
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
     const vm = require('vm');
     const fs = require('fs');
