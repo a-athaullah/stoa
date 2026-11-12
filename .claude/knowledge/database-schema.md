@@ -262,6 +262,77 @@ Old sub-agent schedules were migrated as `target_actor_id = sub_agents.parent_ac
 
 ---
 
+## Task Board Tables
+
+Added in `migrations/20261112-room-tasks.sql` (see the migration file for full DDL).
+
+```sql
+-- One board per room; tracks runner state
+CREATE TABLE room_task_settings (
+  room_id INTEGER PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+  running INTEGER NOT NULL DEFAULT 0,     -- 1 = runner active
+  concurrency INTEGER NOT NULL DEFAULT 1, -- 1-5 cards at once
+  idle_reason TEXT,                       -- 'empty' | 'blocked' | 'error' | NULL
+  last_error TEXT,
+  updated_at TEXT
+);
+
+-- Cards
+CREATE TABLE room_tasks (
+  id INTEGER PRIMARY KEY,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,                   -- per-room counter, shown as #seq
+  title TEXT NOT NULL,
+  description TEXT,
+  col TEXT NOT NULL DEFAULT 'backlog'
+    CHECK(col IN ('awaiting','backlog','ongoing','finished')),
+  rank REAL NOT NULL,                     -- fractional, Backlog/Awaiting order; Finished = newest first
+  priority TEXT NOT NULL DEFAULT 'none'
+    CHECK(priority IN ('none','low','med','high')),
+  labels TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings (max 8)
+  checklist TEXT NOT NULL DEFAULT '[]',   -- JSON [{id,text,done}]
+  assignee_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+  assignee_sub_agent_id INTEGER REFERENCES sub_agents(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'idle'
+    CHECK(status IN ('idle','running','blocked','failed','done')),
+  await_reason TEXT,                      -- required when col='awaiting'
+  fail_reason TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  thread_id INTEGER,                      -- message id of the runner's root message
+  message_id INTEGER,
+  result_summary TEXT,
+  created_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+  created_at TEXT, started_at TEXT, finished_at TEXT, updated_at TEXT
+);
+
+-- Dependency edges (blocked_by list in the API)
+CREATE TABLE room_task_deps (
+  task_id INTEGER NOT NULL REFERENCES room_tasks(id) ON DELETE CASCADE,
+  depends_on_id INTEGER NOT NULL REFERENCES room_tasks(id) ON DELETE CASCADE,
+  PRIMARY KEY (task_id, depends_on_id)
+);
+
+-- Audit log / comments per card
+CREATE TABLE room_task_events (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES room_tasks(id) ON DELETE CASCADE,
+  room_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,   -- created|edited|moved|started|completed|failed|blocked|retry|stopped|
+                        -- comment|dep_added|dep_removed|awaiting|confirmed
+  actor_id INTEGER, actor_kind TEXT,  -- human|agent|sub_agent|system
+  body TEXT,            -- comment text or human-readable description
+  meta TEXT,            -- JSON with before/after values for auditing
+  at TEXT
+);
+```
+
+**Key invariants:**
+- `seq` is per-room, assigned at insert, never reused.
+- Rank uses fractional indexing; `placeRank` rebalances the column if gaps collapse.
+- `messages.task_id` and `messages.task_seq` link a runner message back to its card (added by migration).
+- Runner uses `provider='task'` on the messages row so the feed renders a **Task #N** badge.
+- Max 1,000 tasks per room (`LIMITS.tasksPerRoom`).
+
 ## MCP Gateway Tables
 
 Added in `migrations/20261022-mcp-gateway.sql`.

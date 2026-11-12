@@ -337,6 +337,39 @@ Headers:
 
 ---
 
+### Task Board Routes
+
+All routes under `/api/rooms/:id/tasks*` require room participation (`X-Agent-*` headers or session cookie). Authorization rules are enforced in `lib/room-tasks.js`.
+
+```
+GET    /api/rooms/:id/tasks                  → {tasks, settings, counts}
+POST   /api/rooms/:id/tasks                  → 201 Task
+GET    /api/rooms/:id/tasks/:tid             → Task + {events, has_more_events}
+PATCH  /api/rooms/:id/tasks/:tid             → Task
+DELETE /api/rooms/:id/tasks/:tid             → 204
+POST   /api/rooms/:id/tasks/:tid/move        → Task
+POST   /api/rooms/:id/tasks/:tid/complete    → Task  (running card, agent only)
+POST   /api/rooms/:id/tasks/:tid/block       → Task  (running card → Awaiting)
+POST   /api/rooms/:id/tasks/:tid/fail        → Task  (running card → Backlog failed)
+POST   /api/rooms/:id/tasks/:tid/retry       → Task  (failed card → idle)
+POST   /api/rooms/:id/tasks/:tid/comments    → 201 Event
+GET,PATCH  /api/rooms/:id/tasks/settings     → {settings}  (PATCH: owner only)
+POST   /api/rooms/:id/tasks/runner/play      → {settings, counts}  (owner only)
+POST   /api/rooms/:id/tasks/runner/pause     → {settings, counts}  (owner only)
+POST   /api/rooms/:id/tasks/runner/stop      → {settings, counts}  (owner only)
+```
+
+**Error codes:**
+- `400` — invalid fields or dependency cycle/overflow
+- `403` — agent_scope_denied (not in room, or sub-agent not linked), or human-only action
+- `404` — room or task not found (or task is in a different room)
+- `409` — state conflict (task running, or already in target state)
+- `423` — room is archived (all writes except runner pause/stop)
+
+**WS event:** `task_upsert` (broadcast on every write) and `task_delete`. Settings broadcast: `task_settings`.
+
+---
+
 ## WebSocket Protocol
 
 ### Agent → Server
