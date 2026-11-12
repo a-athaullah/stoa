@@ -31,6 +31,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sendJson } = require('./lib/http-compress');
+const { createStaticFiles } = require('./lib/static-files');
 const { createFileListService, parseMaxDepth, gitDiff } = require('./lib/workspace-tree');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
@@ -1993,9 +1994,14 @@ function downloadFilenameParams(storedName, requested) {
   return `filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
-function serveIndex() {
-  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  return appBundleReady ? useAppBundle(html) : html;
+const staticFiles = createStaticFiles();
+
+function serveIndex(req, res) {
+  return staticFiles.serve(req, res, path.join(PUBLIC_DIR, 'index.html'), {
+    type: 'text/html; charset=utf-8',
+    cacheControl: 'no-cache',
+    transform: appBundleReady ? buf => useAppBundle(buf.toString('utf8')) : null,
+  });
 }
 
 // SPA permalinks (/r/<room>, /r/<room>/t/<thread>) render index.html; the client router reads the path.
@@ -2085,10 +2091,7 @@ const server = http.createServer(async (req, res) => {
   if (authResult === false) return;
   if (authResult === 'login') {
     // Login is an in-page overlay, so the permalink URL survives sign-in without a server redirect.
-    if (req.method === 'GET' && isAppRoute(url.pathname)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      return res.end(serveIndex());
-    }
+    if (req.method === 'GET' && isAppRoute(url.pathname) && await serveIndex(req, res)) return;
     res.writeHead(401); return res.end('Unauthorized');
   }
 
@@ -2335,17 +2338,13 @@ const server = http.createServer(async (req, res) => {
     const isRoot = isAppRoute(url.pathname);
     const ext = isRoot ? '.html' : path.extname(url.pathname);
     if (STATIC_TYPES[ext]) {
-      if (isRoot) {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-        return res.end(serveIndex());
-      }
+      if (isRoot && await serveIndex(req, res)) return;
       const filePath = path.join(PUBLIC_DIR, url.pathname);
       const resolved = path.resolve(filePath);
-      if (resolved.startsWith(PUBLIC_DIR) && isRegularFile(resolved)) {
-        const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-store';
-        const body = fs.readFileSync(resolved);
-        res.writeHead(200, { 'Content-Type': STATIC_TYPES[ext], 'Cache-Control': cachePolicy });
-        return res.end(body);
+      if (!isRoot && resolved.startsWith(PUBLIC_DIR)) {
+        // App code revalidates every load (no-cache + ETag → 304), so a client update shows on the next reload.
+        const cacheControl = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-cache';
+        if (await staticFiles.serve(req, res, resolved, { type: STATIC_TYPES[ext], cacheControl })) return;
       }
     }
   }

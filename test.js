@@ -6319,6 +6319,122 @@ async function runAsyncUnitTests() {
     });
   }
 
+  // Static files (lib/static-files.js): ETag revalidation, gzip once per version, mtime invalidation,
+  // LRU bound, streamed large files. Served by a throwaway http server over a temp dir.
+  {
+    const fsS = require('fs'), osS = require('os'), pathS = require('path'), httpS = require('http'), zlibS = require('zlib');
+    const { createStaticFiles, etagMatches } = require('./lib/static-files');
+    const withServer = async (opts, fn) => {
+      const dir = fsS.mkdtempSync(pathS.join(osS.tmpdir(), 'stoa-static-'));
+      const sf = createStaticFiles(opts);
+      const srv = httpS.createServer(async (rq, rs) => {
+        const name = rq.url.slice(1);
+        const transform = name === 'index.html' ? buf => buf.toString().replace('{{X}}', 'BUNDLE') : null;
+        const ok = await sf.serve(rq, rs, pathS.join(dir, name), { type: 'text/plain', cacheControl: 'no-cache', transform });
+        if (!ok) { rs.writeHead(404); rs.end('nf'); }
+      });
+      await new Promise(r => srv.listen(0, '127.0.0.1', r));
+      const get = (name, headers = {}) => new Promise((resolve, reject) => {
+        httpS.get({ host: '127.0.0.1', port: srv.address().port, path: '/' + name, headers }, res => {
+          const chunks = [];
+          res.on('data', c => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks) }));
+        }).on('error', reject);
+      });
+      try { await fn({ dir, sf, get, write: (n, body) => fsS.writeFileSync(pathS.join(dir, n), body) }); }
+      finally { srv.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    };
+    const big = (tag) => Buffer.from(`/* ${tag} */\n` + 'const stoa = "static asset";\n'.repeat(400));
+
+    await uta('static files — etagMatches: weak comparison, lists, *, no header', async () => {
+      assert.strictEqual(etagMatches('W/"abc"', 'W/"abc"'), true);
+      assert.strictEqual(etagMatches('"abc"', 'W/"abc"'), true);
+      assert.strictEqual(etagMatches('"x", W/"abc"', 'W/"abc"'), true);
+      assert.strictEqual(etagMatches('*', 'W/"abc"'), true);
+      for (const h of ['W/"abd"', '"ab"', '', undefined, null]) assert.strictEqual(etagMatches(h, 'W/"abc"'), false, String(h));
+    });
+
+    await uta('static files — gzip only when accepted, same bytes after gunzip; small and refused bodies stay plain', async () => {
+      await withServer({}, async ({ get, write }) => {
+        const body = big('a');
+        write('a.js', body); write('tiny.js', 'x=1');
+        const plain = await get('a.js');
+        assert.strictEqual(plain.status, 200);
+        assert.strictEqual(plain.headers['content-encoding'], undefined);
+        assert.ok(plain.buf.equals(body), 'identity body = file');
+        assert.strictEqual(Number(plain.headers['content-length']), body.length);
+        const gz = await get('a.js', { 'Accept-Encoding': 'gzip, br' });
+        assert.strictEqual(gz.headers['content-encoding'], 'gzip');
+        assert.match(gz.headers.vary, /Accept-Encoding/);
+        assert.strictEqual(Number(gz.headers['content-length']), gz.buf.length);
+        assert.ok(gz.buf.length * 5 < body.length, `compressed ${gz.buf.length} vs ${body.length}`);
+        assert.ok(zlibS.gunzipSync(gz.buf).equals(body), 'gunzip = file');
+        assert.strictEqual((await get('a.js', { 'Accept-Encoding': 'gzip;q=0' })).headers['content-encoding'], undefined);
+        assert.strictEqual((await get('tiny.js', { 'Accept-Encoding': 'gzip' })).headers['content-encoding'], undefined, 'below 1 KB');
+        assert.strictEqual(plain.headers.etag, gz.headers.etag, 'one weak ETag for both codings');
+      });
+    });
+
+    await uta('static files — If-None-Match → 304 without body; edited file → new ETag and new body, cache reflects only the live version', async () => {
+      await withServer({}, async ({ get, write, sf, dir }) => {
+        write('a.js', big('v1'));
+        const first = await get('a.js', { 'Accept-Encoding': 'gzip' });
+        assert.match(first.headers.etag, /^W\/"[A-Za-z0-9_-]+"$/);
+        assert.strictEqual(first.headers['cache-control'], 'no-cache');
+        const nm = await get('a.js', { 'If-None-Match': first.headers.etag, 'Accept-Encoding': 'gzip' });
+        assert.strictEqual(nm.status, 304);
+        assert.strictEqual(nm.buf.length, 0);
+        assert.strictEqual(nm.headers.etag, first.headers.etag);
+        assert.strictEqual((await get('a.js', { 'If-None-Match': 'W/"stale"' })).status, 200, 'other tag → full body');
+        const v2 = big('v2-longer');
+        write('a.js', v2);
+        fsS.utimesSync(pathS.join(dir, 'a.js'), new Date(), new Date(Date.now() + 5000));
+        const after = await get('a.js', { 'If-None-Match': first.headers.etag, 'Accept-Encoding': 'gzip' });
+        assert.strictEqual(after.status, 200, 'old tag no longer matches');
+        assert.notStrictEqual(after.headers.etag, first.headers.etag);
+        assert.ok(zlibS.gunzipSync(after.buf).equals(v2), 'serves the edited file');
+        const { entries, bytes } = sf.stats();
+        assert.strictEqual(entries, 1);
+        assert.ok(bytes >= v2.length && bytes < v2.length * 2, `old version dropped from the count: ${bytes}`);
+      });
+    });
+
+    await uta('static files — transform applies once per version and drives the ETag; missing file and directory fall through', async () => {
+      await withServer({}, async ({ get, write, dir }) => {
+        write('index.html', '<p>{{X}}</p>');
+        const r = await get('index.html');
+        assert.strictEqual(r.buf.toString(), '<p>BUNDLE</p>');
+        const expected = 'W/"' + require('crypto').createHash('sha1').update('<p>BUNDLE</p>').digest('base64url') + '"';
+        assert.strictEqual(r.headers.etag, expected, 'ETag hashes the served (transformed) body');
+        assert.strictEqual((await get('nope.js')).status, 404);
+        fsS.mkdirSync(pathS.join(dir, 'sub.js'));
+        assert.strictEqual((await get('sub.js')).status, 404, 'directory is not served');
+      });
+    });
+
+    await uta('static files — LRU keeps the cache under maxBytes; files above maxFileBytes stream (gzip or identity) with a size/mtime ETag', async () => {
+      await withServer({ maxBytes: 30000, maxFileBytes: 20000 }, async ({ get, write, sf }) => {
+        for (const n of ['a', 'b', 'c']) write(`${n}.js`, Buffer.alloc(12000, n));
+        for (const n of ['a', 'b', 'c']) assert.strictEqual((await get(`${n}.js`)).status, 200);
+        assert.ok(sf.stats().bytes <= 30000, `bounded: ${sf.stats().bytes}`);
+        assert.strictEqual(sf.stats().entries, 2, 'oldest evicted');
+        assert.ok((await get('a.js')).buf.equals(Buffer.alloc(12000, 'a')), 'evicted file reloads');
+        const large = big('large').toString().repeat(3);
+        write('large.js', large);
+        const before = sf.stats().entries;
+        const plain = await get('large.js');
+        assert.strictEqual(plain.buf.toString(), large);
+        assert.strictEqual(Number(plain.headers['content-length']), Buffer.byteLength(large));
+        assert.match(plain.headers.etag, /^W\/"[0-9a-f]+-[0-9a-f]+"$/);
+        const gz = await get('large.js', { 'Accept-Encoding': 'gzip' });
+        assert.strictEqual(gz.headers['content-encoding'], 'gzip');
+        assert.strictEqual(zlibS.gunzipSync(gz.buf).toString(), large);
+        assert.strictEqual((await get('large.js', { 'If-None-Match': plain.headers.etag })).status, 304);
+        assert.strictEqual(sf.stats().entries, before, 'large file not cached');
+      });
+    });
+  }
+
   return { p, f };
 }
 
@@ -20193,6 +20309,86 @@ async function run() {
 
     await test('room switch — teardown', async () => {
       if (rs?.ws && rs.ws.readyState !== 3) rs.ws.close();
+    });
+  }
+
+  // Static files from public/ (lib/static-files.js): ETag + 304 revalidation, gzip when accepted,
+  // a file edited on disk is served fresh, traversal still refused. Anonymous: assets are auth-exempt.
+  console.log('\n[Static files]');
+  {
+    const zlib = require('zlib');
+    const tmpName = `__static-test-${process.pid}.js`;
+    const tmpFile = path.join(__dirname, 'public', 'js', tmpName);
+    const getStatic = (urlPath, headers = {}) => new Promise((resolve, reject) => {
+      const r = http.request({ hostname: HOST, port: PORT, path: urlPath, method: 'GET', headers }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+
+    await test('static files — app JS: no-cache + ETag, If-None-Match → 304 with no body, gzip only when accepted', async () => {
+      const disk = fs.readFileSync(path.join(__dirname, 'public', 'js', 'websocket.js'));
+      const plain = await getStatic('/js/websocket.js');
+      assert.strictEqual(plain.status, 200);
+      assert.strictEqual(plain.headers['cache-control'], 'no-cache', 'revalidate every load, never no-store');
+      assert.match(plain.headers['content-type'], /^text\/javascript/);
+      assert.strictEqual(plain.headers['content-encoding'], undefined);
+      assert.ok(plain.buf.equals(disk), 'identity body = file on disk');
+      assert.match(plain.headers.etag, /^W\/"/);
+      const nm = await getStatic('/js/websocket.js', { 'If-None-Match': plain.headers.etag });
+      assert.strictEqual(nm.status, 304);
+      assert.strictEqual(nm.buf.length, 0);
+      const gz = await getStatic('/js/websocket.js', { 'Accept-Encoding': 'gzip, deflate, br' });
+      assert.strictEqual(gz.headers['content-encoding'], 'gzip');
+      assert.match(gz.headers.vary || '', /Accept-Encoding/);
+      assert.ok(gz.buf.length * 2 < disk.length, `compressed ${gz.buf.length} vs ${disk.length}`);
+      assert.ok(zlib.gunzipSync(gz.buf).equals(disk), 'gunzip = file on disk');
+      assert.strictEqual((await getStatic('/js/websocket.js', { 'Accept-Encoding': 'gzip;q=0' })).headers['content-encoding'], undefined);
+      const css = await getStatic('/css/layout.css', { 'Accept-Encoding': 'gzip' });
+      assert.strictEqual(css.status, 200);
+      assert.strictEqual(css.headers['content-encoding'], 'gzip');
+      assert.strictEqual(css.headers['cache-control'], 'no-cache');
+    });
+
+    await test('static files — index.html (session and anonymous login view) revalidates with ETag → 304', async () => {
+      for (const [who, call] of [['session', h => getStatic('/', { Cookie: cookieHeader(), ...h })], ['anon', h => getStatic('/', h)]]) {
+        const r = await call({ 'Accept-Encoding': 'gzip' });
+        assert.strictEqual(r.status, 200, who);
+        assert.strictEqual(r.headers['cache-control'], 'no-cache', who);
+        assert.match(zlib.gunzipSync(r.buf).toString(), /<html/i, who);
+        const nm = await call({ 'If-None-Match': r.headers.etag });
+        assert.strictEqual(nm.status, 304, `${who} 304`);
+      }
+    });
+
+    await test('static files — a file edited on disk is served fresh: old ETag stops matching', async () => {
+      try {
+        fs.writeFileSync(tmpFile, '/* v1 */\n' + 'window.__staticTest = 1;\n'.repeat(100));
+        const v1 = await getStatic(`/js/${tmpName}`);
+        assert.strictEqual(v1.status, 200);
+        assert.match(v1.buf.toString(), /v1/);
+        const v2Body = '/* v2 */\n' + 'window.__staticTest = 22;\n'.repeat(100);
+        fs.writeFileSync(tmpFile, v2Body);
+        fs.utimesSync(tmpFile, new Date(), new Date(Date.now() + 5000));
+        const v2 = await getStatic(`/js/${tmpName}`, { 'If-None-Match': v1.headers.etag, 'Accept-Encoding': 'gzip' });
+        assert.strictEqual(v2.status, 200, 'changed file → full response');
+        assert.notStrictEqual(v2.headers.etag, v1.headers.etag);
+        assert.strictEqual(zlib.gunzipSync(v2.buf).toString(), v2Body);
+        fs.rmSync(tmpFile);
+        assert.notStrictEqual((await getStatic(`/js/${tmpName}`)).status, 200, 'deleted file no longer served');
+      } finally { fs.rmSync(tmpFile, { force: true }); }
+    });
+
+    await test('static files — traversal out of public/ is not served', async () => {
+      const serverSrc = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8').slice(0, 200);
+      for (const p of ['/js/../../server.js', '/js/%2e%2e/%2e%2e/server.js', '/css/..%2f..%2fserver.js', '/../package.json', '/js/..%5c..%5cserver.js']) {
+        const r = await getStatic(p, { 'Accept-Encoding': 'gzip' });
+        const body = r.headers['content-encoding'] === 'gzip' ? zlib.gunzipSync(r.buf).toString() : r.buf.toString();
+        assert.ok(!body.includes(serverSrc) && !body.includes('"dependencies"'), `${p} → ${r.status} leaked a file outside public/`);
+      }
     });
   }
 
