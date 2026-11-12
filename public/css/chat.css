@@ -86,6 +86,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
 }
 .h-room-name:hover { background: var(--h-header-chip-bg); }
 .h-room-name.editing {

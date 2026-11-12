@@ -301,7 +301,6 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 @media (max-width: 1023px) {
   .tb-hbtn { display: inline-flex; }
   .tb-crumb { display: none; }
-  .h-header-info > .h-room-name { max-width: 100%; }
 }
 @media (max-width: 760px) {
   .tb-toolbar { padding: 8px 10px; }
