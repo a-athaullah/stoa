@@ -1,5 +1,8 @@
 // ── Open room ──────────────────────────────────────────────────────────────
+let openRoomSeq = 0;
+
 async function openRoom(room, opts = {}) {
+  const seq = ++openRoomSeq;
   if (settingsOpen) {
     settingsOpen = false;
     sStopPolling();
@@ -13,6 +16,8 @@ async function openRoom(room, opts = {}) {
   saveDraft(currentRoomId);
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
 
+  // The previous room's socket must not write into this room's feed while it loads.
+  disconnectWS();
   currentRoomId = room.id;
   currentRoomData = room;
   currentRoomWorkdirId = room.workdir_id || null;
@@ -33,27 +38,32 @@ async function openRoom(room, opts = {}) {
   // Restore draft for this room
   restoreDraft(room.id);
 
-  document.getElementById('messages-inner').innerHTML = '';
   Object.keys(streaming).forEach(k => delete streaming[k]);
   Object.keys(runReplies).forEach(k => delete runReplies[k]);
   Object.keys(runSkillRefs).forEach(k => delete runSkillRefs[k]);
+  if (!paintCachedFeed(room.id)) {
+    document.getElementById('messages-inner').innerHTML = '';
+    oldestMessageId = null;
+    noMoreOlder = true;
+  }
 
-  let parts = [];
-  try {
-    parts = await fjson(`/api/rooms/${room.id}/participants`);
-  } catch {
+  const [partsRes, saRes] = await Promise.allSettled([
+    fjson(`/api/rooms/${room.id}/participants`),
+    fjson(`/api/rooms/${room.id}/sub-agents`),
+  ]);
+  if (seq !== openRoomSeq) return;
+  if (partsRes.status === 'rejected') {
     setConnected(false);
-    setTimeout(() => openRoom(room, opts), 3000);
+    setTimeout(() => { if (seq === openRoomSeq) openRoom(room, opts); }, 3000);
     return;
   }
+  const parts = partsRes.value;
   roomParticipantsCache[room.id] = parts;
-
-  try {
-    const saData = await fjson(`/api/rooms/${room.id}/sub-agents`);
-    roomSubAgentsCache[room.id] = saData.linked || [];
-  } catch(e) {
+  if (saRes.status === 'fulfilled') {
+    roomSubAgentsCache[room.id] = saRes.value.linked || [];
+  } else {
     roomSubAgentsCache[room.id] = [];
-    console.error('[room] failed to load sub-agents', room.id, e);
+    console.error('[room] failed to load sub-agents', room.id, saRes.reason);
   }
 
   renderRoomDots(room.id, parts);
