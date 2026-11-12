@@ -1690,7 +1690,7 @@ const roomTasks = createRoomTasks({
 // defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
 const roomTasksRunner = createRoomTasksRunner({
   db, tasks: roomTasks,
-  dispatch: (roomId, text, automation, threadId = null) => handleHumanMessage(roomId, text, null, null, null, null, threadId, automation),
+  dispatch: (roomId, text, automation) => handleHumanMessage(roomId, text, null, null, null, null, null, automation),
   threadBusy: taskThreadBusy,
   abortThread: abortThreadRuns,
   agentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
@@ -1698,7 +1698,6 @@ const roomTasksRunner = createRoomTasksRunner({
   agentLang: (actorId) => agentLangOf(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(actorId) || {}),
   settleMs: parseInt(process.env.TASK_SETTLE_MS, 10) || 3000,
   noReplyMs: parseInt(process.env.TASK_NO_REPLY_MS, 10) || 120000,
-  nudgeMs: parseInt(process.env.TASK_DECIDE_NUDGE_MS, 10) || 600000,
   maxMs: parseInt(process.env.TASK_DECIDE_MAX_MS, 10) || 10800000,
 });
 // Poll: ends runs whose thread went quiet and retries runners waiting on a thread slot or an agent.
