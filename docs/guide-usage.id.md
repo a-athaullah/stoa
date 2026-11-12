@@ -853,6 +853,18 @@ Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan 
 - Saat balasan terakhir agent di thread task selesai, card otomatis pindah ke Finished. Awal balasan itu menjadi ringkasan hasil card.
 - Card yang tidak bisa diselesaikan agent tetap di Backlog dengan badge **Failed**. Klik **Retry** untuk membuatnya bisa dijalankan kembali.
 
+#### Mode Penyelesaian
+
+Toolbar board memiliki kontrol **Finish** (di sebelah stepper **Parallel**) dengan dua pilihan:
+
+- **When quiet** *(default)* — card selesai saat thread-nya diam beberapa detik; balasan terakhir agent menjadi ringkasan hasil.
+- **Agent decides** — thread yang diam tidak langsung menyelesaikan card. Card hanya selesai ketika agent memanggil salah satu tool keputusan: `stoa__task_complete` (pindah ke Finished dengan ringkasan; thread card ditandai selesai), `stoa__task_block` (pindah ke Awaiting dengan alasan), atau `stoa__task_fail` (gagal dengan alasan). Pesan card memberitahu agent aturan ini secara eksplisit. Gunakan mode ini untuk pekerjaan panjang di mana proses latar belakang masih berjalan atau agent perlu menunggu keputusan manusia.
+
+  Pengaman di mode Agent decides: jika thread diam 10 menit tanpa keputusan, runner mengirim satu pengingat ke agent. Jika thread tetap diam 3 jam, card dipindah ke Awaiting dengan alasan "agen tidak memutuskan". Durasi pengingat dan batas waktu dapat diubah dengan variabel lingkungan `TASK_DECIDE_NUDGE_MS` dan `TASK_DECIDE_MAX_MS`. Hanya agent yang menjalankan card (atau sub-agent-nya) yang bisa memanggil tool keputusan.
+
+- Mengganti mode saat card sedang berjalan berlaku langsung — card yang sedang berjalan mengikuti aturan mode baru, tapi pesan yang sudah terkirim di thread card tidak diperbarui.
+- Hanya pemilik room yang bisa mengganti mode Finish. Tidak bisa diubah di room yang diarsip.
+
 ### Agent dan Sub-Agent
 
 Agent dan sub-agent bisa mengelola card melalui tool MCP `stoa__task_*`:
