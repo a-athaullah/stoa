@@ -8849,6 +8849,221 @@ async function run() {
     });
   }
 
+  // ── Task board: HTTP + WS events + runner end to end with a fake agent ──
+  // Runner timing relies on run-tests.js setting TASK_POLL_MS / TASK_SETTLE_MS low (prod: 2 s / 3 s).
+  console.log('\n[Task board]');
+  {
+    const tDb = require('./db');
+    let agA = null, agOut = null, roomId = null, outRoomId = null, humanWs = null, outWs = null;
+    const frames = [], outFrames = [];
+    const asAgent = async (ag, method, p, body = null) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return await req(method, p, body, { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }); }
+      finally { sessionCookie = s; deviceCookie = d; }
+    };
+    const base = () => `/api/rooms/${roomId}/tasks`;
+    const ready = () => !!(agA && roomId && humanWs);
+    const waitFor = async (fn, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      for (;;) {
+        const v = fn();
+        if (v) return v;
+        if (Date.now() > end) return null;
+        await new Promise(r => setTimeout(r, 100));
+      }
+    };
+    const card = (id) => tDb.prepare('SELECT * FROM room_tasks WHERE id=?').get(id);
+    const joinRoom = async (rid, sink) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(ws, m => m.type === 'history');
+      ws.send(JSON.stringify({ type: 'join_room', room_id: rid }));
+      await hist;
+      ws.on('message', (d) => { try { sink.push(JSON.parse(d.toString())); } catch {} });
+      return ws;
+    };
+
+    await test('Tasks — setup: room with agent A, agent Out in another room, owner sockets in both', async () => {
+      agA = await createOnlineTestAgent('__test-tasks-a', '/tmp/stoa-test-tasks-a');
+      agOut = await createOnlineTestAgent('__test-tasks-out', '/tmp/stoa-test-tasks-out');
+      assert.ok(agA?.workdirId && agOut?.workdirId, 'agent setup failed');
+      const r = await req('POST', '/api/rooms', { title: '__tasks-room__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      roomId = r.body.id;
+      const o = await req('POST', '/api/rooms', { title: '__tasks-out-room__', workdir_id: agOut.workdirId, participant_ids: [agOut.actorId] });
+      assert.strictEqual(o.status, 200);
+      outRoomId = o.body.id;
+      humanWs = await joinRoom(roomId, frames);
+      outWs = await joinRoom(outRoomId, outFrames);
+    });
+
+    let t1 = null;
+    await test('Tasks — HTTP CRUD: create 201 + task_upsert/task_settings, list with counts, patch, comment, events paging', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('POST', base(), { title: 'Write release notes', description: 'for **v1**', priority: 'high', labels: ['docs'], checklist: [{ text: 'draft' }] });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      t1 = r.body;
+      assert.deepStrictEqual([t1.seq, t1.col, t1.status, t1.priority, t1.labels, t1.checklist[0].text], [1, 'backlog', 'idle', 'high', ['docs'], 'draft']);
+      assert.ok(!('rank' in r.body) || typeof r.body.rank === 'string');
+      const up = await waitFor(() => frames.find(f => f.type === 'task_upsert' && f.task.id === t1.id));
+      assert.ok(up && up.room_id === roomId, 'task_upsert for the room');
+      const st = await waitFor(() => frames.find(f => f.type === 'task_settings' && f.counts.backlog === 1));
+      assert.ok(st, 'task_settings with counts');
+      const list = await req('GET', base());
+      assert.strictEqual(list.status, 200);
+      assert.deepStrictEqual(list.body.counts, { running: 0, awaiting: 0, backlog: 1, finished: 0 });
+      assert.deepStrictEqual([list.body.settings.concurrency, list.body.settings.running], [1, false]);
+      assert.strictEqual((await req('GET', `${base()}?col=finished`)).body.tasks.length, 0);
+      assert.strictEqual((await req('GET', `${base()}?q=release`)).body.tasks.length, 1);
+      const p = await req('PATCH', `${base()}/${t1.id}`, { title: 'Write the release notes', labels: ['docs', 'v1'] });
+      assert.deepStrictEqual([p.status, p.body.title, p.body.labels], [200, 'Write the release notes', ['docs', 'v1']]);
+      const c = await req('POST', `${base()}/${t1.id}/comments`, { body: 'keep it short' });
+      assert.deepStrictEqual([c.status, c.body.kind, c.body.body, c.body.actor_kind], [201, 'comment', 'keep it short', 'human']);
+      assert.ok(await waitFor(() => frames.find(f => f.type === 'task_event' && f.task_id === t1.id && f.event.kind === 'comment')));
+      const g = await req('GET', `${base()}/${t1.id}?limit=2`);
+      assert.strictEqual(g.status, 200);
+      assert.deepStrictEqual(g.body.events.map(e => e.kind), ['edited', 'comment'], 'newest page, oldest first');
+      assert.strictEqual(g.body.has_more_events, true);
+      const older = await req('GET', `${base()}/${t1.id}?limit=2&before=${g.body.events[0].id}`);
+      assert.deepStrictEqual(older.body.events.map(e => e.kind), ['created']);
+      assert.strictEqual(older.body.has_more_events, false);
+    });
+
+    await test('Tasks — HTTP errors: 401, 400 bad JSON / fields, 404 card of another room, 405, 409 ongoing', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const s = sessionCookie; sessionCookie = null;
+      try { assert.strictEqual((await req('GET', base())).status, 401); } finally { sessionCookie = s; }
+      assert.strictEqual((await rawReq('POST', base(), 'not-json', 'application/json')).status, 400);
+      assert.strictEqual((await req('POST', base(), { title: '' })).status, 400);
+      assert.strictEqual((await req('POST', `${base()}/${t1.id}/move`, { col: 'ongoing' })).status, 409);
+      const theirs = await req('POST', `/api/rooms/${outRoomId}/tasks`, { title: 'Out room card' });
+      assert.strictEqual(theirs.status, 201);
+      assert.strictEqual(theirs.body.seq, 1, 'seq per room');
+      for (const [m, p, b] of [['GET', `${base()}/${theirs.body.id}`], ['PATCH', `${base()}/${theirs.body.id}`, { title: 'x' }],
+        ['DELETE', `${base()}/${theirs.body.id}`], ['POST', `${base()}/${theirs.body.id}/move`, { col: 'finished' }]]) {
+        assert.strictEqual((await req(m, p, b)).status, 404, `${m} ${p}`);
+      }
+      assert.strictEqual(card(theirs.body.id).title, 'Out room card');
+      assert.strictEqual((await req('PUT', base(), {})).status, 405);
+      assert.strictEqual((await req('GET', '/api/rooms/99999999/tasks')).status, 404);
+      assert.ok(!outFrames.some(f => f.type?.startsWith('task_') && f.room_id !== outRoomId), 'other room socket only sees its own room');
+      assert.ok(!frames.some(f => f.type?.startsWith('task_') && f.room_id === outRoomId), 'this room socket never sees the other room');
+      assert.strictEqual((await req('DELETE', `/api/rooms/${outRoomId}/tasks/${theirs.body.id}`)).status, 204);
+    });
+
+    await test('Tasks — agent secret: participant may edit / move to awaiting, never drive the runner or confirm; other room 403', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const c = await asAgent(agA, 'POST', base(), { title: 'Agent made this' });
+      assert.strictEqual(c.status, 201, JSON.stringify(c.body));
+      assert.strictEqual(c.body.created_by_actor_id, agA.actorId);
+      assert.strictEqual((await asAgent(agA, 'GET', base())).status, 200);
+      const aw = await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'awaiting', reason: 'which repo?' });
+      assert.deepStrictEqual([aw.status, aw.body.col], [200, 'awaiting']);
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'backlog' })).status, 403);
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/runner/play`)).status, 403);
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/runner/stop`)).status, 403);
+      assert.strictEqual((await asAgent(agA, 'PATCH', `${base()}/settings`, { concurrency: 3 })).status, 403);
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/${c.body.id}/complete`, {})).status, 409, 'not running');
+      assert.strictEqual((await asAgent(agOut, 'GET', base())).status, 403);
+      assert.strictEqual((await asAgent(agOut, 'POST', base(), { title: 'intruder' })).status, 403);
+      const ev = (await req('GET', `${base()}/${c.body.id}`)).body.events;
+      assert.deepStrictEqual(ev.map(e => [e.kind, e.actor_kind, e.actor_id]), [['created', 'agent', agA.actorId], ['awaiting', 'agent', agA.actorId]]);
+      assert.strictEqual((await asAgent(agA, 'DELETE', `${base()}/${c.body.id}`)).status, 204);
+    });
+
+    await test('Tasks — runner end to end: play → task message (Task #seq) → agent reply finishes it → next card → runner off', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const t2 = (await req('POST', base(), { title: 'Publish notes', blocked_by: [t1.id] })).body;
+      const trig1 = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+      const play = await req('POST', `${base()}/runner/play`);
+      assert.strictEqual(play.status, 200);
+      assert.deepStrictEqual([play.body.settings.running, play.body.counts.running], [true, 1]);
+      const m1 = await trig1;
+      const running = await waitFor(() => { const c = card(t1.id); return c.thread_id ? c : null; });
+      assert.ok(running, 'card got its thread');
+      assert.deepStrictEqual([running.col, running.status, running.thread_id, running.message_id], ['ongoing', 'running', running.message_id, m1.reply_to ?? running.message_id]);
+      const msg = tDb.prepare('SELECT content, automation_provider, automation_name, automation_id, task_id, task_seq, thread_id FROM messages WHERE id=?').get(running.message_id);
+      assert.deepStrictEqual([msg.automation_provider, msg.automation_name, msg.automation_id, msg.task_id, msg.task_seq, msg.thread_id],
+        ['task', 'Write the release notes', null, t1.id, 1, null]);
+      assert.ok(msg.content.includes('**Task #1: Write the release notes**') && msg.content.includes('- [ ] draft'), msg.content);
+      const newMsg = await waitFor(() => frames.find(f => f.type === 'message_new' && f.message.id === running.message_id));
+      assert.deepStrictEqual(newMsg?.message.automation, { id: null, name: 'Write the release notes', provider: 'task', task_id: t1.id, task_seq: 1 });
+      assert.ok(!('task_id' in newMsg.message), 'raw columns folded into automation');
+      // t2 waits on t1: nothing else ran.
+      assert.strictEqual(card(t2.id).status, 'idle');
+      const trig2 = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && m.message_id !== m1.message_id, 10000);
+      await completeRun(agA.ws, roomId, m1);
+      const done = await waitFor(() => { const c = card(t1.id); return c.col === 'finished' ? c : null; });
+      assert.ok(done, 't1 finished after its thread went quiet');
+      assert.deepStrictEqual([done.status, done.result_summary], ['done', 'done']);
+      const m2 = await trig2;
+      assert.strictEqual(await waitFor(() => card(t2.id).status === 'running'), true);
+      await completeRun(agA.ws, roomId, m2);
+      assert.ok(await waitFor(() => card(t2.id).col === 'finished'));
+      const off = await waitFor(() => frames.find(f => f.type === 'task_settings' && !f.settings.running && f.settings.idle_reason === 'empty'));
+      assert.ok(off, 'runner switched itself off: Backlog done');
+      assert.notStrictEqual(card(t1.id).thread_id, card(t2.id).thread_id, 'one thread per card');
+    });
+
+    await test('Tasks — Stop: agent gets cancel_generation, card back to Backlog in place, event stopped, idempotent', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const a = (await req('POST', base(), { title: 'Long job' })).body;
+      const b = (await req('POST', base(), { title: 'Next job' })).body;
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId, 8000);
+      await req('POST', `${base()}/runner/play`);
+      const m = await trig;
+      await waitFor(() => card(a.id).thread_id);
+      const cancel = waitForWsMessage(agA.ws, x => x.type === 'cancel_generation' && x.message_id === m.message_id, 5000);
+      const s = await req('POST', `${base()}/runner/stop`);
+      assert.strictEqual(s.status, 200);
+      assert.deepStrictEqual([s.body.settings.running, s.body.counts.running], [false, 0]);
+      await cancel;
+      const back = card(a.id);
+      assert.deepStrictEqual([back.col, back.status], ['backlog', 'idle']);
+      const list = (await req('GET', `${base()}?col=backlog`)).body.tasks.map(t => t.id);
+      assert.deepStrictEqual(list, [a.id, b.id], 'back where it was, above the card behind it');
+      const ev = (await req('GET', `${base()}/${a.id}`)).body.events.at(-1);
+      assert.deepStrictEqual([ev.kind, ev.body, ev.actor_kind], ['stopped', 'stopped by user', 'human']);
+      assert.strictEqual((await req('POST', `${base()}/runner/stop`)).status, 200, 'idempotent');
+      // The agent reports its aborted run as it does for the stop button; the card stays put.
+      await completeRun(agA.ws, roomId, m);
+      await new Promise(r => setTimeout(r, 800));
+      assert.strictEqual(card(a.id).status, 'idle');
+      for (const id of [a.id, b.id]) await req('DELETE', `${base()}/${id}`);
+    });
+
+    await test('Tasks — archived room: writes and play 423, owner still reads', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomId}`, { archived: true })).status, 200);
+      try {
+        assert.strictEqual((await req('POST', base(), { title: 'nope' })).status, 423);
+        assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 423);
+        assert.strictEqual((await req('PATCH', `${base()}/${t1.id}`, { title: 'x' })).status, 423);
+        assert.strictEqual((await req('GET', base())).status, 200);
+        assert.strictEqual((await asAgent(agA, 'GET', base())).status, 403, 'agents never read an archived room');
+      } finally {
+        await req('PATCH', `/api/rooms/${roomId}`, { archived: false });
+      }
+    });
+
+    await test('Tasks — cleanup: room delete cascades the board', async () => {
+      for (const w of [humanWs, outWs, agA?.ws, agOut?.ws]) { try { w?.close(); } catch {} }
+      for (const rid of [roomId, outRoomId]) {
+        if (!rid) continue;
+        await req('PATCH', `/api/rooms/${rid}`, { archived: true });
+        assert.strictEqual((await req('DELETE', `/api/rooms/${rid}`)).status, 204);
+        for (const t of ['room_tasks', 'room_task_events', 'room_task_settings']) {
+          assert.strictEqual(tDb.prepare(`SELECT COUNT(*) AS c FROM ${t} WHERE room_id=?`).get(rid).c, 0, `${t} of room ${rid}`);
+        }
+      }
+      for (const ag of [agA, agOut]) {
+        if (!ag) continue;
+        await req('DELETE', `/api/actors/${ag.actorId}`);
+        orphanActorIds = orphanActorIds.filter(x => x !== ag.actorId);
+      }
+    });
+  }
+
   // ── R15: indeterminate session status + process_generation
   console.log('\n[R15: indeterminate session status]');
   {
@@ -20931,6 +21146,7 @@ async function run() {
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
+      'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
@@ -20938,7 +21154,7 @@ async function run() {
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
     const SUB_BUILTINS = [...BUILTINS, 'stoa__self_avatar_set', 'stoa__self_get', 'stoa__self_update']
-      .filter(n => n.startsWith('stoa__schedule_') || SUB_SESSION_TOOLS.includes(n.slice(6))).sort();
+      .filter(n => n.startsWith('stoa__schedule_') || n.startsWith('stoa__task_') || SUB_SESSION_TOOLS.includes(n.slice(6))).sort();
     const callText = async (token, name, args = {}) => {
       const r = await mcp(token, 'tools/call', { name, arguments: args });
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
