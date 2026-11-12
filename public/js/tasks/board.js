@@ -12,6 +12,10 @@ const TASK_COL_SUB = { awaiting: 'Needs your confirmation', backlog: 'Order = ru
 const TASK_STATUS_LABEL = { running: 'Running', queued: 'Queued', blocked: 'Blocked', failed: 'Failed', awaiting: 'Awaiting', done: 'Done' };
 const TASK_PRIORITY_LABEL = { high: 'High', med: 'Medium', low: 'Low', none: 'None' };
 const TASK_VIEW_KEY = 'stoa-task-view';
+const TASK_MODES = [
+  { value: 'quiet', label: 'When quiet', hint: 'A card finishes when its thread goes quiet; the last reply is the result.' },
+  { value: 'agent', label: 'Agent decides', hint: 'A card finishes only when the agent calls complete, block or fail.' },
+];
 
 const TASK_ICONS = {
   play: 'M7 4.8v14.4L18.5 12z', pause: 'M8.5 5v14M15.5 5v14', stop: 'M6.5 6.5h11v11h-11z', plus: 'M12 5v14M5 12h14',
@@ -31,7 +35,7 @@ const tasksUi = {
   loadError: null,
   tasks: new Map(),
   threadRoots: new Set(), // root message ids of runner messages in this room
-  settings: { concurrency: 1, running: false },
+  settings: { concurrency: 1, running: false, completion_mode: 'quiet' },
   view: 'chat',
   filter: { assignee: new Set(), label: new Set(), status: new Set() },
   quickAdd: null,
@@ -267,7 +271,7 @@ function tasksOnRoomOpen(room) {
   tasksUi.tasks = new Map();
   tasksUi.threadRoots = new Set();
   tasksUi.busy = new Set();
-  tasksUi.settings = { concurrency: 1, running: false };
+  tasksUi.settings = { concurrency: 1, running: false, completion_mode: 'quiet' };
   tasksUi.filter = { assignee: new Set(), label: new Set(), status: new Set() };
   tbClearBoardDom();
   tasksSetView(tbStoredViews()[room.id] === 'board' ? 'board' : 'chat', { store: false, render: false });
@@ -330,6 +334,7 @@ function tbApplySettings(s) {
   if (Number.isInteger(s.concurrency)) tasksUi.settings.concurrency = s.concurrency;
   if (typeof s.running === 'boolean' || s.running === 0 || s.running === 1) tasksUi.settings.running = !!s.running;
   tasksUi.settings.idle_reason = s.idle_reason || null;
+  if (TASK_MODES.some(m => m.value === s.completion_mode)) tasksUi.settings.completion_mode = s.completion_mode;
 }
 
 // WS task_* events. Only the current room's events touch the board.
@@ -499,6 +504,24 @@ function tbEnsureRoot() {
   inc.addEventListener('click', () => tbSetConcurrency(1));
   stepper.append(dec, out, inc);
   g2.append(cl, stepper);
+  const g3 = tbEl('div', 'tb-group');
+  const ml = tbEl('span', 'tb-seg-l', 'Finish');
+  ml.id = 'tb-mode-l';
+  const hint = tbEl('span', 'tb-sr');
+  hint.id = 'tb-mode-hint';
+  const seg = tbEl('div', 'tb-seg');
+  seg.id = 'tb-mode';
+  seg.setAttribute('role', 'group');
+  seg.setAttribute('aria-labelledby', 'tb-mode-l');
+  seg.setAttribute('aria-describedby', 'tb-mode-hint');
+  for (const m of TASK_MODES) {
+    const b = tbButton('', null, m.label);
+    b.dataset.mode = m.value;
+    b.title = m.hint;
+    b.addEventListener('click', () => tbSetCompletionMode(m.value));
+    seg.appendChild(b);
+  }
+  g3.append(ml, seg, hint);
   const filter = tbButton('tb-btn tb-ghost', 'filter', 'Filter');
   filter.id = 'tb-filter';
   filter.setAttribute('aria-haspopup', 'dialog');
@@ -512,7 +535,7 @@ function tbEnsureRoot() {
   add.id = 'tb-add';
   add.setAttribute('aria-label', 'Add task');
   add.addEventListener('click', () => tbOpenQuickAdd('backlog'));
-  bar.append(g1, sep, g2, filter, spacer, status, add);
+  bar.append(g1, sep, g2, g3, filter, spacer, status, add);
 
   const banner = tbEl('div', 'tb-banner');
   banner.id = 'tb-banner';
@@ -564,6 +587,12 @@ function tbRenderToolbar() {
   document.getElementById('tb-conc-v').textContent = String(s.concurrency);
   document.getElementById('tb-conc-dec').disabled = ro || s.concurrency <= 1;
   document.getElementById('tb-conc-inc').disabled = ro || s.concurrency >= 5;
+  for (const b of document.getElementById('tb-mode').children) {
+    b.setAttribute('aria-pressed', String(b.dataset.mode === s.completion_mode));
+    b.disabled = ro;
+  }
+  const mode = TASK_MODES.find(m => m.value === s.completion_mode);
+  document.getElementById('tb-mode-hint').textContent = mode ? mode.hint : '';
   const fb = document.getElementById('tb-filter');
   tbSetBtn(fb, 'filter', 'Filter');
   if (tbFilterCount()) fb.appendChild(tbEl('span', 'tb-fcount', String(tbFilterCount())));
@@ -874,6 +903,28 @@ function tbSetConcurrency(delta) {
       if (roomId === tasksUi.roomId) tasksOnSocketOpen(roomId);
     }
   }, 350);
+}
+
+// Optimistic: the switch shows at once and reverts if the server refuses it.
+async function tbSetCompletionMode(mode) {
+  const s = tasksUi.settings;
+  if (mode === s.completion_mode || tasksUi.busy.has('mode')) return;
+  const roomId = tasksUi.roomId;
+  const busy = tasksUi.busy;
+  const prev = s.completion_mode;
+  s.completion_mode = mode;
+  busy.add('mode');
+  tasksRender();
+  try {
+    const r = await TasksApi.updateSettings(roomId, { completion_mode: mode });
+    if (roomId === tasksUi.roomId && r) tbApplySettings(r.settings || r);
+  } catch (err) {
+    tbErr(err);
+    if (roomId === tasksUi.roomId && tasksUi.settings.completion_mode === mode) tasksUi.settings.completion_mode = prev;
+  } finally {
+    busy.delete('mode');
+    if (roomId === tasksUi.roomId) tasksRender();
+  }
 }
 
 // Stop cancels runner turns and sends every running card back to Backlog, so it always asks first and names what will be stopped.
