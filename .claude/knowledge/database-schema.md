@@ -274,7 +274,8 @@ CREATE TABLE room_task_settings (
   concurrency INTEGER NOT NULL DEFAULT 1, -- 1-5 cards at once
   idle_reason TEXT,                       -- 'empty' | 'blocked' | 'error' | NULL
   last_error TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  completion_mode TEXT NOT NULL DEFAULT 'quiet' -- 'quiet' | 'agent' (20261112-task-completion-mode.sql)
 );
 
 -- Cards

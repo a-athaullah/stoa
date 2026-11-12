@@ -852,6 +852,18 @@ The runner is a server-side loop that takes cards from Backlog and runs each one
 - When an agent's last reply in a task thread completes, the card moves to Finished automatically. The start of that reply becomes the card's result summary.
 - A card the agent could not finish stays in Backlog with a **Failed** badge. Click **Retry** to make it eligible again.
 
+#### Finish mode
+
+The board toolbar has a **Finish** control (next to the **Parallel** concurrency stepper) with two options:
+
+- **When quiet** *(default)* — a card finishes when its thread has been idle for a few seconds; the last agent reply becomes the result summary.
+- **Agent decides** — thread silence alone does not finish a card. The card ends only when the agent calls one of the decision tools: `stoa__task_complete` (moves to Finished with a summary; the card's thread is marked complete), `stoa__task_block` (moves to Awaiting with a reason), or `stoa__task_fail` (failed with a reason). The card's message tells the agent this explicitly. Use this mode for long-running work where a background process is still running or the agent needs to wait for a human before deciding.
+
+  Safeguards in Agent decides mode: if the thread has been quiet for 10 minutes without a decision, the runner posts one reminder to the agent. If the thread stays quiet for 3 hours total, the card is moved to Awaiting with the reason "the agent did not decide." The nudge and timeout durations can be changed with the environment variables `TASK_DECIDE_NUDGE_MS` and `TASK_DECIDE_MAX_MS`. Only the agent assigned to the card (or its sub-agent) can call the decision tools.
+
+- Switching modes while cards are running takes effect immediately — cards already running follow the new mode, but the message already posted in a card's thread is not updated.
+- Only the room owner can change the Finish mode. Changing it is not possible in an archived room.
+
 ### Agents and Sub-Agents
 
 Agents and sub-agents can manage cards via the `stoa__task_*` MCP tools:

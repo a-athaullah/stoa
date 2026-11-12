@@ -5217,10 +5217,13 @@ async function runAsyncUnitTests() {
     const fsT = require('fs'), pathT = require('path');
     const { runMigrations } = require('./lib/migrations');
     const { createRoomTasks, taskMcpTools, keyBetween, evenKeys } = require('./lib/room-tasks');
-    const { createRoomTasksRunner, composeTaskMessage } = require('./lib/room-tasks-runner');
+    const { createRoomTasksRunner, composeTaskMessage, AGENT_UNDECIDED } = require('./lib/room-tasks-runner');
+    const { createRoomMessages: createRoomMessagesT } = require('./lib/room-messages');
     const tick = () => new Promise(r => setImmediate(r));
+    const sleepT = (ms) => new Promise(r => setTimeout(r, ms));
     // → a fresh world: owner 1, agents 2 + 3 in room 10, agent 4 in room 11 only, sub-agent 7 of agent 2 linked to room 10.
-    const world = () => {
+    // opts: runner options (nudgeMs / maxMs for completion_mode 'agent').
+    const world = (opts = {}) => {
       const db = new Database(':memory:');
       db.pragma('foreign_keys = ON');
       runMigrations(db, pathT.join(__dirname, 'migrations'), { log() {}, error() {} },
@@ -5231,21 +5234,27 @@ async function runAsyncUnitTests() {
         INSERT INTO sub_agents (id, parent_actor_id, label) VALUES (7,2,'probe'),(8,2,'unlinked');
         INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (10,7);`);
       const sent = [];
-      const tasks = createRoomTasks({ db, broadcast: (roomId, d) => sent.push({ roomId, ...d }) });
+      const push = (roomId, d) => sent.push({ roomId, ...d });
+      const msgs = createRoomMessagesT({ db, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
+      const tasks = createRoomTasks({
+        db, broadcast: push, primaryActorId: (roomId) => (roomId === 10 ? 2 : 4),
+        completeThread: (roomId, rootId) => {
+          const r = msgs.setThreadCompleted(roomId, rootId, true);
+          if (r.status === 200) push(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
+        },
+      });
       const deps = {
-        dispatched: [], aborted: [], online: new Set([2, 3, 4]), busy: new Set(),
-        dispatch: (roomId, text, automation) => {
-          deps.dispatched.push({ roomId, text, automation });
-          const id = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, automation_provider, automation_name, task_id, task_seq) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=1), ?, 'complete', 'task', ?, ?, ?)")
-            .run(roomId, roomId, text, automation.name, automation.task_id, automation.task_seq).lastInsertRowid);
-          db.prepare('UPDATE messages SET thread_id=NULL WHERE id=?').run(id);
-          return id;
+        dispatched: [], nudges: [], aborted: [], online: new Set([2, 3, 4]), busy: new Set(),
+        dispatch: (roomId, text, automation, threadId = null) => {
+          (threadId ? deps.nudges : deps.dispatched).push({ roomId, text, automation, threadId });
+          return Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, automation_provider, automation_name, task_id, task_seq, thread_id) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=1), ?, 'complete', 'task', ?, ?, ?, ?)")
+            .run(roomId, roomId, text, automation.name, automation.task_id, automation.task_seq, threadId).lastInsertRowid);
         },
       };
       const runner = createRoomTasksRunner({
         db, tasks, dispatch: (...a) => deps.dispatch(...a), threadBusy: (roomId, t) => deps.busy.has(t),
         abortThread: (roomId, t) => deps.aborted.push(t), agentOnline: (id) => deps.online.has(id),
-        primaryActorId: (roomId) => (roomId === 10 ? 2 : 4), settleMs: 0, noReplyMs: 60000, log: { error() {} },
+        primaryActorId: (roomId) => (roomId === 10 ? 2 : 4), settleMs: 0, noReplyMs: 60000, log: { error() {} }, ...opts,
       });
       // Agent reply in a card's thread (what a finished turn leaves behind).
       const reply = (taskId, actorId, content, state = 'complete') => {
@@ -5253,7 +5262,8 @@ async function runAsyncUnitTests() {
         db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=?), ?, ?, ?)")
           .run(t.room_id, t.room_id, actorId, content, state, t.thread_id);
       };
-      return { db, tasks, runner, deps, sent, reply, close: () => db.close() };
+      const threadDone = (taskId) => db.prepare('SELECT m.thread_completed_at FROM messages m JOIN room_tasks t ON t.thread_id=m.id WHERE t.id=?').get(taskId).thread_completed_at;
+      return { db, tasks, runner, deps, sent, reply, threadDone, close: () => db.close() };
     };
     const H = { actorId: null };
     const AG = { actorId: 2, subAgentId: null };
@@ -5740,6 +5750,258 @@ async function runAsyncUnitTests() {
         assert.ok(d.text.includes('Check **/var**') && d.text.includes('- [ ] df -h') && d.text.includes(`task_id ${t.id}`) && d.text.includes('stoa__task_block'));
         assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'id' }).includes('Kerjakan task ini'));
         assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'constructor' }).includes('Work on this task'), 'unknown lang → en');
+      } finally { w.close(); }
+    });
+
+    // ── completion_mode 'agent' (lib/room-tasks-runner.js header) ──
+    const agentMode = (w, roomId = 10) => assert.strictEqual(w.tasks.updateSettings(roomId, H, { completion_mode: 'agent' }).status, 200);
+
+    await uta('Tasks completion_mode — settings: default quiet, PATCH validates (400) and is human-only (403), broadcast carries it, CHECK in schema', async () => {
+      const w = world();
+      try {
+        assert.strictEqual(w.tasks.getSettings(10).body.settings.completion_mode, 'quiet', 'default');
+        for (const bad of ['fast', '', null, 1, 'AGENT']) {
+          const r = w.tasks.updateSettings(10, H, { completion_mode: bad });
+          assert.strictEqual(r.status, 400, JSON.stringify(bad));
+          assert.match(r.body.error, /completion_mode/);
+        }
+        assert.strictEqual(w.tasks.updateSettings(10, AG, { completion_mode: 'agent' }).status, 403);
+        assert.strictEqual(w.tasks.updateSettings(10, { actorId: 2, subAgentId: 7 }, { completion_mode: 'agent' }).status, 403);
+        assert.strictEqual(w.tasks.updateSettings(10, H, { completion_mode: 'agent', concurrency: 9 }).status, 400);
+        assert.strictEqual(w.tasks.getSettings(10).body.settings.completion_mode, 'quiet', 'a refused patch writes nothing');
+        const r = w.tasks.updateSettings(10, H, { completion_mode: 'agent' });
+        assert.deepStrictEqual([r.status, r.body.completion_mode, r.body.concurrency], [200, 'agent', 1]);
+        const pushed = w.sent.filter(e => e.type === 'task_settings').at(-1);
+        assert.strictEqual(pushed.settings.completion_mode, 'agent', 'task_settings broadcast');
+        assert.strictEqual(w.tasks.list(10).body.settings.completion_mode, 'agent', 'list carries it');
+        const both = w.tasks.updateSettings(10, H, { concurrency: 3 });
+        assert.deepStrictEqual([both.body.concurrency, both.body.completion_mode], [3, 'agent'], 'concurrency alone keeps the mode');
+        assert.strictEqual(w.tasks.updateSettings(10, H, { completion_mode: 'quiet', concurrency: 2 }).body.completion_mode, 'quiet');
+        w.runner.play(10, H); // running toggles keep the mode
+        assert.strictEqual(w.tasks.updateSettings(10, H, { completion_mode: 'agent' }).body.completion_mode, 'agent');
+        w.runner.pause(10, H);
+        assert.strictEqual(w.tasks.run.settings(10).completion_mode, 'agent');
+        assert.throws(() => w.db.prepare("UPDATE room_task_settings SET completion_mode='x' WHERE room_id=10").run(), /CHECK/);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — a turn ending with an interim reply and a quiet thread keeps the card running; message says how it ends', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        const a = mk(w, 'Deploy');
+        w.runner.play(10, H);
+        await tick();
+        const text = w.deps.dispatched[0].text;
+        assert.ok(text.includes('The task ends only when you call stoa__task_complete') && !text.includes('Done = your last reply'), text);
+        w.reply(a.id, 2, 'deploy started in the background, waiting for it');
+        for (let i = 0; i < 4; i++) { w.runner.checkRuns(); await sleepT(5); }
+        const t = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([t.col, t.status, t.result_summary], ['ongoing', 'running', null], 'quiet thread ends nothing');
+        assert.strictEqual(w.deps.nudges.length, 0, 'no reminder before nudgeMs');
+        assert.strictEqual(w.threadDone(a.id), null);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — task_complete: Finished with the agent summary, thread marked complete (event), next card runs; quiet mode leaves the thread open', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        assert.deepStrictEqual(w.deps.dispatched.map(d => d.automation.task_id), [a.id], 'concurrency 1');
+        w.reply(a.id, 2, 'interim');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        const done = w.tasks.complete(10, AG, a.id, { summary: 'deployed v2, all checks green' });
+        assert.deepStrictEqual([done.status, done.body.col, done.body.status, done.body.result_summary], [200, 'finished', 'done', 'deployed v2, all checks green']);
+        assert.ok(w.threadDone(a.id), 'thread_completed_at set');
+        const ev = w.sent.find(e => e.type === 'thread_status');
+        assert.deepStrictEqual([ev.thread_id, ev.completed], [done.body.thread_id, true], 'thread_status broadcast');
+        await tick();
+        assert.strictEqual(w.deps.dispatched.at(-1).automation.task_id, b.id, 'runner took the next card');
+        assert.strictEqual(w.tasks.get(10, b.id).body.status, 'running');
+        // quiet mode: the same tool call does not touch the thread (behaviour unchanged).
+        w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
+        w.reply(b.id, 2, 'ok');
+        assert.strictEqual(w.tasks.complete(10, AG, b.id, { summary: 's' }).status, 200);
+        assert.strictEqual(w.threadDone(b.id), null);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — task_block → Awaiting, task_fail → failed; neither marks the thread complete', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        w.reply(a.id, 2, 'hmm'); w.reply(b.id, 2, 'hmm');
+        const bl = w.tasks.block(10, AG, a.id, { reason: 'which region?' });
+        assert.deepStrictEqual([bl.status, bl.body.col, bl.body.status, bl.body.await_reason], [200, 'awaiting', 'blocked', 'which region?']);
+        const fl = w.tasks.fail(10, AG, b.id, { reason: 'API down' });
+        assert.deepStrictEqual([fl.status, fl.body.col, fl.body.status, fl.body.fail_reason], [200, 'backlog', 'failed', 'API down']);
+        assert.deepStrictEqual([w.threadDone(a.id), w.threadDone(b.id)], [null, null]);
+        assert.ok(!w.sent.some(e => e.type === 'thread_status'));
+        assert.strictEqual(w.tasks.block(10, AG, a.id, { reason: 'again' }).status, 409, 'not running any more');
+        const mv = w.tasks.move(10, AG, a.id, { col: 'backlog' });
+        assert.strictEqual(mv.status, 200, 'confirming a blocked card is unchanged');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — one reminder per quiet spell, to the card\'s agent in its thread; the answer to it does not start a burst', async () => {
+      const w = world({ nudgeMs: 150, maxMs: 60000 });
+      try {
+        agentMode(w);
+        const a = mk(w, 'Run suite', { assignee_sub_agent_id: 7 });
+        w.runner.play(10, H);
+        await tick();
+        const thread = w.tasks.get(10, a.id).body.thread_id;
+        w.reply(a.id, 2, 'suite running');
+        w.runner.checkRuns();
+        await sleepT(170);
+        w.runner.checkRuns();
+        await tick();
+        assert.strictEqual(w.deps.nudges.length, 1, 'reminder after nudgeMs quiet');
+        const n = w.deps.nudges[0];
+        assert.strictEqual(n.threadId, thread, 'in the card\'s own thread');
+        assert.deepStrictEqual([n.automation.provider, n.automation.target_actor_id, n.automation.task_id], ['task', 2, a.id]);
+        assert.ok(n.text.startsWith('@probe ') && n.text.includes(`Task #${a.seq}`) && n.text.includes('stoa__task_complete'), n.text);
+        // Its turn not seen yet: no second reminder however long it stays quiet.
+        await sleepT(170); w.runner.checkRuns(); await sleepT(170); w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 1, 'one per quiet spell');
+        // The agent answers the reminder without deciding: busy, then quiet again.
+        w.deps.busy.add(thread); w.runner.checkRuns(); w.deps.busy.delete(thread);
+        w.reply(a.id, 2, 'still running, will report');
+        w.runner.checkRuns(); w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 1, 'the answer does not trigger a reminder right away');
+        await sleepT(30); w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 1, 'not before nudgeMs of quiet');
+        await sleepT(140); w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 2, 'next reminder only after another nudgeMs of quiet');
+        // An answer whose whole turn fell between two polls is still the reminder's turn.
+        w.reply(a.id, 2, 'quick answer');
+        w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 2);
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'a reminder never ends the card');
+        // Language of the target agent.
+        assert.ok(require('./lib/room-tasks-runner').composeNudgeMessage({ id: 5, seq: 2 }, { lang: 'id' }).includes('belum diputuskan'));
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — maxMs without a decision → Awaiting (system, reason), thread open; answering reminders does not hold it off; new activity resets', async () => {
+      const w = world({ nudgeMs: 30, maxMs: 400 });
+      try {
+        agentMode(w);
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        const ta = w.tasks.get(10, a.id).body.thread_id, tb = w.tasks.get(10, b.id).body.thread_id;
+        w.reply(a.id, 2, 'waiting'); w.reply(b.id, 2, 'waiting');
+        w.runner.checkRuns();
+        const start = Date.now();
+        let answered = 0;
+        while (Date.now() - start < 200) {
+          await sleepT(10);
+          // A answers every reminder at once (no decision); B gets real new activity every ~10ms.
+          if (w.deps.nudges.filter(n => n.threadId === ta).length > answered) { answered++; w.reply(a.id, 2, `answer ${answered}`); }
+          w.deps.busy.add(tb); w.runner.checkRuns(); w.deps.busy.delete(tb); w.reply(b.id, 2, 'progress');
+          w.runner.checkRuns();
+          await tick();
+        }
+        assert.ok(answered >= 2, `A was reminded and answered (${answered})`);
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'not yet maxMs');
+        await sleepT(250);
+        w.runner.checkRuns();
+        const ra = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([ra.col, ra.status, ra.await_reason], ['awaiting', 'blocked', AGENT_UNDECIDED]);
+        assert.match(AGENT_UNDECIDED, /did not decide/);
+        const ev = ra.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.actor_kind, ev.body], ['blocked', 'system', AGENT_UNDECIDED]);
+        assert.strictEqual(w.threadDone(a.id), null, 'thread not marked complete');
+        assert.strictEqual(w.tasks.get(10, b.id).body.status, 'running', 'B had new activity all along: its clock restarted');
+        assert.strictEqual(w.deps.nudges.filter(n => n.threadId === tb).length, 0, 'B was never quiet for nudgeMs');
+        // The agent's late decision on A is refused; the timeout is pinned to the run's thread.
+        assert.strictEqual(w.tasks.complete(10, AG, a.id, {}).status, 409);
+        assert.strictEqual(w.tasks.run.block(10, b.id, 'x', w.tasks.run.SYSTEM, ta).status, 409, 'stale thread');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — only the card\'s agent decides: assigned sub-agent / its parent / primary yes; other agent or sub-agent in the thread 403 (quiet: unchanged)', async () => {
+      const w = world();
+      try {
+        w.db.exec("INSERT INTO sub_agents (id, parent_actor_id, label) VALUES (9,2,'helper'); INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (10,9);");
+        agentMode(w);
+        w.tasks.updateSettings(10, H, { concurrency: 3 });
+        const s = mk(w, 'S', { assignee_sub_agent_id: 7 }), p = mk(w, 'P', { assignee_sub_agent_id: 7 }), n = mk(w, 'N');
+        w.runner.play(10, H);
+        await tick();
+        // Everyone posted in every thread (an @mention, a helper sub-agent).
+        for (const t of [s, p, n]) {
+          w.reply(t.id, 3, 'C chimes in');
+          const th = w.tasks.get(10, t.id).body.thread_id;
+          w.db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, sub_agent_id) VALUES (10, (SELECT id FROM room_participants WHERE room_id=10 AND actor_id=2), 'helper', 'complete', ?, 9)").run(th);
+        }
+        const C = { actorId: 3, subAgentId: null }, HELP = { actorId: 2, subAgentId: 9 }, PROBE = { actorId: 2, subAgentId: 7 };
+        assert.strictEqual(w.tasks.complete(10, C, s.id, {}).status, 403, 'another agent in the thread');
+        assert.strictEqual(w.tasks.block(10, HELP, s.id, { reason: 'x' }).status, 403, 'a sub-agent the card is not assigned to');
+        assert.strictEqual(w.tasks.fail(10, C, s.id, { reason: 'x' }).status, 403);
+        assert.strictEqual(w.tasks.move(10, HELP, s.id, { col: 'finished' }).status, 409, 'move = complete, same rule (running card, not its agent)');
+        assert.strictEqual(w.tasks.complete(10, PROBE, s.id, { summary: 'probe done' }).status, 200, 'assigned sub-agent');
+        assert.strictEqual(w.tasks.fail(10, AG, p.id, { reason: 'parent stops it' }).status, 200, 'parent agent (runner target)');
+        assert.strictEqual(w.tasks.complete(10, PROBE, n.id, {}).status, 403, 'card not assigned to the sub-agent');
+        assert.strictEqual(w.tasks.complete(10, C, n.id, {}).status, 403, 'not the primary');
+        assert.strictEqual(w.tasks.block(10, AG, n.id, { reason: 'ask' }).status, 200, 'primary agent');
+        // quiet mode: posting in the thread is enough (unchanged).
+        w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
+        w.tasks.move(10, H, n.id, { col: 'backlog' });
+        w.runner.play(10, H);
+        await tick();
+        w.reply(n.id, 3, 'C again');
+        assert.strictEqual(w.tasks.complete(10, C, n.id, {}).status, 200, 'quiet: any agent that posted in the thread');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode — switching while a card runs: quiet→agent stops quiet finishing, agent→quiet settles, agent clocks restart; no double finish', async () => {
+      const w = world({ nudgeMs: 100, maxMs: 60000 });
+      try {
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
+        assert.ok(w.deps.dispatched[0].text.includes('Done = your last reply'), 'quiet wording unchanged');
+        w.reply(a.id, 2, 'interim');
+        w.runner.checkRuns(); // quiet clock started
+        agentMode(w);
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'quiet→agent: the quiet clock no longer finishes it');
+        await sleepT(120);
+        w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
+        w.runner.checkRuns(); // agent clock dropped, quiet clock starts now
+        agentMode(w);
+        w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 0, 'agent clock restarted from zero after the switch');
+        await sleepT(120); w.runner.checkRuns(); await tick();
+        assert.strictEqual(w.deps.nudges.length, 1, 'then reminds after nudgeMs');
+        w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
+        w.reply(a.id, 2, 'final answer');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        const t = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([t.col, t.status, t.result_summary], ['finished', 'done', 'final answer'], 'agent→quiet: settles from quiet');
+        assert.strictEqual(t.events.filter(e => e.kind === 'completed').length, 1, 'finished once');
+        w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.events.filter(e => e.kind === 'completed').length, 1);
+        // Stop with agent clocks running: card back in Backlog, no late reminder / timeout for it.
+        agentMode(w);
+        const b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        w.reply(b.id, 2, 'x');
+        w.runner.checkRuns();
+        w.runner.stop(10, H);
+        await sleepT(120); w.runner.checkRuns(); await tick();
+        assert.deepStrictEqual([w.tasks.get(10, b.id).body.status, w.deps.nudges.length], ['idle', 1]);
       } finally { w.close(); }
     });
 
@@ -9266,6 +9528,38 @@ async function run() {
       const off = await waitFor(() => frames.find(f => f.type === 'task_settings' && !f.settings.running && f.settings.idle_reason === 'empty'));
       assert.ok(off, 'runner switched itself off: Backlog done');
       assert.notStrictEqual(card(t1.id).thread_id, card(t2.id).thread_id, 'one thread per card');
+    });
+
+    await test('Tasks — completion_mode agent end to end: PATCH validates, quiet thread keeps the card, agent task_complete finishes it and completes the thread', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const bad = await req('PATCH', `${base()}/settings`, { completion_mode: 'sometimes' });
+      assert.deepStrictEqual([bad.status, /completion_mode/.test(bad.body.error)], [400, true]);
+      assert.strictEqual((await asAgent(agA, 'PATCH', `${base()}/settings`, { completion_mode: 'agent' })).status, 403, 'human only');
+      const p = await req('PATCH', `${base()}/settings`, { completion_mode: 'agent' });
+      assert.deepStrictEqual([p.status, p.body.completion_mode], [200, 'agent']);
+      assert.ok(await waitFor(() => frames.find(f => f.type === 'task_settings' && f.settings.completion_mode === 'agent')), 'task_settings broadcast');
+      assert.strictEqual((await req('GET', `${base()}/settings`)).body.settings.completion_mode, 'agent');
+      try {
+        const t = (await req('POST', base(), { title: 'Deploy with suite' })).body;
+        const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+        assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 200);
+        const m = await trig;
+        const running = await waitFor(() => { const c = card(t.id); return c.thread_id ? c : null; });
+        assert.ok(tDb.prepare('SELECT content FROM messages WHERE id=?').get(running.message_id).content.includes('The task ends only when you call stoa__task_complete'));
+        await completeRun(agA.ws, roomId, m);
+        await new Promise(r => setTimeout(r, 1200)); // > TASK_SETTLE_MS + polls
+        assert.deepStrictEqual([card(t.id).col, card(t.id).status], ['ongoing', 'running'], 'quiet thread ends nothing');
+        const done = await asAgent(agA, 'POST', `${base()}/${t.id}/complete`, { summary: 'deployed, suite green' });
+        assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'deployed, suite green']);
+        const ts = await waitFor(() => frames.find(f => f.type === 'thread_status' && f.thread_id === running.thread_id));
+        assert.ok(ts && ts.completed === true, 'thread_status broadcast');
+        const th = await req('GET', `/api/rooms/${roomId}/threads/${running.thread_id}`);
+        assert.deepStrictEqual([th.status, th.body.root.completed], [200, true]);
+        await req('DELETE', `${base()}/${t.id}`);
+      } finally {
+        await req('POST', `${base()}/runner/stop`);
+        assert.strictEqual((await req('PATCH', `${base()}/settings`, { completion_mode: 'quiet' })).body.completion_mode, 'quiet');
+      }
     });
 
     await test('Tasks — Stop: agent gets cancel_generation, card back to Backlog in place, event stopped, idempotent', async () => {

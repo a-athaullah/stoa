@@ -677,7 +677,8 @@ CREATE TABLE IF NOT EXISTS room_task_settings (
   concurrency INTEGER NOT NULL DEFAULT 1 CHECK(concurrency BETWEEN 1 AND 5),
   running INTEGER NOT NULL DEFAULT 0,
   last_error TEXT DEFAULT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completion_mode TEXT NOT NULL DEFAULT 'quiet' CHECK(completion_mode IN ('quiet','agent'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_task_id ON messages(task_id) WHERE task_id IS NOT NULL;
