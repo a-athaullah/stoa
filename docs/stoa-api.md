@@ -335,6 +335,10 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 - To finish early with your own summary, call `stoa__task_complete`.
 - To tick checklist items, send the whole `checklist` with `stoa__task_update`, keeping each item's `id`.
 
+**Starting a card yourself:** move an idle Backlog card to `ongoing` (`stoa__task_move`). It must not wait on an unfinished `blocked_by` task. The card runs without a thread: the server records you as `claimed_by_actor_id` (and `claimed_by_sub_agent_id` for a sub-agent), and the run lasts until you end it with `stoa__task_complete`, `stoa__task_block`, or `stoa__task_fail`, or move it back to `backlog` to release it. The card takes one of the runner's concurrency slots while it runs. The owner can still end it with Stop. A server restart does not end it.
+
+**Ending your run by moving the card:** for the card you are working on, moving it to `finished` completes it, and moving it to `awaiting` (with `reason`) blocks it. Moving it to `backlog` releases it, for a card you started yourself only; a runner run ends with your reply, `stoa__task_fail`, or `stoa__task_block`.
+
 | Method | Path | Body → Response |
 |--------|------|-----------------|
 | `GET` | `/api/rooms/:id/tasks` | Query `col`, `status`, `assignee` (actor id or `none`), `label`, `q` → `{tasks:[Task], settings, counts:{running, awaiting, backlog, finished}}` (order: column, then position) |
@@ -342,8 +346,8 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 | `GET` | `/api/rooms/:id/tasks/:tid` | Query `before` (event id), `limit` (max 100, default 50) → `Task` + `{events:[Event] (oldest first), has_more_events}` |
 | `PATCH` | `/api/rooms/:id/tasks/:tid` | Any of `title, description, priority, labels, checklist, assignee_actor_id, assignee_sub_agent_id, blocked_by` → `Task`. `409` for assignee / `blocked_by` while the card runs |
 | `DELETE` | `/api/rooms/:id/tasks/:tid` | `204`. `409` while it runs. Cards that depended on it lose that dependency, and their log records it |
-| `POST` | `/api/rooms/:id/tasks/:tid/move` | `{col, before_id? \| after_id?, reason?}` → `Task`. Without a neighbour the card goes to the end of the column. Moving to `awaiting` requires `reason` |
-| `POST` | `/api/rooms/:id/tasks/:tid/complete` | `{summary?}` → `Task` (running card only) |
+| `POST` | `/api/rooms/:id/tasks/:tid/move` | `{col, before_id? \| after_id?, reason?}` → `Task`. Without a neighbour the card goes to the end of the column. Moving to `awaiting` requires `reason`. `ongoing` (agent only) starts an idle Backlog card, without a neighbour |
+| `POST` | `/api/rooms/:id/tasks/:tid/complete` | `{summary?}` → `Task` (running card only; an agent only for the card it is working on) |
 | `POST` | `/api/rooms/:id/tasks/:tid/block` | `{reason}` → `Task` (running card → Awaiting, status `blocked`) |
 | `POST` | `/api/rooms/:id/tasks/:tid/fail` | `{reason}` → `Task` (running card → Backlog, status `failed`) |
 | `POST` | `/api/rooms/:id/tasks/:tid/retry` | → `Task` (failed card → idle, in its place) |
@@ -351,20 +355,22 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 | `GET`, `PATCH` | `/api/rooms/:id/tasks/settings` | `PATCH {concurrency}` (owner only) → settings |
 | `POST` | `/api/rooms/:id/tasks/runner/play\|pause\|stop` | Owner only → `{settings, counts}`. Pause lets running cards finish. Stop cancels them and puts them back in Backlog |
 
-**Task:** `{id, room_id, seq, title, description, col, rank, priority ('none' | 'low' | 'med' | 'high'), labels, checklist:[{id, text, done}], assignee_actor_id, assignee_sub_agent_id, status ('idle' | 'running' | 'blocked' | 'failed' | 'done'), blocked_by:[id], waiting_on:[id], await_reason, fail_reason, attempts, thread_id, message_id, result_summary, created_by_actor_id, created_at, started_at, finished_at, updated_at}`. The fields work as follows:
+**Task:** `{id, room_id, seq, title, description, col, rank, priority ('none' | 'low' | 'med' | 'high'), labels, checklist:[{id, text, done}], assignee_actor_id, assignee_sub_agent_id, status ('idle' | 'running' | 'blocked' | 'failed' | 'done'), blocked_by:[id], waiting_on:[id], await_reason, fail_reason, attempts, thread_id, message_id, result_summary, created_by_actor_id, created_at, started_at, finished_at, updated_at, claimed_by_actor_id, claimed_by_sub_agent_id}`. The fields work as follows:
 - `id` is what the API and the tools take. `seq` is the per-room number shown as `#seq`.
 - `waiting_on` lists the dependencies that are not Finished yet.
 - `attempts` counts the retries (`0` on the first run).
+- `claimed_by_actor_id` / `claimed_by_sub_agent_id` name the agent (and sub-agent) that started the card itself. Both are `null` for a runner run. A later runner run clears them.
 - Send `assignee_actor_id` (an AI agent of the room, or `null` for the primary agent) or `assignee_sub_agent_id` (a sub-agent linked to the room), not both. With a sub-agent, the server sets `assignee_actor_id` to its parent and starts the task message with `@label`.
 - `rank` is the card's position. The server computes it from `before_id` / `after_id`; never send it. Ranks of other cards can change when the server re-spreads a column, so order cards by the latest rank and do not keep old values.
 
-**Event:** `{id, task_id, kind, actor_id, actor_kind ('human' | 'agent' | 'sub_agent' | 'system'), body, meta, at}`. Each change adds one event. `kind` is one of `created`, `edited`, `moved`, `started`, `completed`, `failed`, `blocked`, `retry`, `stopped`, `comment`, `dep_added`, `dep_removed`, `awaiting`, or `confirmed`.
+**Event:** `{id, task_id, kind, actor_id, actor_kind ('human' | 'agent' | 'sub_agent' | 'system'), body, meta, at}`. Each change adds one event. `kind` is one of `created`, `edited`, `moved`, `started` (the runner), `claimed` (an agent started it itself), `completed`, `failed`, `blocked`, `retry`, `stopped` (also an agent releasing its card, reason `released by the agent`), `comment`, `dep_added`, `dep_removed`, `awaiting`, or `confirmed` (moved out of Awaiting to Backlog, by the owner or an agent; `actor_kind` says which).
 
 **What an agent may not do** (`403` or `409`):
 - Start the runner (play, pause, stop) or change concurrency.
-- Move a card to `ongoing`. Only the runner does that.
-- Move a card out of Awaiting. That is the owner's confirmation.
-- Complete, block, or fail a card it is not running.
+- Complete, block, fail, or move out of Ongoing a card it is not working on (a runner run in its thread, or a card it started itself). A parent agent may act on its sub-agent's card.
+- Start a card that is not idle in Backlog (a failed card needs `retry` first) or that waits on an unfinished dependency.
+
+The owner moves a card to `ongoing` only with Play (`409` otherwise), and a running card leaves Ongoing only through Stop, complete, block, or fail.
 
 **Errors:**
 - `400`: invalid fields, or `blocked_by` that points at the card itself, a missing card, a card of another room, more than 20 cards, or a cycle.

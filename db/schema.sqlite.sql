@@ -636,6 +636,9 @@ CREATE TABLE IF NOT EXISTS room_tasks (
   started_at TEXT DEFAULT NULL,
   finished_at TEXT DEFAULT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- migrations/20261112-task-claimed-by.sql: set when an agent started the card itself (no runner thread).
+  claimed_by_actor_id INTEGER DEFAULT NULL REFERENCES actors(id) ON DELETE SET NULL,
+  claimed_by_sub_agent_id INTEGER DEFAULT NULL REFERENCES sub_agents(id) ON DELETE SET NULL,
   UNIQUE(room_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_room_tasks_col_rank ON room_tasks(room_id, col, rank);
@@ -644,6 +647,8 @@ CREATE INDEX IF NOT EXISTS idx_room_tasks_status ON room_tasks(room_id, status);
 CREATE INDEX IF NOT EXISTS idx_room_tasks_assignee ON room_tasks(assignee_actor_id) WHERE assignee_actor_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_room_tasks_assignee_sub ON room_tasks(assignee_sub_agent_id) WHERE assignee_sub_agent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_room_tasks_created_by ON room_tasks(created_by_actor_id) WHERE created_by_actor_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_room_tasks_claimed_by ON room_tasks(claimed_by_actor_id) WHERE claimed_by_actor_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_room_tasks_claimed_by_sub ON room_tasks(claimed_by_sub_agent_id) WHERE claimed_by_sub_agent_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS room_task_deps (
   task_id INTEGER NOT NULL REFERENCES room_tasks(id) ON DELETE CASCADE,

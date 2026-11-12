@@ -288,12 +288,18 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
-### 7. Task Board — Human-Only Ops Are Enforced Server-Side, Not Via MCP Permission
-**Decision (2026-11-12):** Runner play/pause/stop, changing concurrency, and confirming Awaiting tasks (moving out of `awaiting`) are HTTP-only and check `isHuman(who)` in `lib/room-tasks.js`. They are not exposed as MCP tools at all — there is no tool to block per-agent.
+### 7. Task Board — Runner Controls Are Human-Only; Agents Start and Confirm Cards Themselves
+**Decision (2026-11-12):** Runner play/pause/stop and changing concurrency are HTTP-only and check `isHuman(who)` in `lib/room-tasks.js` / `lib/room-tasks-runner.js`. They are not exposed as MCP tools at all — there is no tool to block per-agent.
 
-**Why:** These are intentionally owner-only controls. The board is a collaboration tool where the human remains in control of when the runner runs and which tasks are unblocked.
+**Owner decision (2026-11-12, after #250):** agents may do the rest. An agent moves an idle Backlog card to `ongoing` to work on it itself (`claim()`: event `claimed`, `claimed_by_actor_id` / `claimed_by_sub_agent_id`, no thread), and moves a card out of Awaiting (event `confirmed` with the agent as actor). The owner still starts cards only with Play (a human move to `ongoing` → 409); the UI drag is unchanged.
 
-**Implication:** An agent that tries to call `POST /api/rooms/:id/tasks/runner/play` with agent credentials gets 403 `human_only`. Same for moving a card out of Awaiting.
+**Not a finding:**
+- A claimed card is not capped by the room's concurrency (the agent chose to work on it) but takes a slot, so the runner starts fewer cards.
+- The runner's no-reply / quiet-thread check and the startup reaper skip claimed cards: no server turn carries them. Stop still returns them to Backlog.
+- `claimed_by_*` stay on the card after its run (history, like `thread_id`); `runStart` clears them, and `checkWorking` decides by them only while the card runs.
+- A running card moved by the agent working on it: `finished` = complete, `awaiting` = block, `backlog` = release (claimed cards only; a runner run would be picked again at once).
+
+**Implication:** An agent that tries to call `POST /api/rooms/:id/tasks/runner/play` with agent credentials gets 403.
 
 ---
 

@@ -5335,7 +5335,7 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks move — order via before/after, column rules, awaiting reason, human-only confirm, finished status', async () => {
+    await uta('Tasks move — order via before/after, column rules, awaiting reason, agent may confirm, finished status', async () => {
       const w = world();
       try {
         const a = mk(w, 'A'), b = mk(w, 'B'), c = mk(w, 'C');
@@ -5357,15 +5357,158 @@ async function runAsyncUnitTests() {
         assert.deepStrictEqual([back.status, back.finished_at], ['idle', null]);
         const aw = w.tasks.move(10, AG, a.id, { col: 'awaiting', reason: 'need the API key' }).body;
         assert.deepStrictEqual([aw.col, aw.await_reason], ['awaiting', 'need the API key']);
-        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'backlog' }).status, 403, 'agent cannot confirm');
-        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'finished' }).status, 403, 'agent cannot bypass Awaiting either');
-        const ok = w.tasks.move(10, H, a.id, { col: 'backlog' }).body;
+        const ok = w.tasks.move(10, { actorId: 3, subAgentId: null }, a.id, { col: 'backlog' }).body; // any agent of the room confirms
         assert.deepStrictEqual([ok.col, ok.await_reason], ['backlog', null]);
         assert.strictEqual(order(w, 10, 'backlog').at(-1), 'A', 'confirm lands at the end of Backlog');
         const evs = w.tasks.get(10, a.id).body.events;
         assert.deepStrictEqual(evs.map(e => e.kind).slice(-2), ['awaiting', 'confirmed']);
         assert.strictEqual(evs.find(e => e.kind === 'awaiting').actor_kind, 'agent');
         assert.strictEqual(evs.find(e => e.kind === 'awaiting').actor_id, 2);
+        assert.deepStrictEqual([evs.at(-1).actor_kind, evs.at(-1).actor_id], ['agent', 3], 'the log names the agent that confirmed');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks claim — an agent starts an idle Backlog card itself: Ongoing, running, no thread, claimer recorded', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.sent.length = 0;
+        const r = w.tasks.move(10, AG, b.id, { col: 'ongoing' });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        assert.deepStrictEqual([r.body.col, r.body.status, r.body.thread_id, r.body.claimed_by_actor_id, r.body.claimed_by_sub_agent_id, !!r.body.started_at],
+          ['ongoing', 'running', null, 2, null, true]);
+        const ev = w.tasks.get(10, b.id).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.actor_kind, ev.actor_id, ev.meta.from_col, ev.meta.to_col], ['claimed', 'agent', 2, 'backlog', 'ongoing']);
+        assert.strictEqual(w.sent.find(m => m.type === 'task_settings').counts.running, 1, 'board counts it as running');
+        assert.deepStrictEqual(w.deps.dispatched, [], 'no runner message for a claimed card');
+        // It keeps its Backlog place: released, it is back between A and the end, not appended.
+        const c = mk(w, 'C');
+        const rel = w.tasks.move(10, AG, b.id, { col: 'backlog' });
+        assert.deepStrictEqual([rel.status, rel.body.col, rel.body.status], [200, 'backlog', 'idle']);
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['A', 'B', 'C']);
+        const back = w.tasks.get(10, b.id).body.events.at(-1);
+        assert.deepStrictEqual([back.kind, back.body, back.actor_id], ['stopped', 'released by the agent', 2]);
+        // A sub-agent claims for itself.
+        const sub = w.tasks.move(10, { actorId: 2, subAgentId: 7 }, a.id, { col: 'ongoing' }).body;
+        assert.deepStrictEqual([sub.claimed_by_actor_id, sub.claimed_by_sub_agent_id], [2, 7]);
+        assert.strictEqual(w.tasks.get(10, a.id).body.events.at(-1).actor_kind, 'sub_agent');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks claim — refused: owner, not idle in Backlog, failed, unfinished dependency, neighbour, other room, archived room', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A');
+        assert.match(w.tasks.move(10, H, a.id, { col: 'ongoing' }).body.error, /Play/, 'the owner starts cards with Play');
+        const aw = mk(w, 'Aw', { col: 'awaiting', await_reason: 'ask' });
+        assert.deepStrictEqual([w.tasks.move(10, AG, aw.id, { col: 'ongoing' }).status, w.tasks.get(10, aw.id).body.col], [409, 'awaiting']);
+        const fin = mk(w, 'Fin');
+        w.tasks.move(10, H, fin.id, { col: 'finished' });
+        assert.strictEqual(w.tasks.move(10, AG, fin.id, { col: 'ongoing' }).status, 409);
+        const failed = mk(w, 'Failed');
+        w.db.prepare("UPDATE room_tasks SET status='failed', fail_reason='x' WHERE id=?").run(failed.id);
+        assert.match(w.tasks.move(10, AG, failed.id, { col: 'ongoing' }).body.error, /retry it first/);
+        const dep = mk(w, 'Dep', { blocked_by: [a.id] });
+        const wait = w.tasks.move(10, AG, dep.id, { col: 'ongoing' });
+        assert.deepStrictEqual([wait.status, wait.body.waiting_on], [409, [a.id]]);
+        assert.strictEqual(w.tasks.move(10, AG, dep.id, { col: 'ongoing', before_id: a.id }).status, 400, 'a claim keeps its place');
+        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'ongoing' }).status, 200);
+        assert.strictEqual(w.tasks.move(10, { actorId: 3, subAgentId: null }, a.id, { col: 'ongoing' }).status, 409, 'no second claim');
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'ongoing' }).status, 409, 'no reorder inside Ongoing either');
+        const still = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([still.status, still.claimed_by_actor_id], ['running', 2], 'the first claim stays, still running');
+        w.tasks.complete(10, AG, a.id);
+        assert.strictEqual(w.tasks.move(10, AG, dep.id, { col: 'ongoing' }).status, 200, 'dependency Finished → it can start');
+        assert.strictEqual(w.tasks.move(11, { actorId: 4, subAgentId: null }, failed.id, { col: 'ongoing' }).status, 404, 'card of another room');
+        const tools = Object.fromEntries(taskMcpTools(w.tasks).map(t => [t.name, t]));
+        const c = mk(w, 'C');
+        assert.match(JSON.parse(tools.task_move.call({ roomId: 11, actorId: 2 }, { id: c.id, col: 'ongoing' }).content[0].text).error, /agent_scope_denied/);
+        w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
+        assert.match(JSON.parse(tools.task_move.call({ roomId: 10, actorId: 2 }, { id: c.id, col: 'ongoing' }).content[0].text).error, /archived/);
+        assert.strictEqual(w.tasks.get(10, c.id).body.status, 'idle');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks claim — only the claimer (or its parent agent, or the owner) completes / blocks / fails / releases it', async () => {
+      const w = world();
+      try {
+        const C3 = { actorId: 3, subAgentId: null }, SUB = { actorId: 2, subAgentId: 7 };
+        const a = mk(w, 'A'), b = mk(w, 'B'), c = mk(w, 'C'), d = mk(w, 'D');
+        w.tasks.move(10, AG, a.id, { col: 'ongoing' });
+        for (const [who, label] of [[C3, 'another agent'], [SUB, 'a sub-agent of the claimer']]) {
+          assert.strictEqual(w.tasks.complete(10, who, a.id, {}).status, 403, label);
+          assert.strictEqual(w.tasks.block(10, who, a.id, { reason: 'r' }).status, 403, label);
+          assert.strictEqual(w.tasks.fail(10, who, a.id, { reason: 'r' }).status, 403, label);
+          assert.strictEqual(w.tasks.move(10, who, a.id, { col: 'backlog' }).status, 409, label);
+        }
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
+        const done = w.tasks.complete(10, AG, a.id, { summary: 'shipped' }).body;
+        assert.deepStrictEqual([done.col, done.status, done.result_summary], ['finished', 'done', 'shipped']);
+        assert.strictEqual(w.tasks.complete(10, AG, a.id, {}).status, 409, 'not running any more');
+        // Sub-agent claim: the sub-agent and its parent may end it, another agent not.
+        w.tasks.move(10, SUB, b.id, { col: 'ongoing' });
+        assert.strictEqual(w.tasks.fail(10, C3, b.id, { reason: 'x' }).status, 403);
+        const failed = w.tasks.fail(10, SUB, b.id, { reason: 'no access' }).body;
+        assert.deepStrictEqual([failed.col, failed.status, failed.fail_reason], ['backlog', 'failed', 'no access']);
+        w.tasks.move(10, SUB, c.id, { col: 'ongoing' });
+        const blocked = w.tasks.block(10, AG, c.id, { reason: 'which repo?' }).body;
+        assert.deepStrictEqual([blocked.col, blocked.status], ['awaiting', 'blocked']);
+        // The working agent may end it by moving it: finished = complete, awaiting = block (reason required).
+        w.tasks.move(10, AG, d.id, { col: 'ongoing' });
+        assert.strictEqual(w.tasks.move(10, AG, d.id, { col: 'awaiting' }).status, 400, 'block needs a reason');
+        assert.strictEqual(w.tasks.move(10, AG, d.id, { col: 'awaiting', reason: 'need keys' }).body.status, 'blocked');
+        assert.strictEqual(w.tasks.get(10, d.id).body.events.at(-1).kind, 'blocked');
+        assert.strictEqual(w.tasks.move(10, AG, d.id, { col: 'backlog' }).body.col, 'backlog', 'and the agent confirms it back');
+        w.tasks.move(10, AG, d.id, { col: 'ongoing' });
+        assert.deepStrictEqual([w.tasks.move(10, AG, d.id, { col: 'finished' }).body.status, w.tasks.get(10, d.id).body.events.at(-1).kind], ['done', 'completed']);
+        // The owner may end anyone's claim; a running card stays unmovable for the owner (Stop).
+        const e = mk(w, 'E');
+        w.tasks.move(10, AG, e.id, { col: 'ongoing' });
+        assert.strictEqual(w.tasks.move(10, H, e.id, { col: 'backlog' }).status, 409);
+        assert.strictEqual(w.tasks.fail(10, H, e.id, { reason: 'owner says no' }).body.status, 'failed');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks claim — runner: counts the slot, never takes a claimed card, no timeout, Stop returns it, reaper keeps it', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B'), c = mk(w, 'C');
+        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'ongoing' }).status, 200);
+        w.runner.play(10, H);
+        await tick();
+        assert.deepStrictEqual(w.deps.dispatched, [], 'concurrency 1 is taken by the claimed card');
+        assert.strictEqual(w.tasks.run.settings(10).running, true, 'runner waits, it does not turn itself off');
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        await tick();
+        assert.deepStrictEqual(w.deps.dispatched.map(d => d.automation.task_id), [b.id], 'next card, not the claimed one');
+        assert.strictEqual(w.tasks.run.start(10, a.id), false, 'a claimed card cannot be started again');
+        assert.match(w.tasks.move(10, AG, b.id, { col: 'ongoing' }).body.error, /already in ongoing/, 'a runner card cannot be claimed');
+        // A full runner does not cap an agent: it chose to work on C.
+        assert.strictEqual(w.tasks.move(10, AG, c.id, { col: 'ongoing' }).status, 200);
+        assert.strictEqual(w.tasks.run.counts(10).running, 3);
+        // A runner card cannot be released back into the Backlog it would be picked from again.
+        w.reply(b.id, 2, 'working');
+        assert.match(w.tasks.move(10, AG, b.id, { col: 'backlog' }).body.error, /runner task ends/);
+        // No thread + an old start: the no-reply check is for runner runs only.
+        w.db.prepare("UPDATE room_tasks SET started_at=datetime('now','-1 day') WHERE id IN (?,?)").run(a.id, c.id);
+        w.runner.checkRuns();
+        assert.deepStrictEqual([w.tasks.get(10, a.id).body.status, w.tasks.get(10, c.id).body.status], ['running', 'running']);
+        assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 }, 'only the runner card');
+        assert.deepStrictEqual([w.tasks.get(10, a.id).body.status, w.tasks.get(10, b.id).body.status], ['running', 'idle']);
+        w.deps.aborted.length = 0;
+        w.runner.stop(10, H);
+        assert.deepStrictEqual(w.deps.aborted, [], 'no thread to abort');
+        for (const t of [a, c]) {
+          const x = w.tasks.get(10, t.id).body;
+          assert.deepStrictEqual([x.col, x.status, x.events.at(-1).kind, x.events.at(-1).body], ['backlog', 'idle', 'stopped', 'stopped by user']);
+        }
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['A', 'B', 'C'], 'back in place');
+        // A runner run clears the claim: the former claimer is no longer the one working on it.
+        w.runner.play(10, H);
+        await tick();
+        const run = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([run.status, run.claimed_by_actor_id], ['running', null]);
+        assert.strictEqual(w.tasks.complete(10, AG, a.id, {}).status, 403, 'no message in its thread yet');
       } finally { w.close(); }
     });
 
@@ -5708,9 +5851,11 @@ async function runAsyncUnitTests() {
         assert.strictEqual(call('task_list', { roomId: 11, actorId: 2 }, {}).err, true, 'not a participant of room 11');
         assert.strictEqual(call('task_list', { roomId: null, actorId: 2 }, {}).err, true);
         assert.strictEqual(call('task_get', me, {}).body.error, 'id required');
-        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'ongoing' }).err, true);
+        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'ongoing' }).body.claimed_by_actor_id, 2);
+        assert.strictEqual(call('task_complete', { roomId: 10, actorId: 3 }, { id: c.body.id }).err, true, 'not the claimer');
+        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'backlog' }).body.status, 'idle', 'released');
         assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'awaiting', reason: 'need a human' }).body.col, 'awaiting');
-        assert.match(call('task_move', me, { id: c.body.id, col: 'backlog' }).body.error, /human/);
+        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'backlog' }).body.col, 'backlog', 'an agent confirms it');
         const other = mk(w, 'room 11 card', {}, 11);
         assert.strictEqual(call('task_get', { roomId: 11, actorId: 4 }, { id: other.id }).body.title, 'room 11 card');
         assert.strictEqual(call('task_get', me, { id: other.id }).body.error, 'task not found', 'id of another room');
@@ -9024,7 +9169,7 @@ async function run() {
       assert.strictEqual((await req('DELETE', `/api/rooms/${outRoomId}/tasks/${theirs.body.id}`)).status, 204);
     });
 
-    await test('Tasks — agent secret: participant may edit / move to awaiting, never drive the runner or confirm; other room 403', async () => {
+    await test('Tasks — agent secret: participant may edit / move to awaiting / confirm / start a card itself, never drive the runner; other room 403', async () => {
       if (!ready()) { console.log('    (skipped)'); return; }
       const c = await asAgent(agA, 'POST', base(), { title: 'Agent made this' });
       assert.strictEqual(c.status, 201, JSON.stringify(c.body));
@@ -9032,7 +9177,15 @@ async function run() {
       assert.strictEqual((await asAgent(agA, 'GET', base())).status, 200);
       const aw = await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'awaiting', reason: 'which repo?' });
       assert.deepStrictEqual([aw.status, aw.body.col], [200, 'awaiting']);
-      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'backlog' })).status, 403);
+      const conf = await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'backlog' });
+      assert.deepStrictEqual([conf.status, conf.body.col], [200, 'backlog']);
+      assert.strictEqual((await req('POST', `${base()}/${c.body.id}/move`, { col: 'ongoing' })).status, 409, 'the owner uses Play');
+      const claim = await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'ongoing' });
+      assert.deepStrictEqual([claim.status, claim.body.col, claim.body.status, claim.body.claimed_by_actor_id, claim.body.thread_id],
+        [200, 'ongoing', 'running', agA.actorId, null], JSON.stringify(claim.body));
+      assert.strictEqual((await asAgent(agOut, 'POST', `${base()}/${c.body.id}/complete`, {})).status, 403, 'agent of another room');
+      const done = await asAgent(agA, 'POST', `${base()}/${c.body.id}/complete`, { summary: 'did it myself' });
+      assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'did it myself']);
       assert.strictEqual((await asAgent(agA, 'POST', `${base()}/runner/play`)).status, 403);
       assert.strictEqual((await asAgent(agA, 'POST', `${base()}/runner/stop`)).status, 403);
       assert.strictEqual((await asAgent(agA, 'PATCH', `${base()}/settings`, { concurrency: 3 })).status, 403);
@@ -9040,7 +9193,8 @@ async function run() {
       assert.strictEqual((await asAgent(agOut, 'GET', base())).status, 403);
       assert.strictEqual((await asAgent(agOut, 'POST', base(), { title: 'intruder' })).status, 403);
       const ev = (await req('GET', `${base()}/${c.body.id}`)).body.events;
-      assert.deepStrictEqual(ev.map(e => [e.kind, e.actor_kind, e.actor_id]), [['created', 'agent', agA.actorId], ['awaiting', 'agent', agA.actorId]]);
+      assert.deepStrictEqual(ev.map(e => [e.kind, e.actor_kind, e.actor_id]), [['created', 'agent', agA.actorId], ['awaiting', 'agent', agA.actorId],
+        ['confirmed', 'agent', agA.actorId], ['claimed', 'agent', agA.actorId], ['completed', 'agent', agA.actorId]]);
       assert.strictEqual((await asAgent(agA, 'DELETE', `${base()}/${c.body.id}`)).status, 204);
     });
 
@@ -18583,6 +18737,39 @@ async function run() {
         const fresh = run(undefined);
         assert.strictEqual(fresh.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='agent_model_failures'").get().n, 1);
         fresh.close();
+      } finally { fs.rmSync(before, { recursive: true, force: true }); }
+    });
+
+    // migrations/20261112-task-claimed-by.sql on a board created before it: cards kept, claim columns NULL.
+    await test('migration — room_tasks gains claimed_by_actor_id / claimed_by_sub_agent_id (+ indexes) on an existing board, rows kept', () => {
+      const fs = require('fs'), os = require('os');
+      const Database = require('better-sqlite3');
+      const { runMigrations } = require('./lib/migrations');
+      const quiet = { log() {}, warn() {}, error() {} };
+      const schemaSql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+      const oldSchema = schemaSql.split('\n').filter(l => !l.includes('claimed_by')).join('\n');
+      assert.notStrictEqual(oldSchema, schemaSql, 'baseline carries the columns');
+      const NEW = '20261112-task-claimed-by.sql';
+      const before = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-mig-'));
+      try {
+        for (const f of fs.readdirSync(path.join(__dirname, 'migrations'))) {
+          if (f !== NEW) fs.copyFileSync(path.join(__dirname, 'migrations', f), path.join(before, f));
+        }
+        const m = new Database(':memory:');
+        runMigrations(m, before, quiet, { schemaSql: oldSchema });
+        const cols = () => m.prepare('PRAGMA table_info(room_tasks)').all().map(c => c.name);
+        assert.ok(!cols().includes('claimed_by_actor_id'), 'old board');
+        m.exec(`INSERT INTO actors (id, name, type) VALUES (1,'o','human');
+          INSERT INTO rooms (id, title, created_by) VALUES (5,'r',1);
+          INSERT INTO room_tasks (room_id, seq, title, col, rank, status, thread_id) VALUES (5,1,'kept','ongoing','i','running',77);`);
+        runMigrations(m, path.join(__dirname, 'migrations'), quiet, { schemaSql });
+        assert.ok(m.prepare('SELECT 1 FROM migrations WHERE filename=?').get(NEW), 'migration applied');
+        assert.ok(cols().includes('claimed_by_actor_id') && cols().includes('claimed_by_sub_agent_id'));
+        assert.deepStrictEqual(m.prepare('SELECT title, status, thread_id, claimed_by_actor_id, claimed_by_sub_agent_id FROM room_tasks').get(),
+          { title: 'kept', status: 'running', thread_id: 77, claimed_by_actor_id: null, claimed_by_sub_agent_id: null });
+        const idx = m.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_room_tasks_claimed_by%' ORDER BY name").all().map(r => r.name);
+        assert.deepStrictEqual(idx, ['idx_room_tasks_claimed_by', 'idx_room_tasks_claimed_by_sub']);
+        m.close();
       } finally { fs.rmSync(before, { recursive: true, force: true }); }
     });
 
