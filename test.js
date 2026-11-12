@@ -5369,15 +5369,27 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks rank — repeated placement at one spot rebalances, order is kept, keys stay short', async () => {
+    await uta('Tasks rank — repeated placement at one spot rebalances, order is kept, keys stay short, re-ranked cards are pushed', async () => {
       const w = world();
       try {
         const ids = ['A', 'B', 'C', 'D'].map(t => mk(w, t).id);
+        // A client orders cards only by the ranks it was sent: its mirror, fed by task_upsert alone,
+        // must match the server after every move, also when a rebalance re-ranked cards it did not move.
+        const mirror = new Map(w.tasks.list(10, { col: 'backlog' }).body.tasks.map(t => [t.id, t.rank]));
+        let rebalances = 0;
         // Always drop the last card right below A: the gap after A halves every time.
         for (let i = 0; i < 150; i++) {
           const list = w.tasks.list(10, { col: 'backlog' }).body.tasks;
-          w.tasks.move(10, H, list.at(-1).id, { col: 'backlog', after_id: ids[0] });
+          const movedId = list.at(-1).id;
+          w.sent.length = 0;
+          assert.strictEqual(w.tasks.move(10, H, movedId, { col: 'backlog', after_id: ids[0] }).status, 200);
+          const ups = w.sent.filter(e => e.type === 'task_upsert');
+          for (const e of ups) mirror.set(e.task.id, e.task.rank);
+          if (ups.some(e => e.task.id !== movedId)) rebalances++;
+          const byRank = [...mirror].sort((x, y) => (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : x[0] - y[0])).map(([id]) => id);
+          assert.deepStrictEqual(byRank, w.tasks.list(10, { col: 'backlog' }).body.tasks.map(t => t.id), `client order drifted at move ${i}`);
         }
+        assert.ok(rebalances >= 1, 'the loop forced at least one rebalance');
         const ranks = w.db.prepare("SELECT rank FROM room_tasks WHERE room_id=10 ORDER BY rank, id").all().map(r => r.rank);
         assert.ok(ranks.every(r => r.length <= 24), `ranks too long: ${ranks}`);
         assert.strictEqual(new Set(ranks).size, ranks.length, 'no duplicate ranks');

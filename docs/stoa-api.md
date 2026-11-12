@@ -356,7 +356,7 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 - `waiting_on` lists the dependencies that are not Finished yet.
 - `attempts` counts the retries (`0` on the first run).
 - Send `assignee_actor_id` (an AI agent of the room, or `null` for the primary agent) or `assignee_sub_agent_id` (a sub-agent linked to the room), not both. With a sub-agent, the server sets `assignee_actor_id` to its parent and starts the task message with `@label`.
-- `rank` is the card's position. The server computes it from `before_id` / `after_id`; never send it.
+- `rank` is the card's position. The server computes it from `before_id` / `after_id`; never send it. Ranks of other cards can change when the server re-spreads a column, so order cards by the latest rank and do not keep old values.
 
 **Event:** `{id, task_id, kind, actor_id, actor_kind ('human' | 'agent' | 'sub_agent' | 'system'), body, meta, at}`. Each change adds one event. `kind` is one of `created`, `edited`, `moved`, `started`, `completed`, `failed`, `blocked`, `retry`, `stopped`, `comment`, `dep_added`, `dep_removed`, `awaiting`, or `confirmed`.
 
