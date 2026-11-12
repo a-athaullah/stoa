@@ -391,12 +391,24 @@ function tbDescSection(task, ro) {
     ds.appendChild(r);
   } else if ((task.description || '').trim()) {
     const md = tbEl('div', 'tb-md');
-    md.innerHTML = renderMarkdown(task.description);
+    md.innerHTML = tbDescriptionHtml(task.description);
     ds.appendChild(md);
   } else {
     ds.appendChild(tbEl('div', 'tb-md tb-empty-md', 'No description yet.'));
   }
   return ds;
+}
+
+function tbDescriptionHtml(text) {
+  const tokens = marked.lexer(text);
+  marked.walkTokens(tokens, t => {
+    if (t.type !== 'html') return;
+    const raw = t.raw.replace(/\n+$/, '');
+    if (t.block) Object.assign(t, { type: 'paragraph', text: raw, tokens: [{ type: 'text', raw, text: raw, escaped: false }] });
+    else Object.assign(t, { type: 'text', text: t.raw, escaped: false });
+    delete t.block; delete t.pre;
+  });
+  return sanitizeMarkdownHtml(marked.parser(tokens));
 }
 
 function tbChecklistSection(task, disabled) {
