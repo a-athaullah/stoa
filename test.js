@@ -5958,7 +5958,7 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks completion_mode agent — task_complete: Finished with the agent summary, thread marked complete (event), next card runs; quiet mode leaves the thread open', async () => {
+    await uta('Tasks completion_mode agent — task_complete: Finished with the agent summary, thread marked complete (event), next card runs; quiet mode marks it too', async () => {
       const w = world();
       try {
         agentMode(w);
@@ -5976,11 +5976,58 @@ async function runAsyncUnitTests() {
         await tick();
         assert.strictEqual(w.deps.dispatched.at(-1).automation.task_id, b.id, 'runner took the next card');
         assert.strictEqual(w.tasks.get(10, b.id).body.status, 'running');
-        // quiet mode: the same tool call does not touch the thread (behaviour unchanged).
+        // quiet mode: the same tool call marks the thread as well.
         w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
         w.reply(b.id, 2, 'ok');
         assert.strictEqual(w.tasks.complete(10, AG, b.id, { summary: 's' }).status, 200);
-        assert.strictEqual(w.threadDone(b.id), null);
+        assert.ok(w.threadDone(b.id), 'quiet mode: thread_completed_at set');
+        assert.strictEqual(w.through(b.id), w.lastReply(b.id));
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode quiet — task_complete mid-turn marks the thread at the turn end, through the closing reply; it stays complete and the quiet check finishes nothing twice', async () => {
+      const w = world();
+      try {
+        assert.strictEqual(w.tasks.run.settings(10).completion_mode, 'quiet', 'default mode');
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        const root = w.tasks.get(10, a.id).body.thread_id;
+        w.reply(a.id, 2, 'working');
+        w.turns.add(root);
+        const done = w.tasks.complete(10, AG, a.id, { summary: 'merged' });
+        assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'merged']);
+        assert.strictEqual(w.threadDone(a.id), null, 'not marked while the turn runs');
+        w.reply(a.id, 2, 'closing reply: merged, v1.2.3');
+        w.turns.delete(root); w.threadDefer.turnEnded(10, root);
+        assert.ok(w.threadDone(a.id), 'marked at turn end');
+        assert.strictEqual(w.through(a.id), w.lastReply(a.id), 'through = the closing reply');
+        const st = w.sent.filter(e => e.type === 'thread_status' && e.thread_id === root);
+        assert.deepStrictEqual(st.map(e => e.completed), [true], 'one thread_status event');
+        // the quiet check after the turn: the card is already Finished, nothing changes, the mark stays.
+        w.runner.checkRuns(); w.runner.checkRuns(); await tick();
+        assert.deepStrictEqual([w.tasks.get(10, a.id).body.col, w.tasks.get(10, a.id).body.result_summary], ['finished', 'merged']);
+        assert.ok(w.threadDone(a.id), 'still complete after the quiet check');
+        const open = w.db.prepare('SELECT 1 AS x FROM messages rc WHERE rc.thread_id=? AND rc.id > (SELECT thread_completed_through FROM messages WHERE id=?)').get(root, root);
+        assert.strictEqual(open, undefined, 'no reply past the mark: the thread reads as complete');
+        assert.strictEqual(w.deps.dispatched.at(-1).automation.task_id, b.id, 'runner took the next card');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks — task_complete on a self-claimed card (no thread) finishes it without any thread mark, in both modes', async () => {
+      const w = world();
+      try {
+        for (const mode of ['quiet', 'agent']) {
+          assert.strictEqual(w.tasks.updateSettings(10, H, { completion_mode: mode }).status, 200);
+          const c = mk(w, `claim-${mode}`);
+          const claimed = w.tasks.move(10, AG, c.id, { col: 'ongoing' }).body;
+          assert.deepStrictEqual([claimed.col, claimed.thread_id, claimed.claimed_by_actor_id], ['ongoing', null, 2]);
+          const before = w.sent.length;
+          const done = w.tasks.complete(10, AG, c.id, { summary: 'self done' });
+          assert.deepStrictEqual([done.status, done.body.col, done.body.thread_id], [200, 'finished', null], mode);
+          assert.ok(!w.sent.slice(before).some(e => e.type === 'thread_status'), `${mode}: no thread_status`);
+          assert.strictEqual(w.threadDefer.pendingCount(), 0, `${mode}: nothing deferred`);
+        }
       } finally { w.close(); }
     });
 
@@ -9944,6 +9991,32 @@ async function run() {
       } finally {
         await req('POST', `${base()}/runner/stop`);
         assert.strictEqual((await req('PATCH', `${base()}/settings`, { completion_mode: 'quiet' })).body.completion_mode, 'quiet');
+      }
+    });
+
+    await test('Tasks — completion_mode quiet end to end: agent task_complete mid-turn finishes the card, the thread is marked at the turn end and stays complete', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      assert.strictEqual((await req('GET', `${base()}/settings`)).body.settings.completion_mode, 'quiet');
+      const t = (await req('POST', base(), { title: 'Quiet card' })).body;
+      try {
+        const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+        assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 200);
+        const m = await trig;
+        const running = await waitFor(() => { const c = card(t.id); return c.thread_id ? c : null; });
+        const done = await asAgent(agA, 'POST', `${base()}/${t.id}/complete`, { summary: 'merged' });
+        assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'merged']);
+        const thread = () => req('GET', `/api/rooms/${roomId}/threads/${running.thread_id}`);
+        assert.strictEqual((await thread()).body.root.completed, false, 'turn still running: mark deferred');
+        await completeRun(agA.ws, roomId, m);
+        const ts = await waitFor(() => frames.find(f => f.type === 'thread_status' && f.thread_id === running.thread_id));
+        assert.ok(ts && ts.completed === true, 'thread_status broadcast at the turn end');
+        await new Promise(r => setTimeout(r, 1200)); // > TASK_SETTLE_MS + polls: the quiet check runs and changes nothing
+        const th = await thread();
+        assert.deepStrictEqual([th.status, th.body.root.completed], [200, true], 'closing reply included, still complete');
+        assert.deepStrictEqual([card(t.id).col, card(t.id).result_summary], ['finished', 'merged']);
+      } finally {
+        await req('POST', `${base()}/runner/stop`);
+        await req('DELETE', `${base()}/${t.id}`);
       }
     });
 
