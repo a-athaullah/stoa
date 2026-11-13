@@ -1495,10 +1495,18 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 配置内置 Claude 模型之外的外部 AI 模型供应商。点击 **+ add platform** 注册新供应商：
 
-- **Type** — **Ollama Cloud**（内置代理，无需 URL）或 **Custom Platform**（任意 OpenAI 兼容 API）
+- **Type** — **Ollama Cloud**（内置代理，无需 URL）或 **Custom Platform**（任意 AI API 供应商）
 - **Name** — 平台的标签名称（例如："My OpenRouter"）
 - **Base URL** — Custom Platform 必填（例如：`https://openrouter.ai/api/v1`）
+- **API format** — 仅限 Custom Platform：**Anthropic Messages（默认）** 或 **OpenAI Chat Completions**。详见下文。
 - **API Key** — 该供应商的 API 密钥
+
+**API format** 决定 Stoa 与平台的通信方式：
+
+- **Anthropic Messages**（默认）— 基础 URL 必须在 `/v1/messages` 提供 Anthropic Messages API。兼容 OpenRouter、Together AI、Groq 等 Claude CLI 通过 `ANTHROPIC_BASE_URL` 支持的供应商。
+- **OpenAI Chat Completions** — 基础 URL 必须提供 `/chat/completions`（可带或不带 `/v1` 前缀，也可指定完整端点）。Stoa 的服务器端代理拦截 Agent 请求，将其从 Anthropic 格式转换为 OpenAI Chat Completions 格式后转发，并将响应逆向转换。平台卡片显示 **· OpenAI Chat** 标志。工具调用质量取决于模型对 OpenAI 风格 function calling 的支持情况。Ollama Cloud 不可用此选项。
+
+如果 Agent 请求的模型不在平台已启用列表中，Stoa 会自动回退到该平台第一个已启用的模型。
 
 新平台点击 **add & discover** 可一步完成保存和探测。已有平台点击 **discover models** 重新探测。发现过程会检测每个模型的能力 — vision（👁）和工具调用（⚙）。不支持工具调用的模型也会被收录并可使用，但以纯文本模式运行。
 
@@ -1506,7 +1514,7 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览器（单用户应用，只有您才能访问）。
 
-**支持的供应商** — 任何兼容 OpenAI 的 API 端点均可使用：
+**支持的供应商** — 任何提供 Anthropic Messages 或 OpenAI Chat Completions 端点的供应商均可使用：
 - **Ollama Cloud** — 选择"Ollama Cloud"类型（内置代理，支持密钥轮换，40+ 模型，最高 480B）
 - **本地 Ollama** — `http://localhost:11434/v1`（免费、私密、可离线使用 — 参见 [Ollama 安装指南](doc-ollama)）
 - **OpenRouter** — `https://openrouter.ai/api/v1`

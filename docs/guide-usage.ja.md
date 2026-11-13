@@ -1495,10 +1495,18 @@ Stoa はアプリの最左端に**縦型サイドバーナビ**を配置して�
 
 組み込みの Claude モデル以外に、外部 AI モデルプロバイダーを設定できます。**+ add platform** をクリックして新しいプロバイダーを登録します：
 
-- **Type** — **Ollama Cloud**（組み込みプロキシ、URL 不要）または **Custom Platform**（任意の OpenAI 互換 API）
+- **Type** — **Ollama Cloud**（組み込みプロキシ、URL 不要）または **Custom Platform**（任意の AI API プロバイダー）
 - **Name** — プラットフォームのラベル（例：「My OpenRouter」）
 - **Base URL** — Custom Platform に必要（例：`https://openrouter.ai/api/v1`）
+- **API format** — Custom Platform のみ：**Anthropic Messages（デフォルト）** または **OpenAI Chat Completions**。詳細は以下を参照。
 - **API Key** — そのプロバイダーの API キー
+
+**API format** は Stoa がプラットフォームと通信する方法を決定します：
+
+- **Anthropic Messages**（デフォルト）— ベース URL は `/v1/messages` で Anthropic Messages API を提供する必要があります。`ANTHROPIC_BASE_URL` を通じて Claude CLI がサポートする OpenRouter・Together AI・Groq などのプロバイダーと互換性があります。
+- **OpenAI Chat Completions** — ベース URL は `/chat/completions`（`/v1` プレフィックスあり・なし、またはフルエンドポイント指定も可）を提供する必要があります。Stoa のサーバー側プロキシがエージェントのリクエストを Anthropic 形式から OpenAI Chat Completions 形式に変換してから転送し、レスポンスを逆変換します。プラットフォームカードには **· OpenAI Chat** バッジが表示されます。ツール呼び出しの品質はモデルの OpenAI スタイル function calling のサポート状況に依存します。Ollama Cloud では使用できません。
+
+エージェントがプラットフォームの有効モデル一覧に存在しないモデルをリクエストした場合、Stoa はそのプラットフォームで最初に有効になっているモデルに自動的にフォールバックします。
 
 新しいプラットフォームでは **add & discover** をクリックして保存と検出を一括で行えます。既存のプラットフォームでは **discover models** をクリックして再検出します。Discovery ではモデルごとの機能（vision 👁 およびツール呼び出し ⚙）を検出します。ツール呼び出し非対応のモデルも含まれ使用できますが、テキストのみモードで動作します。
 
@@ -1506,7 +1514,7 @@ Stoa はアプリの最左端に**縦型サイドバーナビ**を配置して�
 
 API キーはサーバーに保存され、Settings 編集フォームでのみブラウザに返されます（シングルユーザーアプリのため、アクセスできるのはあなただけです）。
 
-**対応プロバイダー** — OpenAI 互換の API エンドポイントであればすべて利用可能：
+**対応プロバイダー** — Anthropic Messages または OpenAI Chat Completions エンドポイントを公開しているプロバイダーであればすべて利用可能：
 - **Ollama Cloud** — 「Ollama Cloud」タイプを選択（組み込みプロキシ、キーローテーション付き、40+ モデル、480B まで）
 - **ローカル Ollama** — `http://localhost:11434/v1`（無料、プライベート、オフライン対応 — [Ollama セットアップガイド](doc-ollama) を参照）
 - **OpenRouter** — `https://openrouter.ai/api/v1`

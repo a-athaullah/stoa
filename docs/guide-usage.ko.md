@@ -1495,10 +1495,18 @@ Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사�
 
 기본 제공 Claude 모델 외에 외부 AI 모델 제공자를 설정합니다. **+ add platform**을 클릭하여 새 제공자를 등록합니다:
 
-- **Type** — **Ollama Cloud** (내장 프록시, URL 불필요) 또는 **Custom Platform** (OpenAI 호환 API)
+- **Type** — **Ollama Cloud** (내장 프록시, URL 불필요) 또는 **Custom Platform** (모든 AI API 제공자)
 - **Name** — 플랫폼 이름 (예: "My OpenRouter")
 - **Base URL** — Custom Platform에 필요 (예: `https://openrouter.ai/api/v1`)
+- **API format** — Custom Platform 전용: **Anthropic Messages (기본값)** 또는 **OpenAI Chat Completions**. 아래 설명 참조.
 - **API Key** — 해당 제공자의 API 키
+
+**API format**은 Stoa가 플랫폼과 통신하는 방식을 결정합니다:
+
+- **Anthropic Messages** (기본값) — 베이스 URL이 `/v1/messages`에서 Anthropic Messages API를 제공해야 합니다. `ANTHROPIC_BASE_URL`을 통해 Claude CLI가 지원하는 OpenRouter, Together AI, Groq 등의 제공자와 호환됩니다.
+- **OpenAI Chat Completions** — 베이스 URL이 `/chat/completions`를 제공해야 합니다(`/v1` 접두사 포함 또는 미포함, 전체 엔드포인트 지정도 가능). Stoa의 서버 측 프록시가 에이전트 요청을 Anthropic 형식에서 OpenAI Chat Completions 형식으로 변환하여 전달하고 응답을 역변환합니다. 플랫폼 카드에 **· OpenAI Chat** 배지가 표시됩니다. 도구 호출 품질은 모델의 OpenAI 스타일 function calling 지원 여부에 따라 다릅니다. Ollama Cloud에서는 사용할 수 없습니다.
+
+에이전트가 플랫폼의 활성 모델 목록에 없는 모델을 요청하면 Stoa는 해당 플랫폼의 첫 번째 활성 모델로 자동 대체합니다.
 
 새 플랫폼의 경우 **add & discover**를 클릭하여 저장과 탐색을 한 번에 할 수 있습니다. 기존 플랫폼은 **discover models**를 클릭하여 재탐색합니다. Discovery는 모델별 기능(vision 👁 및 도구 호출 ⚙)을 감지합니다. 도구 호출 미지원 모델도 포함되어 사용 가능하지만 텍스트 전용 모드로 동작합니다.
 
@@ -1506,7 +1514,7 @@ Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사�
 
 API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 반환됩니다 (싱글유저 앱이므로 접근 권한은 본인만 갖습니다).
 
-**지원 제공자** — OpenAI 호환 API 엔드포인트라면 어디든 사용 가능합니다:
+**지원 제공자** — Anthropic Messages 또는 OpenAI Chat Completions 엔드포인트를 제공하는 모든 제공자를 사용할 수 있습니다:
 - **Ollama Cloud** — "Ollama Cloud" 타입 선택 (내장 프록시, 키 로테이션, 40+ 모델, 최대 480B)
 - **Local Ollama** — `http://localhost:11434/v1` (무료, 프라이빗, 오프라인 가능 — [Ollama 설정 가이드](doc-ollama) 참조)
 - **OpenRouter** — `https://openrouter.ai/api/v1`

@@ -31,7 +31,8 @@ async function sLoadPlatformsTab() {
     const totalModels = p.cached_models?.length || 0;
     const enabledCount = Array.isArray(p.enabled_models) ? p.enabled_models.length : totalModels;
     const modelInfo = totalModels ? ` · ${enabledCount === totalModels ? totalModels + ' models' : enabledCount + '/' + totalModels + ' enabled'}` : '';
-    urlEl.textContent = (p.base_url || '—') + (keyCount > 1 ? ` · ${keyCount} keys` : '') + modelInfo;
+    const formatInfo = p.vendor !== 'ollama' && p.api_format === 'openai_chat' ? ' · OpenAI Chat' : '';
+    urlEl.textContent = (p.base_url || '—') + formatInfo + (keyCount > 1 ? ` · ${keyCount} keys` : '') + modelInfo;
 
     const btnWrap = document.createElement('span');
     btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -98,7 +99,36 @@ function sShowPlatformForm(existing) {
 
   const urlHint = document.createElement('div');
   urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 90px;margin-top:-4px';
-  urlHint.textContent = 'OpenAI-compatible base URL (e.g. local daemon, custom server)';
+  urlHint.textContent = 'Platform base URL (e.g. local daemon, custom server)';
+
+  const fmtRow = document.createElement('div');
+  fmtRow.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const fmtLbl = document.createElement('span');
+  fmtLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap';
+  fmtLbl.textContent = 'api format';
+  const fmtSel = document.createElement('select');
+  fmtSel.className = 's-server-input';
+  fmtSel.name = 'platform-api-format';
+  fmtSel.setAttribute('aria-label', 'API format');
+  fmtSel.style.cssText = 'flex:1;min-width:0;cursor:pointer';
+  [['anthropic', 'Anthropic Messages (default)'], ['openai_chat', 'OpenAI Chat Completions']].forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if ((existing?.api_format === 'openai_chat' ? 'openai_chat' : 'anthropic') === val) opt.selected = true;
+    fmtSel.appendChild(opt);
+  });
+  fmtRow.append(fmtLbl, fmtSel);
+
+  const fmtHint = document.createElement('div');
+  fmtHint.style.cssText = urlHint.style.cssText;
+  const applyFormatHint = () => {
+    fmtHint.textContent = fmtSel.value === 'openai_chat'
+      ? 'Base URL must serve /chat/completions (with or without /v1). Stoa translates Anthropic requests to OpenAI format.'
+      : 'Base URL must serve the Anthropic Messages API (/v1/messages).';
+  };
+  fmtSel.addEventListener('change', applyFormatHint);
+  applyFormatHint();
+  const formatBody = vendor => (vendor === 'ollama' ? {} : { api_format: fmtSel.value });
 
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
@@ -163,6 +193,8 @@ function sShowPlatformForm(existing) {
     const isOllama = typeSel.value === 'ollama';
     urlF.row.style.display = isOllama ? 'none' : 'flex';
     urlHint.style.display = isOllama ? 'none' : 'block';
+    fmtRow.style.display = isOllama ? 'none' : 'flex';
+    fmtHint.style.display = isOllama ? 'none' : 'block';
     if (!existing && isOllama && !nameF.inp.value) nameF.inp.value = 'Ollama Cloud';
     else if (!existing && !isOllama && nameF.inp.value === 'Ollama Cloud') nameF.inp.value = '';
     keyInp.placeholder = isOllama ? 'Ollama API key...' : 'sk-...';
@@ -201,7 +233,7 @@ function sShowPlatformForm(existing) {
       if (existing) {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -211,7 +243,7 @@ function sShowPlatformForm(existing) {
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -261,7 +293,7 @@ function sShowPlatformForm(existing) {
       try {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -280,7 +312,7 @@ function sShowPlatformForm(existing) {
       try {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
         });
         if (!resp.ok) { const err = await resp.json().catch(() => ({})); showToast(err.error || 'Failed to save platform', { error: true }); healthBtn.disabled = false; return; }
       } catch { showToast('Failed to save platform', { error: true }); healthBtn.disabled = false; return; }
@@ -348,7 +380,7 @@ function sShowPlatformForm(existing) {
     sRenderModelChecklist(modelSection, existing.cached_models, existing.enabled_models ?? null);
   }
 
-  form.append(typeRow, nameF.row, urlF.row, urlHint, keysRow, progressWrap, modelSection, btnRow);
+  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, keysRow, progressWrap, modelSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);

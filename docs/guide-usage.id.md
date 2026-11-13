@@ -1500,10 +1500,18 @@ Jika server exit saat startup dengan `[db] better-sqlite3 cannot load in this No
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
 
-- **Type** — **Ollama Cloud** (proxy bawaan, tidak perlu URL) atau **Custom Platform** (API OpenAI-compatible apa pun)
+- **Type** — **Ollama Cloud** (proxy bawaan, tidak perlu URL) atau **Custom Platform** (provider API AI apa pun)
 - **Name** — label untuk platform (misal "My OpenRouter")
 - **Base URL** — wajib untuk Custom Platform (misal `https://openrouter.ai/api/v1`)
+- **API format** — khusus Custom Platform: **Anthropic Messages (default)** atau **OpenAI Chat Completions**. Lihat penjelasan di bawah.
 - **API Key** — API key untuk provider tersebut
+
+**API format** menentukan cara Stoa berkomunikasi dengan platform:
+
+- **Anthropic Messages** (default) — base URL harus menyajikan Anthropic Messages API di `/v1/messages`. Kompatibel dengan OpenRouter, Together AI, Groq, dan provider lain yang didukung Claude CLI via `ANTHROPIC_BASE_URL`.
+- **OpenAI Chat Completions** — base URL harus menyajikan `/chat/completions` (dengan atau tanpa awalan `/v1`, atau bisa berupa endpoint penuh). Proxy sisi server Stoa mencegat request agent, menerjemahkan dari format Anthropic ke OpenAI Chat Completions sebelum diteruskan, lalu menerjemahkan respons kembali. Kartu platform menampilkan badge **· OpenAI Chat**. Kualitas tool-calling tergantung dukungan model terhadap function calling gaya OpenAI. Tidak tersedia untuk Ollama Cloud.
+
+Jika agent meminta model yang tidak ada di daftar model aktif platform, Stoa otomatis menggunakan model pertama yang diaktifkan di platform tersebut.
 
 Untuk platform baru, klik **add & discover** untuk menyimpan dan mendeteksi model sekaligus. Untuk platform yang sudah ada, klik **discover models** untuk deteksi ulang. Discovery mendeteksi kapabilitas per model — vision (👁) dan tool-calling (⚙). Model tanpa tool-calling tetap ditampilkan dan bisa digunakan, namun berjalan dalam mode teks saja.
 
@@ -1511,7 +1519,7 @@ Untuk platform baru, klik **add & discover** untuk menyimpan dan mendeteksi mode
 
 API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
-**Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
+**Provider yang didukung** — provider mana pun yang mengekspos endpoint Anthropic Messages atau OpenAI Chat Completions bisa digunakan:
 - **Ollama Cloud** — pilih tipe "Ollama Cloud" (proxy bawaan dengan rotasi key, 40+ model hingga 480B)
 - **Local Ollama** — `http://localhost:11434/v1` (gratis, privat, bisa offline — lihat [panduan Ollama](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
