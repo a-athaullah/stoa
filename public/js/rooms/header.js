@@ -185,6 +185,7 @@ function _syncActivityPill(ctl) {
   const pill = ctl.querySelector('.h-activity-pill');
   pill.hidden = !parts.length;
   pill.querySelector('.h-activity-label').textContent = parts.join(' · ');
+  pill.title = parts.join(' · ');
   const pausedEl = ctl.querySelector('.h-activity-paused');
   pausedEl.hidden = !paused;
   for (const b of [pill, pausedEl]) b.setAttribute('aria-expanded', String(_activity.open));
