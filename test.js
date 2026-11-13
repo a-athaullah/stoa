@@ -17554,6 +17554,76 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('platform form — api format select: defaults to anthropic, sends api_format for custom platforms only, prefills on edit', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    let platforms = [];
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      showToast() {}, svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async () => platforms,
+      fetch: async (url, opts) => { calls.push([url, opts.method, JSON.parse(opts.body)]); return { ok: true, json: async () => ({ id: 'p9' }) }; },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const fmtRow = () => named('platform-api-format').parentNode;
+    const hint = () => form().children[form().children.indexOf(fmtRow()) + 1].textContent;
+    const save = async () => { calls.length = 0; form().all().find(e => e.tagName === 'BUTTON' && /^(add|update)$/.test(e.textContent)).fire('click'); await new Promise(r => setImmediate(r)); return calls[0]; };
+
+    const openNew = () => { ctx.sShowPlatformForm(); named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://router.example/v1'; };
+    const pick = (n, v) => { named(n).value = v; named(n).fire('change'); };
+    openNew();
+    assert.strictEqual(named('platform-api-format').value, 'anthropic', 'new platform defaults to anthropic');
+    assert.match(hint(), /\/v1\/messages/);
+    let [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.api_format, body.vendor], ['/api/ai/platforms', 'POST', 'anthropic', 'custom']);
+    assert.strictEqual(form(), null, 'saving reloads the list and closes the form');
+
+    openNew();
+    pick('platform-api-format', 'openai_chat');
+    assert.match(hint(), /\/chat\/completions/, 'hint follows the selected format');
+    [, , body] = await save();
+    assert.strictEqual(body.api_format, 'openai_chat');
+
+    openNew();
+    pick('platform-api-format', 'openai_chat');
+    pick('platform-type', 'ollama');
+    assert.strictEqual(fmtRow().style.display, 'none', 'format row hidden for ollama');
+    [, , body] = await save();
+    assert.deepStrictEqual([body.vendor, 'api_format' in body], ['ollama', false], 'ollama never sends api_format');
+
+    platforms = [{ id: 'p1', name: 'Router', vendor: 'custom', base_url: 'https://r.example', api_format: 'openai_chat', api_keys: [] }, { id: 'p2', name: 'Old', vendor: 'custom', base_url: 'https://o.example', api_keys: [] }];
+    await ctx.sLoadPlatformsTab();
+    const cardText = id => byId('s-platform-' + id).children[1].textContent;
+    assert.deepStrictEqual([cardText('p1'), cardText('p2')], ['https://r.example · OpenAI Chat', 'https://o.example'], 'card marks openai_chat platforms only');
+    ctx.sEditPlatform(platforms[0]);
+    assert.strictEqual(named('platform-api-format').value, 'openai_chat', 'edit prefills the stored format');
+    [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.api_format], ['/api/ai/platforms/p1', 'PATCH', 'openai_chat']);
+    ctx.sEditPlatform(platforms[1]);
+    assert.strictEqual(named('platform-api-format').value, 'anthropic', 'a platform saved before the field existed edits as anthropic');
+  });
+
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
     const vm = require('vm');
     const fs = require('fs');
