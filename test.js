@@ -16551,6 +16551,10 @@ async function run() {
     ctx.roomActiveThreads[5] = 1;
     ctx.renderHeaderThreadPill();
     assert.deepStrictEqual([pill().hidden, pill().textContent, body.querySelector('.h-activity-dot').hidden], [false, '1 thread', false]);
+    // A narrow header clips the label with an ellipsis; the title keeps the full text reachable on hover.
+    ctx.roomActiveThreads[5] = 2;
+    ctx.renderHeaderThreadPill();
+    assert.deepStrictEqual([pill().textContent, pill().title], ['2 threads', '2 threads']);
     ctx.openActivityPopover();
     await flush();
     const pop = body.querySelector('.h-activity-pop');
