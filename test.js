@@ -1339,6 +1339,16 @@ function runUnitTests() {
     }
   });
 
+  ut('chat header: the narrow rule that floors the room name also hides the "spawns paused" text, up to a header wide enough for both (code check)', () => {
+    const css = require('fs').readFileSync(require('path').join(__dirname, 'public/css/chat.css'), 'utf8');
+    const m = css.match(/@container chat-header \(max-width: (\d+)px\) \{([^}]*\}[^@]*?)\n\}/);
+    assert.ok(m, 'chat.css must have an @container chat-header (max-width) block');
+    assert.match(m[2], /\.h-header-info \{ min-width: 96px; \}/);
+    assert.match(m[2], /\.h-activity-paused-text \{ display: none; \}/);
+    // Name 96 + pill ~180 + paused text ~105 + back/tasks buttons do not fit a 460px header (QA 11-13: name 51px at 500).
+    assert.ok(Number(m[1]) >= 580, `narrow threshold ${m[1]}px leaves the paused text squeezing the room name`);
+  });
+
   // public/dist is not in git: server.js builds it on a production start (build/build.js).
   {
     const fs2 = require('fs'), path2 = require('path'), os2 = require('os');

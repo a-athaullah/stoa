@@ -2937,7 +2937,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 .h-activity-list:empty + .h-activity-foot { border-top: 0; margin-top: 0; }
 .h-activity-foot-note { flex: 1; font-size: 11.5px; color: var(--h-ink-faint); }
 
-@container chat-header (max-width: 460px) {
+@container chat-header (max-width: 580px) {
   .h-header-info { min-width: 96px; }
   .h-activity-pill { padding: 5px 10px 5px 9px; font-size: 12px; }
   .h-activity-paused { flex: 0 0 auto; padding: 6px 8px; }
