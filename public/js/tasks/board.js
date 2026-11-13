@@ -3,7 +3,8 @@
 // keyboard moves. The board always belongs to currentRoomId: switching rooms clears it, the snapshot is
 // re-read when the room socket (re)joins, and task_* events of another room are ignored. The runner
 // itself lives on the server, so a room keeps running while another room is open.
-// The detail drawer is in tasks/drawer.js; all HTTP goes through tasks/api.js.
+// The detail drawer is in tasks/drawer.js, the statistics panel in tasks/stats.js; all HTTP goes through
+// tasks/api.js.
 
 const TASK_COLS = ['awaiting', 'backlog', 'ongoing', 'finished'];
 const TASK_DROP_COLS = ['awaiting', 'backlog', 'finished'];
@@ -23,7 +24,7 @@ const TASK_ICONS = {
   lock: 'M8 11V8.5a4 4 0 0 1 8 0V11M6 11h12v9H6z', clock: 'M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17zM12 7.5V12l3 2',
   alert: 'M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17zM12 8v5M12 16.2v.1', check: 'M5 12.5l4.5 4.5L19 7.5',
   spin: 'M12 3.5a8.5 8.5 0 1 0 8.5 8.5', grip: 'M9.5 6.5v.1M14.5 6.5v.1M9.5 12v.1M14.5 12v.1M9.5 17.5v.1M14.5 17.5v.1',
-  thread: 'M4.5 5h15v10.5H9.5l-5 4z', retry: 'M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4h4', arrow: 'M7 17L17 7M9 7h8v8',
+  thread: 'M4.5 5h15v10.5H9.5l-5 4z', chart: 'M4.5 19.5h15M7.5 16.5v-4M12 16.5V7M16.5 16.5v-6.5', retry: 'M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4h4', arrow: 'M7 17L17 7M9 7h8v8',
   board: 'M4.5 4.5h4v15h-4zM10 4.5h4v10h-4zM15.5 4.5h4v12.5h-4z', chevron: 'M9.5 6l6 6-6 6', checks: 'M4.5 7l2 2 3.5-4M4.5 15l2 2 3.5-4M13 7.5h6.5M13 15.5h6.5',
 };
 
@@ -96,7 +97,9 @@ function tbFull(iso) {
 function tbDuration(fromIso, toIso) {
   const a = tbDate(fromIso), b = tbDate(toIso);
   if (!a || !b || b < a) return '';
-  const s = Math.round((b - a) / 1000);
+  return tbSecs(Math.round((b - a) / 1000));
+}
+function tbSecs(s) {
   if (s < 60) return s + 's';
   const m = Math.floor(s / 60);
   if (m < 60) return m + 'm';
@@ -264,6 +267,7 @@ function tbStoreView(roomId, view) {
 function tasksOnRoomOpen(room) {
   tbCloseAllTransient();
   if (typeof tasksCloseDrawer === 'function') tasksCloseDrawer({ focus: false });
+  if (typeof tasksStatsRoomChanged === 'function') tasksStatsRoomChanged();
   Object.assign(tasksUi, {
     roomId: room.id, roomTitle: room.title || '', loaded: false, loadError: null, quickAdd: null, quickAddFocus: false, bannerDismissed: null,
     pending: null, grab: null, openId: null, pendingOpenId: null,
@@ -320,6 +324,7 @@ async function tasksOnSocketOpen(roomId) {
   if (tasksUi.openId && !tasksUi.tasks.has(tasksUi.openId)) tasksCloseDrawer({ focus: false });
   tasksRender();
   if (tasksUi.openId && typeof tasksRefreshDrawer === 'function') tasksRefreshDrawer({ reload: true });
+  if (typeof tasksStatsNoteChange === 'function') tasksStatsNoteChange();
   if (tasksUi.pendingOpenId) {
     const id = tasksUi.pendingOpenId;
     tasksUi.pendingOpenId = null;
@@ -349,6 +354,7 @@ function tasksHandleWs(msg) {
     if (prev && prev.col !== 'backlog' && msg.task.col === 'backlog') tasksUi.bannerDismissed = null;
     tasksRender();
     if (tasksUi.openId === msg.task.id && typeof tasksRefreshDrawer === 'function') tasksRefreshDrawer();
+    if (typeof tasksStatsNoteChange === 'function') tasksStatsNoteChange();
   } else if (msg.type === 'task_delete') {
     const id = msg.task_id;
     if (!tasksUi.tasks.has(id)) return;
@@ -356,6 +362,7 @@ function tasksHandleWs(msg) {
     if (tasksUi.grab && tasksUi.grab.id === id) tasksUi.grab = null;
     if (tasksUi.openId === id) { tasksCloseDrawer({ focus: false }); showToast('This task was deleted'); }
     tasksRender();
+    if (typeof tasksStatsNoteChange === 'function') tasksStatsNoteChange();
   } else if (msg.type === 'task_event') {
     if (tasksUi.openId === msg.task_id && typeof tasksDrawerAddEvent === 'function') tasksDrawerAddEvent(msg.event);
   } else if (msg.type === 'task_settings') {
@@ -383,6 +390,7 @@ function tasksSetView(view, { store = true, render = true, focus = false } = {})
   } else {
     tbCloseAllTransient();
     if (typeof tasksCloseDrawer === 'function') tasksCloseDrawer({ focus: false });
+    if (typeof tasksCloseStats === 'function') tasksCloseStats({ focus: false });
   }
   tasksUi.view = next;
   tbEnsureRoot();
@@ -575,6 +583,12 @@ function tbEnsureRoot() {
   filter.setAttribute('aria-haspopup', 'dialog');
   filter.setAttribute('aria-expanded', 'false');
   filter.addEventListener('click', () => (_tbPop && _tbPop.btn === filter ? tbClosePop() : tbOnFilter()));
+  const stats = tbButton('tb-btn tb-ghost', 'chart', 'Stats');
+  stats.id = 'tb-stats-btn';
+  stats.title = 'Statistics';
+  stats.setAttribute('aria-controls', 'tb-stats');
+  stats.setAttribute('aria-expanded', 'false');
+  stats.addEventListener('click', () => tasksToggleStats());
   const spacer = tbEl('div', 'tb-spacer');
   const status = tbEl('span', 'tb-status');
   status.id = 'tb-status';
@@ -583,7 +597,7 @@ function tbEnsureRoot() {
   add.id = 'tb-add';
   add.setAttribute('aria-label', 'Add task');
   add.addEventListener('click', () => tbOpenQuickAdd('backlog'));
-  bar.append(g1, sep, g2, g3, filter, spacer, status, add);
+  bar.append(g1, sep, g2, g3, filter, stats, spacer, status, add);
 
   const banner = tbEl('div', 'tb-banner');
   banner.id = 'tb-banner';
@@ -605,7 +619,14 @@ function tbEnsureRoot() {
   drawer.setAttribute('aria-labelledby', 'tb-d-title');
   drawer.tabIndex = -1;
 
-  root.append(head, bar, banner, board, drawer);
+  const statsPanel = tbEl('aside', 'tb-drawer tb-stats');
+  statsPanel.id = 'tb-stats';
+  statsPanel.setAttribute('role', 'dialog');
+  statsPanel.setAttribute('aria-modal', 'false');
+  statsPanel.setAttribute('aria-labelledby', 'tb-s-title');
+  statsPanel.tabIndex = -1;
+
+  root.append(head, bar, banner, board, drawer, statsPanel);
   header.after(root);
   return root;
 }
@@ -1362,13 +1383,14 @@ document.addEventListener('pointerdown', e => {
   if (_tbPop && !_tbPop.node.contains(e.target) && !_tbPop.btn.contains(e.target)) tbClosePop({ focus: false });
 });
 window.addEventListener('resize', () => tbClosePop({ focus: false }));
-// Registered before init/main.js, so the board's Esc (popover, drag, drawer, then the board itself) never
+// Registered before init/main.js, so the board's Esc (popover, drag, drawer, statistics, then the board) never
 // reaches the global handler that stops a running generation.
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !tasksBoardOpen() || document.querySelector('dialog[open]')) return;
   if (_tbPop) { tbClosePop(); e.stopImmediatePropagation(); return; }
   if (_tbDrag && _tbDrag.started) { tbEndDrag(false); e.stopImmediatePropagation(); return; }
   if (tasksUi.openId && !tasksUi.grab) { tasksCloseDrawer(); e.stopImmediatePropagation(); return; }
+  if (typeof tasksStatsOpen === 'function' && tasksStatsOpen() && !tasksUi.grab) { tasksCloseStats(); e.stopImmediatePropagation(); return; }
   if (!e.defaultPrevented && !tasksUi.grab && tbEscClosesBoard(e.target)) { e.stopImmediatePropagation(); tbCloseBoard(); }
 });
 // Esc closes the board only when nothing above it handles Esc: focus is on the board, a Tasks button or the

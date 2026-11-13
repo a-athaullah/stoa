@@ -1,5 +1,6 @@
 /* ── Room task board ──────────────────────────────────────────────────────────
-   Board view in #chat-feed-col (tasks/board.js), drawer (tasks/drawer.js), rail/header Tasks button.
+   Board view in #chat-feed-col (tasks/board.js), drawer (tasks/drawer.js), statistics panel (tasks/stats.js),
+   rail/header Tasks button.
    Teal = running (--h-teal), indigo = awaiting (--tb-indigo). */
 :root, [data-theme] {
   --tb-indigo: oklch(0.42 0.09 285);
@@ -313,6 +314,45 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 .tb-cm-row { justify-content: space-between; margin-top: 6px; }
 .tb-d-foot { flex: none; display: flex; gap: 6px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--h-hair-soft); flex-wrap: wrap; }
 
+/* ── Statistics panel: the drawer's slot and slide (.tb-drawer), quiet ink bars, the current bucket in indigo ── */
+.tb-btn.tb-ghost.on { background: color-mix(in srgb, var(--tb-indigo) 10%, transparent); color: var(--h-ink); }
+.tb-s-title { margin: 0; font: 400 16px/1.2 var(--h-serif); color: var(--h-ink); }
+.tb-s-body { display: flex; flex-direction: column; gap: 22px; }
+.tb-s-err { align-items: center; margin-top: 0; }
+.tb-s-err > span { flex: 1; }
+.tb-s-note { margin: 0; font-size: 12.5px; color: var(--h-ink-mute); font-variant-numeric: tabular-nums; }
+.tb-s-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.tb-s-tile { min-width: 0; padding: 12px 14px; border-radius: 10px; background: var(--h-surface); border: 1px solid var(--h-hair-soft); }
+.tb-s-tile dt { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--h-ink-faint); }
+.tb-s-tile dd { margin: 0; }
+.tb-s-tile .tb-s-v { margin-top: 4px; font: 400 26px/1.15 var(--h-serif); color: var(--h-ink); font-variant-numeric: tabular-nums; }
+.tb-s-tile.warn .tb-s-v { color: var(--h-red); }
+.tb-s-tile .tb-s-sub { margin-top: 4px; font-size: 12px; color: var(--h-ink-mute); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tb-s-sec { display: flex; flex-direction: column; gap: 10px; }
+.tb-s-sec-h { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.tb-s-sec-h h3 { flex: 1; margin: 0; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--h-ink-faint); }
+.tb-s-seg { height: 28px; }
+.tb-s-chart {
+  display: grid; grid-template-columns: repeat(var(--n, 12), minmax(0, 1fr)); gap: 4px; height: 148px; padding-top: 4px;
+  margin-bottom: 18px; border-bottom: 1px solid var(--h-hairline);
+}
+.tb-s-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }
+.tb-s-n { font-size: 10.5px; line-height: 14px; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; }
+.tb-s-bar { display: block; width: min(14px, 70%); border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--h-ink) 22%, transparent); }
+.tb-s-bar.zero { height: 1px; background: color-mix(in srgb, var(--h-ink) 12%, transparent); }
+.tb-s-col.now .tb-s-bar:not(.zero) { background: color-mix(in srgb, var(--tb-indigo) 70%, transparent); }
+.tb-s-col:hover .tb-s-bar:not(.zero) { background: color-mix(in srgb, var(--h-ink) 40%, transparent); }
+.tb-s-col.now:hover .tb-s-bar:not(.zero) { background: var(--tb-indigo); }
+.tb-s-x { position: absolute; top: calc(100% + 5px); font-size: 10.5px; color: var(--h-ink-faint); white-space: nowrap; }
+.tb-s-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 26px 12px; border-radius: 10px; border: 1px dashed var(--h-hairline); color: var(--h-ink-mute); text-align: center; }
+.tb-s-empty .tb-i { width: 22px; height: 22px; color: var(--h-ink-faint); }
+.tb-s-empty p { margin: 0; font-size: 13px; }
+.tb-s-rows { margin: 0; }
+.tb-s-rows > div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--h-hair-soft); font-size: 13px; }
+.tb-s-rows > div:last-child { border-bottom: 0; }
+.tb-s-rows dt { color: var(--h-ink-mute); }
+.tb-s-rows dd { margin: 0; font-variant-numeric: tabular-nums; }
+
 /* ── "Task #seq" in chat messages ── */
 .h-task-avatar { border-radius: 50%; overflow: hidden; flex: none; background: var(--h-surface-hi); display: inline-block; }
 .h-task-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -342,4 +382,5 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 @media (max-width: 680px) {
   .tb-head { padding: 14px 16px 12px 8px; }
   .tb-close { width: 36px; height: 36px; margin: -3px; }
+  .tb-stats .tb-iconbtn { width: 36px; height: 36px; margin: -3px; }
 }

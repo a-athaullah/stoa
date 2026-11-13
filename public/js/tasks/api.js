@@ -57,6 +57,10 @@ const TasksApi = {
   move(roomId, taskId, body) { return this._req('POST', `${this._base(roomId)}/${this._id(taskId)}/move`, body); },
   retry(roomId, taskId) { return this._req('POST', `${this._base(roomId)}/${this._id(taskId)}/retry`, {}); },
   comment(roomId, taskId, text) { return this._req('POST', `${this._base(roomId)}/${this._id(taskId)}/comments`, { body: text }); },
+  stats(roomId, tz) {
+    if (!Number.isInteger(tz) || tz < -840 || tz > 840) throw new TasksApiError(400, 'Invalid time zone');
+    return this._req('GET', `${this._base(roomId)}/stats?tz=${tz}`);
+  },
   updateSettings(roomId, patch) { return this._req('PATCH', `${this._base(roomId)}/settings`, patch); },
   runner(roomId, action) {
     if (!['play', 'pause', 'stop'].includes(action)) throw new TasksApiError(400, 'Invalid runner action');

@@ -887,6 +887,33 @@ Di room yang diarsip, Pause dan Stop runner tetap bisa digunakan (hanya owner). 
 
 Setiap room dapat menampung hingga **1.000 task**.
 
+### Statistik
+
+Toolbar board memiliki tombol **Stats** (di sebelah Filter). Klik untuk membuka panel Statistik; klik lagi atau tekan **Esc** untuk menutupnya. Panel berbagi slot yang sama dengan drawer kartu — membuka panel menutup kartu yang sedang terbuka, dan membuka kartu menutup panel. Fokus kembali ke tombol Stats saat panel ditutup.
+
+Panel berisi:
+
+**Kartu ringkas**
+
+- **Tasks** — jumlah total task, dengan rincian awaiting, backlog, dan ongoing di bawahnya.
+- **Finished** — jumlah task selesai dan persentasenya dari semua task.
+- **Failed** — jumlah task gagal dan berapa task yang pernah di-retry.
+- **Average run** — rata-rata durasi task selesai yang memiliki waktu mulai dan selesai, disertai median dan terlama. Menampilkan "—" jika belum ada task yang memiliki keduanya.
+
+**Grafik Finished**
+
+Grafik batang task selesai per periode, dengan toggle **Week / Month**:
+- **Week** — 12 minggu, masing-masing mulai Senin, berdasarkan waktu selesai di zona waktu browser.
+- **Month** — 12 bulan terakhir, aturan zona waktu sama.
+
+Grafik menampilkan empty state jika belum ada data untuk rentang yang dipilih. Tabel screen-reader dengan angka yang sama juga tersedia.
+
+**Retries and failures**
+
+Tabel detail dengan tiga baris: tasks retried, retries in total, dan failed runs.
+
+Panel menyegarkan otomatis sekitar dua detik setelah ada perubahan task di room.
+
 ---
 
 ## Ekspor Percakapan

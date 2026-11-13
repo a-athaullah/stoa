@@ -2728,12 +2728,12 @@ const server = http.createServer(async (req, res) => {
     return json(res, { error: 'method not allowed' }, 405);
   }
 
-  // ── Task board: /api/rooms/:id/tasks[/:tid[/action]] + /tasks/settings + /tasks/runner/:op ──
+  // ── Task board: /api/rooms/:id/tasks[/:tid[/action]] + /tasks/settings + /tasks/stats + /tasks/runner/:op ──
   // Human session or agent secret. Logic lives in lib/room-tasks.js (shared with the stoa__task_* MCP
   // tools) and lib/room-tasks-runner.js: an agent must be a participant (a sub-agent: linked to the
   // room), a card id only resolves inside its room, writes on an archived room answer 423 (except runner
   // pause / stop), and only the owner drives the runner (play / pause / stop / concurrency).
-  const tasksMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/tasks(?:\/(settings|runner\/(?:play|pause|stop)|\d+(?:\/(?:move|complete|block|fail|retry|comments))?))?$/);
+  const tasksMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/tasks(?:\/(settings|stats|runner\/(?:play|pause|stop)|\d+(?:\/(?:move|complete|block|fail|retry|comments))?))?$/);
   if (tasksMatch) {
     const roomId = parseInt(tasksMatch[1]);
     const agentId = req._authUser ? null : (req._scopedAgentId || verifyAgentRequest(req)?.id || null);
@@ -2761,6 +2761,10 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET') return reply(roomTasks.getSettings(roomId));
       if (req.method === 'PATCH') return reply(roomTasks.updateSettings(roomId, who, await body()));
       return json(res, { error: 'method not allowed' }, 405);
+    }
+    if (sub === 'stats') {
+      if (req.method !== 'GET') return json(res, { error: 'method not allowed' }, 405);
+      return reply(roomTasks.stats(roomId, { tz: url.searchParams.get('tz') }));
     }
     if (sub.startsWith('runner/')) {
       if (req.method !== 'POST') return json(res, { error: 'method not allowed' }, 405);

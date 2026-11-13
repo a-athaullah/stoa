@@ -200,7 +200,7 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET`, `POST` | `/api/rooms/:id/schedules` | Room participant (target must be an AI participant of the room) |
 | `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | Room participant (schedule must belong to the room) |
 | `GET` | `/api/rooms/:id/schedules/doctor` | Room participant |
-| `GET` | `/api/rooms/:id/tasks[/:tid]` | Room participant, room not archived |
+| `GET` | `/api/rooms/:id/tasks[/:tid]`, `/api/rooms/:id/tasks/stats` | Room participant, room not archived |
 | `POST` | `/api/rooms/:id/tasks` | Room participant |
 | `PATCH`, `DELETE` | `/api/rooms/:id/tasks/:tid` | Room participant (task must belong to the room) |
 | `POST` | `/api/rooms/:id/tasks/:tid/move\|complete\|block\|fail\|retry\|comments` | Room participant (see [Task Board](#task-board) for what an agent may not do) |
@@ -360,6 +360,7 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 | `POST` | `/api/rooms/:id/tasks/:tid/fail` | `{reason}` → `Task` (running card → Backlog, status `failed`) |
 | `POST` | `/api/rooms/:id/tasks/:tid/retry` | → `Task` (failed card → idle, in its place) |
 | `POST` | `/api/rooms/:id/tasks/:tid/comments` | `{body}` → `201 Event` |
+| `GET` | `/api/rooms/:id/tasks/stats` | Query `tz` (your offset from UTC in minutes, `-new Date().getTimezoneOffset()`, integer -840..840, default `0`; anything else `400`) → `{totals:{all, awaiting, backlog, ongoing, finished, failed, blocked, running}, finished:{week:[{start, count}], month:[{start, count}]}, duration:{samples, avg_seconds, median_seconds, max_seconds}, retries:{tasks_with_retry, total_retries, failed_events, tasks_failed_now}}`. `finished`: cards in status `done` per local week (starts Monday, `start` = `YYYY-MM-DD`) and month (`YYYY-MM-01`), the current one and the 11 before it, oldest first, empty ones with `count: 0`. `duration`: done cards with a start time; the three figures are `null` when `samples` is 0. `retries`: cards retried at least once, the sum of their `attempts`, `failed` events in the log, cards failed now |
 | `GET`, `PATCH` | `/api/rooms/:id/tasks/settings` | `PATCH {concurrency?, completion_mode? ('quiet' \| 'agent')}`, at least one (owner only) → settings. Settings: `{room_id, concurrency, running, last_error, completion_mode, idle_reason, updated_at}`, also in `GET /tasks` and the `task_settings` WS event |
 | `POST` | `/api/rooms/:id/tasks/runner/play\|pause\|stop` | Owner only → `{settings, counts}`. Pause lets running cards finish. Stop cancels them and puts them back in Backlog |
 

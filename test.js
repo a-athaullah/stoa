@@ -2068,6 +2068,8 @@ function runUnitTests() {
         assert.deepStrictEqual(matchAgentRoute('GET', p), { scope: 'room', id: 12, read: true }, `${p}: read route (archived refused)`);
       }
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/rooms/12/memory'), { scope: 'room', id: 12 }, 'memory is not a read route');
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/rooms/12/tasks/stats'), { scope: 'room', id: 12, read: true }, 'task stats: read route');
+      assert.strictEqual(matchAgentRoute('POST', '/api/rooms/12/tasks/stats'), null);
     });
     ut('agent-scope — wrong method, suffix, or admin route → null', () => {
       assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12/message'), null);
@@ -6317,6 +6319,79 @@ async function runAsyncUnitTests() {
         assert.strictEqual(w.tasks.get(10, a.id).body.status, 'failed');
       } finally { w.close(); }
     });
+
+    // Cards seeded with fixed timestamps; "now" = Thu 2026-11-13 02:00 UTC → this week starts Mon 2026-11-09.
+    const statsWorld = () => {
+      const w = world();
+      let seq = 0;
+      const put = (roomId, col, status, started, finished, attempts = 0) => Number(w.db.prepare(`INSERT INTO room_tasks
+        (room_id, seq, title, col, rank, status, started_at, finished_at, attempts) VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run(roomId, ++seq, `t${seq}`, col, `r${seq}`, status, started, finished, attempts).lastInsertRowid);
+      const done = (started, finished, attempts = 0) => put(10, 'finished', 'done', started, finished, attempts);
+      done('2026-11-09 00:00:00', '2026-11-09 00:30:00');          // A 1800 s, Monday 00:30 UTC
+      done('2026-11-01 19:00:00', '2026-11-01 20:00:00');          // B 3600 s, Sunday 20:00 UTC
+      done(null, '2026-10-31 22:00:00');                           // C no start → buckets only
+      done('2025-11-30 10:00:00', '2025-11-30 12:00:00');          // D 7200 s, before the 12-month window
+      done('2026-11-12 11:00:00', '2026-11-12 10:00:00');          // G finish before start → buckets only
+      const h = done('2026-08-24 00:00:00', '2026-08-24 00:10:00', 1); // H 600 s, Monday of the oldest week
+      const e = put(10, 'backlog', 'failed', '2026-11-10 08:00:00', null, 2);
+      put(10, 'ongoing', 'running', '2026-11-13 01:00:00', null);
+      put(10, 'awaiting', 'blocked', '2026-11-12 01:00:00', null);
+      const out = put(11, 'finished', 'done', '2026-11-10 00:00:00', '2026-11-10 05:00:00', 3);
+      const ev = w.db.prepare("INSERT INTO room_task_events (task_id, room_id, kind, actor_kind) VALUES (?,?,?,'system')");
+      ev.run(e, 10, 'failed'); ev.run(e, 10, 'failed'); ev.run(h, 10, 'failed'); ev.run(e, 10, 'retry'); ev.run(out, 11, 'failed');
+      return w;
+    };
+    const NOW = Date.UTC(2026, 10, 13, 2, 0);
+    const counts = (b) => b.map(x => x.count);
+
+    await uta('Tasks stats — totals, Monday weeks + months (oldest first, empty buckets 0), duration, retries; other room excluded', async () => {
+      const w = statsWorld();
+      try {
+        const r = w.tasks.stats(10, { tz: '0', now: NOW });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const s = r.body;
+        assert.deepStrictEqual(s.totals, { all: 9, awaiting: 1, backlog: 1, ongoing: 1, finished: 6, failed: 1, blocked: 1, running: 1 });
+        assert.deepStrictEqual(s.finished.week.map(b => b.start), ['2026-08-24', '2026-08-31', '2026-09-07', '2026-09-14', '2026-09-21',
+          '2026-09-28', '2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26', '2026-11-02', '2026-11-09']);
+        assert.deepStrictEqual(counts(s.finished.week), [1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2], 'H | B (Sunday) + C | A + G');
+        assert.deepStrictEqual(s.finished.month.map(b => b.start), ['2025-12-01', '2026-01-01', '2026-02-01', '2026-03-01', '2026-04-01',
+          '2026-05-01', '2026-06-01', '2026-07-01', '2026-08-01', '2026-09-01', '2026-10-01', '2026-11-01'], 'crosses the year back');
+        assert.deepStrictEqual(counts(s.finished.month), [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 3], 'D (2025-11) outside the window');
+        assert.deepStrictEqual(s.duration, { samples: 4, avg_seconds: 3300, median_seconds: 2700, max_seconds: 7200 },
+          '600/1800/3600/7200: C has no start, G finished before it started');
+        assert.deepStrictEqual(s.retries, { tasks_with_retry: 2, total_retries: 3, failed_events: 3, tasks_failed_now: 1 });
+        const empty = w.tasks.stats(11, { now: NOW }).body; // room 11: one done card, no start-less ones
+        assert.deepStrictEqual([empty.totals.all, empty.duration.samples, empty.duration.max_seconds, empty.retries.failed_events], [1, 1, 18000, 1]);
+        w.db.prepare('DELETE FROM room_tasks WHERE room_id=11').run();
+        const none = w.tasks.stats(11, { now: NOW }).body;
+        assert.deepStrictEqual(none.duration, { samples: 0, avg_seconds: null, median_seconds: null, max_seconds: null });
+        assert.deepStrictEqual([none.finished.week.length, none.finished.month.length, none.totals.all], [12, 12, 0]);
+        assert.ok([...none.finished.week, ...none.finished.month].every(b => b.count === 0));
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks stats — tz shifts the finish date (week + month) and the current week; invalid tz → 400', async () => {
+      const w = statsWorld();
+      try {
+        const west = w.tasks.stats(10, { tz: '-60', now: NOW }).body;
+        assert.strictEqual(west.finished.week.at(-1).start, '2026-11-09', 'local now 01:00 Thu, same week');
+        assert.deepStrictEqual(counts(west.finished.week), [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1], 'A → Sunday 23:30, H → before the oldest week');
+        assert.deepStrictEqual(counts(west.finished.month).slice(-4), [1, 0, 1, 3]);
+        const east = w.tasks.stats(10, { tz: 180, now: NOW }).body;
+        assert.deepStrictEqual(counts(east.finished.month).slice(-3), [0, 0, 4], 'C → 2026-11-01 01:00 local');
+        assert.deepStrictEqual(counts(east.finished.week).slice(-3), [2, 0, 2], 'C → Sunday 01:00 and B → Sunday 23:00 local stay in week 10-26');
+        // Sunday 23:00 UTC is already Monday in UTC+1: a new current week.
+        const mon = w.tasks.stats(10, { tz: '60', now: Date.UTC(2026, 10, 15, 23, 0) }).body;
+        assert.deepStrictEqual([mon.finished.week.at(-1).start, mon.finished.week[0].start], ['2026-11-16', '2026-08-31']);
+        assert.strictEqual(w.tasks.stats(10, { tz: '840', now: NOW }).status, 200);
+        assert.strictEqual(w.tasks.stats(10, { tz: '-840', now: NOW }).status, 200);
+        for (const tz of ['841', '-841', '1.5', 'abc', '', '+60', '1e2', ' 60', 99999]) {
+          const r = w.tasks.stats(10, { tz, now: NOW });
+          assert.deepStrictEqual([r.status, /tz must be/.test(r.body.error)], [400, true], `tz=${JSON.stringify(tz)}`);
+        }
+      } finally { w.close(); }
+    });
   }
 
   // Static files (lib/static-files.js): ETag revalidation, gzip once per version, mtime invalidation,
@@ -9767,6 +9842,35 @@ async function run() {
       assert.strictEqual((await asAgent(agA, 'DELETE', `${base()}/${c.body.id}`)).status, 204);
     });
 
+    await test('Tasks — GET /tasks/stats: owner + participant agent read the board figures; other room 403, missing room 404, bad tz 400, POST 405', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const c = await asAgent(agA, 'POST', base(), { title: 'Stats card' });
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/${c.body.id}/move`, { col: 'ongoing' })).status, 200);
+      assert.strictEqual((await asAgent(agA, 'POST', `${base()}/${c.body.id}/complete`, {})).status, 200);
+      try {
+        const r = await req('GET', `${base()}/stats?tz=${-new Date().getTimezoneOffset()}`);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const db = tDb.prepare(`SELECT COUNT(*) AS all_, SUM(col='finished') AS finished, SUM(col='backlog') AS backlog,
+          SUM(status='done' AND started_at IS NOT NULL) AS timed FROM room_tasks WHERE room_id=?`).get(roomId);
+        assert.deepStrictEqual([r.body.totals.all, r.body.totals.finished, r.body.totals.backlog], [db.all_, db.finished, db.backlog]);
+        assert.strictEqual(r.body.duration.samples, db.timed);
+        assert.ok(r.body.duration.avg_seconds >= 0 && r.body.duration.max_seconds >= r.body.duration.median_seconds);
+        assert.ok(r.body.finished.week.at(-1).count >= 1 && r.body.finished.month.at(-1).count >= 1, 'just finished → current buckets');
+        assert.deepStrictEqual([r.body.finished.week.length, r.body.finished.month.length], [12, 12]);
+        assert.deepStrictEqual(Object.keys(r.body.retries), ['tasks_with_retry', 'total_retries', 'failed_events', 'tasks_failed_now']);
+        const ag = await asAgent(agA, 'GET', `${base()}/stats`);
+        assert.deepStrictEqual([ag.status, ag.body.totals], [200, r.body.totals], 'agent of the room, tz defaults to UTC');
+        assert.strictEqual((await asAgent(agOut, 'GET', `${base()}/stats`)).status, 403, 'agent of another room');
+        assert.strictEqual((await req('GET', '/api/rooms/99999999/tasks/stats')).status, 404);
+        for (const tz of ['900', 'x', '', '1.5']) assert.strictEqual((await req('GET', `${base()}/stats?tz=${tz}`)).status, 400, `tz=${tz}`);
+        assert.strictEqual((await req('POST', `${base()}/stats`, {})).status, 405);
+        const s = sessionCookie; sessionCookie = null;
+        try { assert.strictEqual((await req('GET', `${base()}/stats`)).status, 401); } finally { sessionCookie = s; }
+      } finally {
+        assert.strictEqual((await req('DELETE', `${base()}/${c.body.id}`)).status, 204);
+      }
+    });
+
     await test('Tasks — runner end to end: play → task message (Task #seq) → agent reply finishes it → next card → runner off', async () => {
       if (!ready()) { console.log('    (skipped)'); return; }
       const t2 = (await req('POST', base(), { title: 'Publish notes', blocked_by: [t1.id] })).body;
@@ -9879,6 +9983,8 @@ async function run() {
         assert.strictEqual((await req('PATCH', `${base()}/${t1.id}`, { title: 'x' })).status, 423);
         assert.strictEqual((await req('GET', base())).status, 200);
         assert.strictEqual((await asAgent(agA, 'GET', base())).status, 403, 'agents never read an archived room');
+        assert.strictEqual((await req('GET', `${base()}/stats`)).status, 200, 'owner still sees the statistics');
+        assert.strictEqual((await asAgent(agA, 'GET', `${base()}/stats`)).status, 403, 'agents do not');
       } finally {
         await req('PATCH', `/api/rooms/${roomId}`, { archived: false });
       }
@@ -17540,6 +17646,103 @@ async function run() {
     assert.strictEqual(run("tbEventText({ kind: 'claimed', meta: { from_col: 'backlog', to_col: 'ongoing' } })"), 'took it to Ongoing to work on it');
     assert.ok(txt(run(`tbStateBox(${T({ claimed_by_actor_id: 2, claimed_by_sub_agent_id: 9 })})`)).includes('Sofia is working on it'));
     assert.ok(txt(run(`tbStateBox(${T({})})`)).includes('Kira is working on it'));
+  });
+
+  await test('task board UI — statistics panel: tz sent as minutes east of UTC, bucket table for screen readers, empty state, a late answer after a room switch is dropped, task events refresh it only while open', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(t) { this.tag = t; this.children = []; this.attrs = {}; this.dataset = {}; this.style = { setProperty() {} }; this._t = ''; this.parent = null; const cls = new Set(); this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)), contains: c => cls.has(c) }; this._cls = cls; }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      set textContent(v) { this._t = String(v); this.children = []; }
+      get textContent() { return this._t + this.children.map(c => (typeof c === 'string' ? c : c.textContent)).join(''); }
+      appendChild(c) { if (c && typeof c === 'object') c.parent = this; this.children.push(c); return c; }
+      append(...c) { c.forEach(x => this.appendChild(x)); }
+      replaceChildren(...c) { this.children = []; this._t = ''; c.forEach(x => this.appendChild(x)); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      addEventListener() {}
+      focus(o) { this.focusOpts = o; }
+      contains(n) { for (let p = n; p; p = p.parent) if (p === this) return true; return false; }
+      all() { return this.children.filter(c => typeof c === 'object').flatMap(c => [c, ...c.all()]); }
+      querySelector(sel) { const cls = sel.startsWith('.') ? sel.slice(1) : null; return this.all().find(n => cls && n.classList.contains(cls)) || null; }
+    }
+    const panel = new El('aside');
+    const pending = [];
+    const calls = [];
+    const ctx = {
+      console, setTimeout, clearTimeout, URLSearchParams,
+      localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, activeElement: null, getElementById: id => (id === 'tb-stats' ? panel : null), createElement: t => new El(t), createElementNS: (ns, t) => new El(t), querySelector: () => null },
+      window: { addEventListener() {} }, showToast() {}, showLogin() {},
+      fetch: url => { calls.push(url); return new Promise(r => pending.push(r)); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/api.js', 'public/js/tasks/board.js', 'public/js/tasks/stats.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const reply = body => pending.shift()({ ok: true, status: 200, json: async () => body });
+    const flush = () => new Promise(r => setTimeout(r, 0));
+    const find = cls => panel.all().filter(n => n.classList.contains(cls));
+
+    assert.strictEqual(run('tbStatsTz({ getTimezoneOffset: () => -420 })'), 420, 'WIB (UTC+7): getTimezoneOffset is -420, the API wants +420');
+    assert.strictEqual(run('tbStatsTz({ getTimezoneOffset: () => 300 })'), -300);
+    assert.throws(() => run('TasksApi.stats(5, 900)'), /Invalid time zone/);
+    assert.throws(() => run('TasksApi.stats(5, 1.5)'), /Invalid time zone/);
+
+    const weeks = [['2026-08-24', 0], ['2026-08-31', 2], ['2026-09-07', 0], ['2026-09-14', 0], ['2026-09-21', 0], ['2026-09-28', 0], ['2026-10-05', 0], ['2026-10-12', 7], ['2026-10-19', 0], ['2026-10-26', 0], ['2026-11-02', 1], ['2026-11-09', 3]].map(([start, count]) => ({ start, count }));
+    const months = weeks.map((w, i) => ({ start: `2026-${String(i + 1).padStart(2, '0')}-01`, count: 0 }));
+    const stats = { totals: { all: 20, awaiting: 1, backlog: 6, ongoing: 1, finished: 40, failed: 2, blocked: 1, running: 1 }, finished: { week: weeks, month: months },
+      duration: { samples: 13, avg_seconds: 3725.6, median_seconds: 600, max_seconds: 90000 }, retries: { tasks_with_retry: 3, total_retries: 5, failed_events: 6, tasks_failed_now: 2 } };
+
+    const tzBefore = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles'; // west of UTC: parsing '2026-10-12' as UTC would land on 11 October
+    run('tasksUi.roomId = 5');
+    run('tasksOpenStats()');
+    assert.ok(panel.classList.contains('open'));
+    assert.match(calls[0], /^\/api\/rooms\/5\/tasks\/stats\?tz=-?\d+$/, 'tz is always sent');
+    assert.ok(panel.textContent.includes('Loading'), 'loading state before the answer');
+    await new Promise(r => setTimeout(r, 40));
+    assert.deepStrictEqual({ ...panel.focusOpts }, { preventScroll: true }, 'the panel is still off-screen while it slides in: focusing it must not scroll the board sideways');
+    reply(stats);
+    await flush(); await flush();
+    const vals = find('tb-s-v').map(n => n.textContent);
+    assert.deepStrictEqual(vals, ['20', '40', '2', '1h 2m'], 'tiles: all, finished, failed, average run formatted like card durations');
+    assert.ok(panel.textContent.includes('median 10m · longest 1d 1h'));
+    const note = find('tb-s-note')[0].textContent;
+    assert.ok(note.startsWith('13 finished in the last 12 weeks · busiest week: ') && note.endsWith('(7)'), 'the chart total sums the buckets (13), not totals.finished (40): ' + note);
+    const table = panel.all().find(n => n.tag === 'table');
+    const rows = table.all().filter(n => n.tag === 'tr').slice(1).map(r => r.children.map(c => c.textContent));
+    assert.strictEqual(rows.length, 12, 'every bucket, empty ones included');
+    assert.deepStrictEqual(rows[7][1], '7');
+    assert.match(rows[7][0], /Week of 12 October 2026|Week of October 12, 2026/, 'bucket start is read as a local calendar date, never shifted by UTC');
+    if (tzBefore === undefined) delete process.env.TZ; else process.env.TZ = tzBefore;
+    assert.strictEqual(find('tb-s-bar').filter(b => b.classList.contains('zero')).length, 8, 'empty buckets draw a hairline, not a bar');
+    assert.ok(find('tb-s-col')[11].classList.contains('now'), 'the current bucket is the last one');
+    assert.strictEqual(find('tb-s-chart')[0].getAttribute('aria-hidden'), 'true', 'the bars are decoration, the table carries the numbers');
+
+    run("_tbS.range = 'month'; tbRenderStats()");
+    assert.strictEqual(find('tb-s-empty').length, 1, 'no finished task in 12 months: empty state, no chart');
+    assert.ok(find('tb-s-empty')[0].textContent.includes('last 12 months'));
+    assert.strictEqual(find('tb-s-chart').length, 0);
+
+    run('tasksStatsNoteChange()');
+    await new Promise(r => setTimeout(r, run('TB_STATS_REFRESH_MS') + 50));
+    assert.strictEqual(calls.length, 2, 'a task change refreshes the open panel (debounced)');
+    run('tasksStatsRoomChanged(); tasksUi.roomId = 6');
+    assert.ok(!panel.classList.contains('open'), 'a room switch closes the panel');
+    run('tasksStatsNoteChange()');
+    await new Promise(r => setTimeout(r, run('TB_STATS_REFRESH_MS') + 50));
+    assert.strictEqual(calls.length, 2, 'closed panel: task events do not fetch');
+    run('tasksOpenStats()');
+    assert.match(calls[2], /^\/api\/rooms\/6\//);
+    reply({ ...stats, totals: { ...stats.totals, all: 999 } });
+    await flush(); await flush();
+    assert.ok(panel.textContent.includes('Loading') && !panel.textContent.includes('999'), 'room 5 answer landing while room 6 loads is dropped');
+    reply({ totals: {}, finished: { week: [{ start: '<img>', count: 1 }] } });
+    await flush(); await flush();
+    assert.ok(panel.textContent.includes('cannot read'), 'malformed payload: error state, nothing rendered from it');
+    assert.ok(!panel.textContent.includes('<img>'));
   });
 
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {

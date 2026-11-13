@@ -886,6 +886,33 @@ In an archived room, runner Pause and Stop still work (owner only). All other ta
 
 Each room holds up to **1,000 tasks**.
 
+### Statistics
+
+The board toolbar has a **Stats** button (next to Filter). Click it to open the Statistics panel; click again or press **Esc** to close it. The panel shares the same slot as the card drawer — opening the panel closes any open card, and opening a card closes the panel. Focus returns to the Stats button when the panel closes.
+
+The panel contains:
+
+**Summary tiles**
+
+- **Tasks** — total task count, with a breakdown of awaiting, backlog, and ongoing below.
+- **Finished** — number of finished tasks and their share of all tasks.
+- **Failed** — number of failed tasks and how many tasks have been retried at least once.
+- **Average run** — average duration of finished tasks that have both a start and a finish time, with the median and longest run below. Shows "—" when no timed runs exist yet.
+
+**Finished chart**
+
+A bar chart of tasks finished per period, with a **Week / Month** toggle:
+- **Week** — 12 weeks, each starting Monday, bucketed by the finish time in your browser's local time zone.
+- **Month** — last 12 months, same time zone rule.
+
+The chart shows an empty state when there is no data for the selected range. A screen-reader table with the same numbers is also present.
+
+**Retries and failures**
+
+A detail table with three rows: tasks retried, retries in total, and failed runs.
+
+The panel refreshes automatically within about two seconds of any task change in the room.
+
 ---
 
 ## Export Conversation

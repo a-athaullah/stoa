@@ -10,6 +10,7 @@ function tbDrawerEl() { return document.getElementById('tb-drawer'); }
 
 function tasksOpenDrawer(id, from) {
   if (!tasksUi.tasks.has(id)) return;
+  if (typeof tasksCloseStats === 'function') tasksCloseStats({ focus: false });
   const switching = tasksUi.openId !== id;
   tasksUi.openId = id;
   _tbD.from = from || null;
@@ -20,7 +21,7 @@ function tasksOpenDrawer(id, from) {
   tbRenderDrawer();
   d.classList.add('open');
   tasksRender();
-  setTimeout(() => d.focus(), 30);
+  setTimeout(() => d.focus({ preventScroll: true }), 30);
   if (switching) tbLoadEvents();
 }
 
