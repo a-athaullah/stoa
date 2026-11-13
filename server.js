@@ -1663,12 +1663,11 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
   const reqModel = typeof parsed.model === 'string' ? parsed.model : '';
   const model = openaiTranslator.pickModel(reqModel, plat);
   const wantStream = parsed.stream === true;
-  const sent = openaiTranslator.toOpenAIRequest(parsed, model);
   const upstream = await fetchWithKeyRotation(target, keys, key => ({
     'Content-Type': 'application/json',
     Accept: wantStream ? 'text/event-stream' : 'application/json',
     Authorization: `Bearer ${key}`,
-  }), JSON.stringify(sent));
+  }), JSON.stringify(openaiTranslator.toOpenAIRequest(parsed, model)));
   if (!upstream) return json(res, anthropicError('api_error', 'Platform unreachable'), 502);
   console.log(`[openai-proxy] ${reqModel || '?'} → ${model || '?'} @ ${plat.id} status=${upstream.status}`);
   if (!upstream.ok) {
@@ -1676,16 +1675,8 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     return json(res, m.body, m.status);
   }
 
-  const leak = proxyDebug.createLeakDetector();
-  const reportLeak = (finishReason) => {
-    if (!leak.leaked) return;
-    console.log(`[openai-proxy] DSML leak detected: ${reqModel || '?'} → ${model || '?'} @ ${plat.id} finish=${finishReason ?? '?'} tools=${sent.tools?.length || 0}/${Array.isArray(parsed.tools) ? parsed.tools.length : 0} → ${OPENAI_PROXY_DEBUG_LOG}`);
-    const entry = proxyDebug.buildLeakEntry({ body: parsed, sent, reqModel, model, platformId: plat.id, stream: wantStream, head: leak.head, finishReason });
-    proxyDebug.appendLeakEntry(OPENAI_PROXY_DEBUG_LOG, entry).catch(e => console.error(`[openai-proxy] debug log write failed: ${e.message}`));
-  };
-
   if (upstream.headers.get('content-type')?.includes('text/event-stream')) {
-    const tr = openaiTranslator.createStreamTranslator(reqModel, { onText: t => leak.push(t) });
+    const tr = openaiTranslator.createStreamTranslator(reqModel);
     const reader = upstream.body.getReader();
     const dec = new TextDecoder();
     res.writeHead(200, SSE_HEADERS);
@@ -1693,7 +1684,7 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     const pump = async () => {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) { res.end(tr.push(dec.decode()) + tr.end()); reportLeak(tr.finishReason); return; }
+        if (done) { res.end(tr.push(dec.decode()) + tr.end()); return; }
         // Back-pressure not awaited — same trade-off as the Ollama pump below.
         const out = tr.push(dec.decode(value, { stream: true }));
         if (out) res.write(out);
@@ -1709,8 +1700,6 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     return json(res, m.body, m.status);
   }
   const msg = openaiTranslator.fromOpenAIResponse(oa, reqModel);
-  if (typeof oa.choices[0]?.message?.content === 'string') leak.push(oa.choices[0].message.content);
-  reportLeak(oa.choices[0]?.finish_reason);
   // Upstream ignored stream:true — still answer in the event format the caller asked for.
   if (wantStream) { res.writeHead(200, SSE_HEADERS); return res.end(openaiTranslator.messageToStreamEvents(msg)); }
   return json(res, msg);
@@ -1736,8 +1725,6 @@ const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
 const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
 const openaiTranslator = require('./lib/openai-translator');
-const proxyDebug = require('./lib/openai-proxy-debug');
-const OPENAI_PROXY_DEBUG_LOG = path.resolve(process.env.STOA_OPENAI_DEBUG_LOG || path.join(__dirname, 'logs', 'openai-proxy-debug.log'));
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 
@@ -3839,19 +3826,24 @@ const server = http.createServer(async (req, res) => {
     return h;
   }
 
-  async function probeCapabilities(modelNames, baseUrl, headers) {
-    const showUrl = new URL(baseUrl).origin + '/api/show';
+  // tools:false makes the agent start the CLI with --tools "" (no tool at all), so it is only set when
+  // Ollama's /api/show answers with a capabilities list lacking 'tools'. Any other outcome (no such
+  // endpoint, error, unreadable body) means unknown and keeps tools on. openai_chat platforms are not
+  // Ollama: /api/show is skipped and tools pass through the translator.
+  async function probeCapabilities(modelNames, plat, headers) {
+    const unknown = (model) => ({ model, vision: false, tools: true });
+    if (plat.api_format === 'openai_chat') return modelNames.map(unknown);
+    const showUrl = new URL(plat.base_url).origin + '/api/show';
     return Promise.all(modelNames.map(async (model) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
       try {
         const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
-        clearTimeout(t);
-        if (!r.ok) return { model, vision: false, tools: false };
+        if (!r.ok) return unknown(model);
         const d = await r.json().catch(() => null);
-        const caps = Array.isArray(d?.capabilities) ? d.capabilities : [];
-        return { model, vision: caps.includes('vision'), tools: caps.includes('tools') };
-      } catch { clearTimeout(t); return { model, vision: false, tools: false }; }
+        if (!Array.isArray(d?.capabilities)) return unknown(model);
+        return { model, vision: d.capabilities.includes('vision'), tools: d.capabilities.includes('tools') };
+      } catch { return unknown(model); } finally { clearTimeout(t); }
     }));
   }
 
@@ -4009,7 +4001,7 @@ const server = http.createServer(async (req, res) => {
 
       const usableNames = results.filter(r => r.ok).map(r => r.model);
       const localSet = new Set(localModels);
-      const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
+      const usable = (await probeCapabilities(usableNames, plat, headers))
         .map(m => ({ ...m, local: localSet.has(m.model) }));
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
@@ -4048,7 +4040,7 @@ const server = http.createServer(async (req, res) => {
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
-      const models = await probeCapabilities(allModels, plat.base_url, headers);
+      const models = await probeCapabilities(allModels, plat, headers);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {
