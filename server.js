@@ -1684,7 +1684,7 @@ const threadCompleteDefer = createThreadCompleteDefer({
 const roomTasks = createRoomTasks({
   db, broadcast,
   primaryActorId: (roomId) => roomPrimaryActorId(roomId),
-  // completion_mode 'agent': stoa__task_complete also marks the card's thread complete, the same write and
+  // stoa__task_complete (every completion_mode) also marks the card's thread complete, the same write and
   // event as the owner's PUT /threads/:id/complete. roomMessages is created below; only called at runtime.
   completeThread: (roomId, rootId, opts) => threadCompleteDefer.request(roomId, rootId, opts),
 });
