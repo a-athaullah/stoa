@@ -376,6 +376,10 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **If you see new flaky test:** File bug, investigate root cause.
 
+### DeepSeek DSML Tool-Call Leak (openai_chat proxy) — diagnostics only
+
+DeepSeek models on an `api_format: 'openai_chat'` platform (Netra) sometimes return their native tool-call markup (`<｜DSML｜ calls>…`) inside `message.content` instead of `tool_calls`; the translator relays it as plain text with `stop_reason: end_turn`, so the agent ends the turn and no tool runs. Direct probes with tools return proper `tool_calls`, so the trigger lies in something the real Claude CLI request carries. Until the cause is known, `proxyOpenAIChat` only observes: a reply whose text contains `DSML` (stream or non-stream) prints `[openai-proxy] DSML leak detected …` to `logs/stoa.log` and appends one JSON line to `logs/openai-proxy-debug.log` (override: `STOA_OPENAI_DEBUG_LOG`; rotated to `.1` past 2 MB) via `lib/openai-proxy-debug.js`. The line holds the request shape only (tool counts and the names of tools dropped for lacking `input_schema`, `tool_choice`, message count, system prompt length, thinking/metadata flags, `max_tokens`, upstream `finish_reason`) plus the first 600 characters of the leaked reply — never keys, headers, or message/system text. The response to the client is unchanged. Do not add a DSML parser before an entry shows what differs; remove the logger once the cause is fixed.
+
 ---
 
 ## Security Notes
