@@ -857,8 +857,8 @@ Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan 
 
 Toolbar board memiliki kontrol **Finish** (di sebelah stepper **Parallel**) dengan dua pilihan:
 
-- **When quiet** *(default)* — card selesai saat thread-nya diam beberapa detik; balasan terakhir agent menjadi ringkasan hasil.
-- **Agent decides** — thread yang diam tidak langsung menyelesaikan card. Card hanya selesai ketika agent memanggil salah satu tool keputusan: `stoa__task_complete` (pindah ke Finished dengan ringkasan; thread card ditandai selesai), `stoa__task_block` (pindah ke Awaiting dengan alasan), atau `stoa__task_fail` (gagal dengan alasan). Pesan card memberitahu agent aturan ini secara eksplisit. Gunakan mode ini untuk pekerjaan panjang di mana proses latar belakang masih berjalan atau agent perlu menunggu keputusan manusia.
+- **When quiet** *(default)* — card selesai saat thread-nya diam beberapa detik; balasan terakhir agent menjadi ringkasan hasil. Agent juga bisa memanggil `stoa__task_complete` untuk mengakhiri card lebih awal; thread card kemudian ditandai selesai (setelah giliran agent berakhir).
+- **Agent decides** — thread yang diam tidak langsung menyelesaikan card. Card hanya selesai ketika agent memanggil salah satu tool keputusan: `stoa__task_complete` (pindah ke Finished dengan ringkasan; thread card ditandai selesai setelah giliran agent berakhir), `stoa__task_block` (pindah ke Awaiting dengan alasan), atau `stoa__task_fail` (gagal dengan alasan). Pesan card memberitahu agent aturan ini secara eksplisit. Gunakan mode ini untuk pekerjaan panjang di mana proses latar belakang masih berjalan atau agent perlu menunggu keputusan manusia.
 
   Pengaman di mode Agent decides: jika thread tetap diam 3 jam tanpa keputusan, card dipindah ke Awaiting dengan alasan "agen tidak memutuskan". Aktivitas baru di thread mereset hitungan waktu. Durasi batas waktu dapat diubah dengan variabel lingkungan `TASK_DECIDE_MAX_MS`. Hanya agent yang menjalankan card (atau sub-agent-nya) yang bisa memanggil tool keputusan.
 
