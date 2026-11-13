@@ -283,6 +283,9 @@
   --h-header-ink:       #4A154B;
   --h-header-ink-faint: rgba(74,21,75,0.75);
   --h-pre-bg:           #2A1A2B;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-ink-mute) 12%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink-mute) 6%, var(--h-sidebar-bg));
 }
 
 [data-theme="mood-indigo"] {
@@ -356,6 +359,9 @@
   --h-header-ink:       #FFFFFF;
   --h-header-ink-faint: rgba(255,255,255,0.7);
   --h-pre-bg:           #100611;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-ink) 12%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink) 6%, var(--h-sidebar-bg));
 }
 
 [data-theme="ochin"] {
@@ -396,6 +402,9 @@
   --h-header-ink:       #FDF6E3;
   --h-header-ink-faint: rgba(253,246,227,0.7);
   --h-pre-bg:           #00212A;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-ink) 10%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink) 5%, var(--h-sidebar-bg));
 }
 
 [data-theme="choco-mint"] {
