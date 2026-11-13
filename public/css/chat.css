@@ -2140,7 +2140,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   #model-selector-label,
   #model-capability-badges { display: none !important; }
 }
-.h-model-dropdown-trigger:hover { opacity: 1; background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-trigger:hover { opacity: 1; background: var(--h-row-hover); }
 .h-model-dropdown-list {
   display: none; position: absolute; bottom: 100%; right: 0;
   min-width: 220px; max-width: calc(100vw - 24px);
@@ -2159,7 +2159,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   padding: 5px 10px; cursor: pointer; font-size: 11px;
   color: var(--h-ink, #ddd);
 }
-.h-model-dropdown-list .h-model-option:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-list .h-model-option:hover { background: var(--h-row-hover); }
 .h-model-dropdown-list .h-model-option.selected { background: var(--h-accent); color: var(--h-accent-ink); }
 .h-model-dropdown-list .h-model-option .h-model-cap-icons {
   display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
