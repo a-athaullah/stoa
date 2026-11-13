@@ -2405,6 +2405,152 @@ function runUnitTests() {
     }
   });
 
+  // Anthropic Messages <-> OpenAI Chat Completions (lib/openai-translator.js).
+  console.log('\n  [OpenAI translator]');
+  const oat = require('./lib/openai-translator');
+  const parseSse = (text) => text.split('\n\n').filter(Boolean).map(chunk => {
+    const ev = chunk.match(/^event: (.+)$/m)[1];
+    const data = JSON.parse(chunk.match(/^data: (.+)$/m)[1]);
+    assert.strictEqual(data.type, ev, 'event name matches data.type');
+    return data;
+  });
+  ut('openai chatCompletionsUrl — bare origin gets /v1; /v1, custom roots and full endpoint kept', () => {
+    assert.strictEqual(oat.chatCompletionsUrl('https://api.netra.sh'), 'https://api.netra.sh/v1/chat/completions');
+    assert.strictEqual(oat.chatCompletionsUrl('https://api.netra.sh/'), 'https://api.netra.sh/v1/chat/completions');
+    assert.strictEqual(oat.chatCompletionsUrl('https://h.io/v1//'), 'https://h.io/v1/chat/completions');
+    assert.strictEqual(oat.chatCompletionsUrl('https://h.io/api/paas/v4'), 'https://h.io/api/paas/v4/chat/completions');
+    assert.strictEqual(oat.chatCompletionsUrl('https://h.io/v1/chat/completions/'), 'https://h.io/v1/chat/completions');
+    assert.throws(() => oat.chatCompletionsUrl(''));
+  });
+  ut('openai pickModel — listed model kept; unlisted (CLI haiku) → first enabled, else first cached; no list → passthrough', () => {
+    const plat = { enabled_models: ['ds/v4', 'ds/v4-mini'], cached_models: [{ model: 'other' }] };
+    assert.strictEqual(oat.pickModel('ds/v4-mini', plat), 'ds/v4-mini');
+    assert.strictEqual(oat.pickModel('claude-haiku-5-5', plat), 'ds/v4');
+    assert.strictEqual(oat.pickModel('claude-haiku-5-5', { enabled_models: [], cached_models: ['c1', { model: 'c2' }] }), 'c1');
+    assert.strictEqual(oat.pickModel('claude-haiku-5-5', {}), 'claude-haiku-5-5');
+  });
+  ut('openai toOpenAIRequest — system array, params, stop, tools, tool_choice, stream', () => {
+    const out = oat.toOpenAIRequest({
+      model: 'ignored', system: [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }], max_tokens: 99, temperature: 0.2, top_k: 5,
+      stop_sequences: ['END'], stream: true, thinking: { type: 'enabled', budget_tokens: 1000 }, metadata: { user_id: 'secret-user' },
+      tools: [{ name: 'Read', description: 'read a file', input_schema: { type: 'object', properties: { p: { type: 'string' } } } }, { type: 'web_search_20250305', name: 'web_search' }],
+      tool_choice: { type: 'any', disable_parallel_tool_use: true },
+      messages: [{ role: 'user', content: 'hi' }],
+    }, 'ds/v4');
+    assert.deepStrictEqual(out, {
+      model: 'ds/v4',
+      messages: [{ role: 'system', content: 'A\n\nB' }, { role: 'user', content: 'hi' }],
+      max_tokens: 99, temperature: 0.2, stop: ['END'],
+      tools: [{ type: 'function', function: { name: 'Read', description: 'read a file', parameters: { type: 'object', properties: { p: { type: 'string' } } } } }],
+      tool_choice: 'required', parallel_tool_calls: false,
+      stream: true, stream_options: { include_usage: true },
+    });
+    assert.deepStrictEqual(oat.toOpenAIRequest({ messages: [], tools: [{ name: 'X', input_schema: {} }], tool_choice: { type: 'tool', name: 'X' } }, 'm').tool_choice, { type: 'function', function: { name: 'X' } });
+    assert.ok(!('tool_choice' in oat.toOpenAIRequest({ messages: [], tool_choice: { type: 'auto' } }, 'm')), 'no tools → no tool_choice');
+  });
+  ut('openai toOpenAIRequest — tool_use → tool_calls, tool_result → role tool (before user text), image → data URL, thinking dropped', () => {
+    const out = oat.toOpenAIRequest({ messages: [
+      { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA=' } }] },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm', signature: 'sig' }, { type: 'text', text: 'reading' }, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { p: 'a' } }] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'file body' }, { type: 'image', source: { type: 'url', url: 'https://x/y.png' } }] },
+        { type: 'tool_result', tool_use_id: 'toolu_2', content: 'boom', is_error: true },
+        { type: 'text', text: 'continue' },
+      ] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_3', name: 'Ls', input: {} }] },
+    ] }, 'm');
+    assert.deepStrictEqual(out.messages, [
+      { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA=' } }] },
+      { role: 'assistant', content: 'reading', tool_calls: [{ id: 'toolu_1', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' } }] },
+      { role: 'tool', tool_call_id: 'toolu_1', content: 'file body' },
+      { role: 'tool', tool_call_id: 'toolu_2', content: '[tool error] boom' },
+      { role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://x/y.png' } }, { type: 'text', text: 'continue' }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'toolu_3', type: 'function', function: { name: 'Ls', arguments: '{}' } }] },
+    ]);
+  });
+  ut('openai fromOpenAIResponse — text + tool_calls, finish_reason and usage (cached tokens split out)', () => {
+    const m = oat.fromOpenAIResponse({ choices: [{ message: { content: 'ok', tool_calls: [{ id: 'call_9', function: { name: 'Read', arguments: '{"p":"x"}' } }, { id: 'call_10', function: { name: 'Bad', arguments: '{not json' } }] }, finish_reason: 'tool_calls' }],
+      usage: { prompt_tokens: 100, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 40 } } }, 'req-model');
+    assert.match(m.id, /^msg_[0-9a-f]{24}$/);
+    assert.strictEqual(m.model, 'req-model');
+    assert.deepStrictEqual(m.content, [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'call_9', name: 'Read', input: { p: 'x' } }, { type: 'tool_use', id: 'call_10', name: 'Bad', input: {} }]);
+    assert.strictEqual(m.stop_reason, 'tool_use');
+    assert.deepStrictEqual(m.usage, { input_tokens: 60, output_tokens: 7, cache_read_input_tokens: 40, cache_creation_input_tokens: 0 });
+    for (const [fr, sr] of [['stop', 'end_turn'], ['length', 'max_tokens'], ['content_filter', 'refusal'], [null, 'end_turn'], ['weird', 'end_turn']]) {
+      assert.strictEqual(oat.fromOpenAIResponse({ choices: [{ message: { content: 'x' }, finish_reason: fr }] }, 'm').stop_reason, sr, String(fr));
+    }
+  });
+  ut('openai stream — chunks split mid-line: text deltas live, tool_calls (interleaved indexes) as whole blocks, then message_delta + message_stop', () => {
+    const tr = oat.createStreamTranslator('req-model');
+    const lines = [
+      ': keepalive',
+      'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}',
+      'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"Read","arguments":"{\\"p\\":"}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"Ls","arguments":""}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"a.txt\\"}"}}]},"finish_reason":"tool_calls"}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}',
+      'data: [DONE]',
+    ].join('\r\n\r\n') + '\r\n\r\n';
+    let out = '';
+    for (let i = 0; i < lines.length; i += 7) out += tr.push(lines.slice(i, i + 7));
+    out += tr.end();
+    const ev = parseSse(out);
+    assert.deepStrictEqual(ev.map(e => e.type), ['message_start', 'content_block_start', 'content_block_delta', 'content_block_delta', 'content_block_stop',
+      'content_block_start', 'content_block_delta', 'content_block_stop', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop']);
+    assert.strictEqual(ev[0].message.model, 'req-model');
+    assert.deepStrictEqual([ev[2].delta, ev[3].delta], [{ type: 'text_delta', text: 'Hel' }, { type: 'text_delta', text: 'lo' }]);
+    assert.deepStrictEqual(ev[5], { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_a', name: 'Read', input: {} } });
+    assert.deepStrictEqual(ev[6].delta, { type: 'input_json_delta', partial_json: '{"p":"a.txt"}' });
+    assert.deepStrictEqual([ev[8].index, ev[8].content_block.name, ev[9].delta.partial_json], [2, 'Ls', '{}']);
+    assert.deepStrictEqual(ev[11].delta, { stop_reason: 'tool_use', stop_sequence: null });
+    assert.deepStrictEqual([ev[11].usage.input_tokens, ev[11].usage.output_tokens], [12, 4]);
+  });
+  ut('openai stream — no [DONE] still finishes; error chunk → error event with no message_stop; fail() after done is a no-op', () => {
+    const a = parseSse(oat.createStreamTranslator('m').push('data: {"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}\n') + '');
+    assert.deepStrictEqual(a.map(e => e.type), ['message_start', 'content_block_start', 'content_block_delta']);
+    const tr = oat.createStreamTranslator('m');
+    const b = parseSse(tr.push('data: {"choices":[{"delta":{"content":"x"},"finish_reason":"length"}]}') + tr.end());
+    assert.strictEqual(b.at(-1).type, 'message_stop');
+    assert.strictEqual(b.at(-2).delta.stop_reason, 'max_tokens');
+    assert.strictEqual(tr.fail('late'), '');
+    const tr2 = oat.createStreamTranslator('m');
+    const c = parseSse(tr2.push('data: {"choices":[{"delta":{"content":"x"}}]}\n\ndata: {"error":{"message":"quota gone"}}\n\ndata: {"choices":[{"delta":{"content":"y"}}]}\n\n') + tr2.end());
+    assert.deepStrictEqual(c.map(e => e.type), ['message_start', 'content_block_start', 'content_block_delta', 'error']);
+    assert.deepStrictEqual(c[3].error, { type: 'api_error', message: 'quota gone' });
+    const e = oat.createStreamTranslator('m');
+    assert.deepStrictEqual(parseSse(e.end()).map(x => x.type), ['message_start', 'message_delta', 'message_stop']);
+  });
+  ut('openai messageToStreamEvents — non-stream upstream re-emitted as Anthropic stream', () => {
+    const msg = oat.fromOpenAIResponse({ choices: [{ message: { content: 'hi', tool_calls: [{ id: 'c1', function: { name: 'T', arguments: '{"a":1}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 3, completion_tokens: 2 } }, 'm');
+    const ev = parseSse(oat.messageToStreamEvents(msg));
+    assert.deepStrictEqual(ev.map(e => e.type), ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop']);
+    assert.deepStrictEqual(ev[0].message.content, []);
+    assert.strictEqual(ev[2].delta.text, 'hi');
+    assert.deepStrictEqual(ev[5].delta, { type: 'input_json_delta', partial_json: '{"a":1}' });
+    assert.strictEqual(ev[7].delta.stop_reason, 'tool_use');
+  });
+  ut('openai mapError — status → Anthropic error type; message from error object, string, or raw text', () => {
+    assert.deepStrictEqual(oat.mapError(400, '{"error":{"message":"model variants are unavailable"}}'), { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'model variants are unavailable' } } });
+    assert.strictEqual(oat.mapError(429, '{"error":"slow down"}').body.error.type, 'rate_limit_error');
+    assert.strictEqual(oat.mapError(429, '{"error":"slow down"}').body.error.message, 'slow down');
+    assert.strictEqual(oat.mapError(401, '').body.error.type, 'authentication_error');
+    assert.strictEqual(oat.mapError(402, '').body.error.type, 'billing_error');
+    assert.strictEqual(oat.mapError(503, '').body.error.type, 'overloaded_error');
+    assert.deepStrictEqual(oat.mapError(500, '<html>bad gateway</html>').body.error, { type: 'api_error', message: '<html>bad gateway</html>' });
+    assert.strictEqual(oat.mapError(418, '').body.error.message, 'upstream HTTP 418');
+  });
+  ut('openai estimateTokens — ~4 chars/token over system, text, tool I/O, tools; image counted', () => {
+    assert.strictEqual(oat.estimateTokens({ system: 'x'.repeat(40), messages: [{ role: 'user', content: 'y'.repeat(40) }] }), 20);
+    const base = oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'text', text: 'abcd' }] }] });
+    assert.strictEqual(base, 1);
+    assert.ok(oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'image', source: {} }] }] }) >= 1600);
+    assert.ok(oat.estimateTokens({ messages: [], tools: [{ name: 'T', input_schema: { type: 'object', description: 'z'.repeat(400) } }] }) > 100);
+    assert.strictEqual(oat.estimateTokens({}), 1);
+  });
+
   // Accept-Encoding parsing for gzipped JSON responses (lib/http-compress.js).
   const { acceptsGzip } = require('./lib/http-compress');
   ut('acceptsGzip — gzip token, case and whitespace insensitive', () => {
@@ -11098,6 +11244,145 @@ async function run() {
       }
     });
 
+    // /v1/messages — api_format openai_chat: Anthropic in, OpenAI /chat/completions upstream (mock), Anthropic out.
+    await test('/v1/messages openai_chat — trigger gets Stoa proxy URL + token; SSE translated incl. tool_calls; key rotation; no header leak', async () => {
+      const seen = [];
+      const mock = http.createServer((rq, rs) => {
+        let raw = '';
+        rq.on('data', c => { raw += c; });
+        rq.on('end', async () => {
+          const b = JSON.parse(raw);
+          seen.push({ path: rq.url, headers: rq.headers, body: b });
+          if (rq.headers.authorization === 'Bearer k-limited') { rs.writeHead(429, { 'Content-Type': 'application/json' }); return rs.end('{"error":{"message":"rate limited"}}'); }
+          const last = b.messages.at(-1)?.content;
+          if (last === 'fail please') { rs.writeHead(400, { 'Content-Type': 'application/json' }); return rs.end('{"error":{"message":"model variants are unavailable on this endpoint"}}'); }
+          if (last === 'garbage please') { rs.writeHead(200, { 'Content-Type': 'application/json' }); return rs.end('<html>oops</html>'); }
+          if (!b.stream) {
+            rs.writeHead(200, { 'Content-Type': 'application/json' });
+            return rs.end(JSON.stringify({ id: 'cc-1', choices: [{ message: { role: 'assistant', content: 'short', tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 9, completion_tokens: 3 } }));
+          }
+          rs.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          const chunks = [
+            { choices: [{ delta: { role: 'assistant', content: 'Hi ' } }] },
+            { choices: [{ delta: { content: 'there' } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'Bash', arguments: '{"cmd":' } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"ls"}' } }] }, finish_reason: 'tool_calls' }] },
+            { choices: [], usage: { prompt_tokens: 21, completion_tokens: 8 } },
+          ];
+          const wire = chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n';
+          // Uneven writes so a JSON line is split across network chunks.
+          for (let i = 0; i < wire.length; i += 37) { rs.write(wire.slice(i, i + 37)); await new Promise(r => setTimeout(r, 2)); }
+          rs.end();
+        });
+      });
+      await new Promise(r => mock.listen(0, '127.0.0.1', r));
+      const mockPort = mock.address().port;
+      const origPlat = secDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      const plats = [{ id: '__sec-oai', name: 'OAI', vendor: 'generic', api_format: 'openai_chat', enabled: true, base_url: `http://127.0.0.1:${mockPort}`, api_keys: ['k-limited', 'k-good'],
+        cached_models: [{ model: 'ds/v4', tools: true }, { model: 'ds/v4-mini', tools: true }], enabled_models: ['ds/v4', 'ds/v4-mini'] }];
+      (origPlat ? secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : secDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)")).run(JSON.stringify(plats));
+      secDb.prepare("UPDATE rooms SET model='ds/v4', model_config=? WHERE id=?").run(JSON.stringify({ platform_id: '__sec-oai' }), secRoomId);
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      try {
+        let trigMsg;
+        const trig = waitForWsMessage(secAgent.ws, m => m.type === 'agent_trigger' && m.room_id === secRoomId, 5000);
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: secRoomId }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: secRoomId, content: 'openai please' }));
+          trigMsg = await trig;
+          secAgent.ws.send(JSON.stringify({ type: 'agent_complete', room_id: secRoomId, message_id: trigMsg.message_id, content: 'ok' }));
+        } finally { humanWs.close(); }
+        // The agent talks to Stoa, never to the platform: no platform URL, no platform key.
+        assert.ok(trigMsg.base_url && !trigMsg.base_url.includes(String(mockPort)), `base_url must be the Stoa proxy, got ${trigMsg.base_url}`);
+        const token = trigMsg.api_keys?.[0];
+        assert.match(token || '', new RegExp(`^stoa-proxy:__sec-oai:${secAgent.actorId}:[a-f0-9]{64}$`));
+        assert.ok(!JSON.stringify(trigMsg).includes('k-good'), 'platform key leaked to agent');
+        const auth = { Authorization: `Bearer ${token}`, 'anthropic-beta': 'secret-beta', 'anthropic-version': '2023-06-01', 'x-agent-secret': 'not-forwarded' };
+
+        const s = await anon(() => req('POST', '/v1/messages?beta=true', {
+          model: 'ds/v4', stream: true, max_tokens: 64, system: [{ type: 'text', text: 'be brief' }],
+          tools: [{ name: 'Bash', description: 'run', input_schema: { type: 'object', properties: { cmd: { type: 'string' } } } }],
+          messages: [{ role: 'user', content: 'hello' }],
+        }, auth), true);
+        assert.strictEqual(s.status, 200, s.raw);
+        assert.match(s.headers['content-type'], /^text\/event-stream/);
+        const ev = s.raw.split('\n\n').filter(Boolean).map(c => JSON.parse(c.match(/^data: (.+)$/m)[1]));
+        assert.deepStrictEqual(ev.map(e => e.type), ['message_start', 'content_block_start', 'content_block_delta', 'content_block_delta', 'content_block_stop',
+          'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop']);
+        assert.strictEqual(ev.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join(''), 'Hi there');
+        assert.deepStrictEqual(ev[5].content_block, { type: 'tool_use', id: 'call_1', name: 'Bash', input: {} });
+        assert.deepStrictEqual(ev[6].delta, { type: 'input_json_delta', partial_json: '{"cmd":"ls"}' });
+        assert.strictEqual(ev[8].delta.stop_reason, 'tool_use');
+        assert.deepStrictEqual([ev[8].usage.input_tokens, ev[8].usage.output_tokens], [21, 8]);
+        // First key 429 → rotated to the second; the request upstream is OpenAI-shaped and carries only the platform key.
+        assert.deepStrictEqual(seen.map(x => x.headers.authorization), ['Bearer k-limited', 'Bearer k-good']);
+        const up = seen[1];
+        assert.strictEqual(up.path, '/v1/chat/completions');
+        for (const h of ['anthropic-beta', 'anthropic-version', 'x-agent-secret', 'cookie']) assert.ok(!(h in up.headers), `${h} forwarded upstream`);
+        assert.strictEqual(up.body.model, 'ds/v4');
+        assert.deepStrictEqual(up.body.messages, [{ role: 'system', content: 'be brief' }, { role: 'user', content: 'hello' }]);
+        assert.deepStrictEqual(up.body.stream_options, { include_usage: true });
+        assert.strictEqual(up.body.tools[0].function.name, 'Bash');
+
+        // CLI side-call on a model the platform does not list → mapped to the first enabled model; non-stream JSON back.
+        seen.length = 0;
+        const n = await anon(() => req('POST', '/v1/messages', { model: 'claude-haiku-5-5', max_tokens: 10, messages: [{ role: 'user', content: 'title?' }] }, auth), true);
+        assert.strictEqual(n.status, 200, n.raw);
+        assert.strictEqual(seen.at(-1).body.model, 'ds/v4');
+        assert.strictEqual(n.body.type, 'message');
+        assert.strictEqual(n.body.model, 'claude-haiku-5-5');
+        assert.deepStrictEqual(n.body.content, [{ type: 'text', text: 'short' }, { type: 'tool_use', id: 'call_x', name: 'Read', input: { p: 'a' } }]);
+        assert.strictEqual(n.body.stop_reason, 'tool_use');
+
+        // stream:true but the upstream answered with plain JSON → still an Anthropic event stream.
+        const sj = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4-mini', stream: true, max_tokens: 10, messages: [{ role: 'user', content: 'x' }] }, auth), true);
+        assert.strictEqual(sj.status, 200);
+        assert.deepStrictEqual(sj.raw.split('\n\n').filter(Boolean).map(c => c.match(/^event: (.+)$/m)[1]).at(-1), 'message_stop');
+
+        // Upstream errors come back in Anthropic error shape with the upstream status.
+        const e400 = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: [{ role: 'user', content: 'fail please' }] }, auth), true);
+        assert.strictEqual(e400.status, 400);
+        assert.deepStrictEqual(e400.body, { type: 'error', error: { type: 'invalid_request_error', message: 'model variants are unavailable on this endpoint' } });
+        const eBad = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: [{ role: 'user', content: 'garbage please' }] }, auth), true);
+        assert.strictEqual(eBad.status, 502);
+        assert.strictEqual(eBad.body.error.type, 'api_error');
+        const eShape = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: 'nope' }, auth), true);
+        assert.strictEqual(eShape.status, 400);
+        assert.strictEqual(eShape.body.error.type, 'invalid_request_error');
+
+        // count_tokens: estimate, same auth.
+        seen.length = 0;
+        const ct = await anon(() => req('POST', '/v1/messages/count_tokens', { model: 'ds/v4', system: 'x'.repeat(400), messages: [{ role: 'user', content: 'y'.repeat(400) }] }, auth), true);
+        assert.deepStrictEqual([ct.status, ct.body], [200, { input_tokens: 200 }]);
+        assert.strictEqual(seen.length, 0, 'count_tokens must not call the platform');
+        const ctNoAuth = await anon(() => req('POST', '/v1/messages/count_tokens', { messages: [] }), true);
+        assert.deepStrictEqual([ctNoAuth.status, ctNoAuth.body.error.type], [401, 'authentication_error']);
+        const ctBad = await anon(() => rawReq('POST', '/v1/messages/count_tokens', 'not-json', 'application/json', { Authorization: `Bearer ${token}` }), true);
+        assert.strictEqual(ctBad.status, 400);
+
+        // Every key unusable → the last upstream answer is relayed as an Anthropic error.
+        plats[0].api_keys = ['k-limited'];
+        secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(plats));
+        await new Promise(r => setTimeout(r, 1100));
+        const e429 = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: [{ role: 'user', content: 'x' }] }, auth), true);
+        assert.deepStrictEqual([e429.status, e429.body.error.type, e429.body.error.message], [429, 'rate_limit_error', 'rate limited']);
+        // Platform no longer proxied (format back to anthropic) → the token opens nothing.
+        plats[0].api_format = 'anthropic';
+        secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(plats));
+        await new Promise(r => setTimeout(r, 1100));
+        const gone = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: [{ role: 'user', content: 'x' }] }, auth), true);
+        assert.strictEqual(gone.status, 503);
+      } finally {
+        mock.close();
+        if (origPlat) secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+        else secDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+        secDb.prepare('UPDATE rooms SET model=NULL, model_config=NULL WHERE id=?').run(secRoomId);
+      }
+    });
+
     // CSRF — Origin checks for cookie-authenticated writes
     await test('CSRF — session POST with foreign/null Origin → 403; same-origin / trusted X-Forwarded-Host → 200', async () => {
       const foreign = await req('POST', '/api/agent/install-token', {}, { Origin: 'https://evil.example' });
@@ -14215,6 +14500,44 @@ async function run() {
     // The id is derived from the original name (PATCH rename doesn't change id)
     const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
     assert.strictEqual(r.status, 409);
+  });
+
+  await test('POST/PATCH /api/ai/platforms — api_format: default anthropic, openai_chat stored, invalid / ollama combo → 400', async () => {
+    const legacy = await req('POST', '/api/ai/platforms', { name: '__test-fmt-default__', base_url: 'https://h.example/v1' });
+    const oai = await req('POST', '/api/ai/platforms', { name: '__test-fmt-oai__', base_url: 'https://h.example', api_format: 'openai_chat' });
+    try {
+      assert.strictEqual(legacy.status, 200);
+      assert.strictEqual(legacy.body.api_format, 'anthropic');
+      assert.strictEqual(oai.status, 200);
+      assert.strictEqual(oai.body.api_format, 'openai_chat');
+      for (const bad of ['openai', '', null, 1, 'OPENAI_CHAT']) {
+        const r = await req('POST', '/api/ai/platforms', { name: `__test-fmt-bad-${String(bad)}__`, api_format: bad });
+        assert.strictEqual(r.status, 400, `api_format=${JSON.stringify(bad)}`);
+        assert.match(r.body.error, /api_format/);
+      }
+      const ollamaOai = await req('POST', '/api/ai/platforms', { name: '__test-fmt-ollama__', vendor: 'ollama', api_format: 'openai_chat' });
+      assert.strictEqual(ollamaOai.status, 400);
+      const p1 = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(oai.body.id)}`, { api_format: 'bogus', name: 'renamed' });
+      assert.strictEqual(p1.status, 400);
+      const p2 = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(oai.body.id)}`, { vendor: 'ollama' });
+      assert.strictEqual(p2.status, 400, 'switching to ollama while openai_chat must be refused');
+      const p3 = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(legacy.body.id)}`, { api_format: 'openai_chat' });
+      assert.deepStrictEqual([p3.status, p3.body.api_format], [200, 'openai_chat']);
+      const list = (await req('GET', '/api/ai/platforms')).body;
+      const got = list.find(p => p.id === oai.body.id);
+      assert.deepStrictEqual([got.api_format, got.name, got.vendor], ['openai_chat', '__test-fmt-oai__', 'generic'], 'rejected PATCH must not change anything');
+      assert.strictEqual(list.find(p => p.id === legacy.body.id).api_format, 'openai_chat');
+      // A platform stored before api_format existed reads back as anthropic.
+      const pdb = require('./db');
+      const row = pdb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      const stored = JSON.parse(row.value);
+      stored.push({ id: '__test-fmt-legacy__', name: 'legacy', base_url: '', api_keys: [], enabled: true, vendor: 'generic' });
+      pdb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(stored));
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      assert.strictEqual((await req('GET', '/api/ai/platforms')).body.find(p => p.id === '__test-fmt-legacy__').api_format, 'anthropic');
+    } finally {
+      for (const id of [legacy.body?.id, oai.body?.id, '__test-fmt-legacy__']) if (id) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+    }
   });
 
   await test('POST /api/ai/platforms/:id/health — returns status field', async () => {

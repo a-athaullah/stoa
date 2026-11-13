@@ -1502,6 +1502,16 @@ function getPlatKeys(plat) {
   return plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
 }
 
+const PLATFORM_API_FORMATS = new Set(['anthropic', 'openai_chat']);
+// Platforms the agent reaches through Stoa's /v1/messages proxy instead of their base_url directly.
+const isProxyPlatform = (p) => p?.vendor === 'ollama' || p?.api_format === 'openai_chat';
+// Ollama Cloud already speaks Anthropic Messages through the proxy, so openai_chat is refused for it.
+function platformApiFormatError(apiFormat, vendor) {
+  if (!PLATFORM_API_FORMATS.has(apiFormat)) return `api_format must be one of: ${[...PLATFORM_API_FORMATS].join(', ')}`;
+  if (apiFormat === 'openai_chat' && vendor === 'ollama') return 'api_format openai_chat is not available for Ollama Cloud';
+  return null;
+}
+
 async function isOllamaDaemonUrl(baseUrl) {
   try {
     const r = await fetch(new URL(baseUrl).origin + '/api/version', { signal: AbortSignal.timeout(3000) });
@@ -1616,6 +1626,85 @@ function mintProxyToken(platId, actorId) {
   if (!actor?.secret) return null;
   return `stoa-proxy:${platId}:${actorId}:${proxyTokenSig(platId, actorId, actor.secret)}`;
 }
+// 429=rate-limited, 401=key invalid, 402=quota exhausted: the next key may still work; so may a
+// network error. → last upstream Response, or null when no key reached the host.
+async function fetchWithKeyRotation(target, keys, headersFor, body) {
+  let last = null;
+  for (const key of keys) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+      const upstream = await fetch(target, { method: 'POST', headers: headersFor(key), body, signal: ctrl.signal });
+      if (upstream.status !== 429 && upstream.status !== 401 && upstream.status !== 402) return upstream;
+      last?.body?.cancel().catch(() => {});
+      last = upstream;
+    } catch {
+      // unreachable with this key — try the next one
+    } finally { clearTimeout(timer); }
+  }
+  return last;
+}
+
+const anthropicError = (type, message) => ({ type: 'error', error: { type, message } });
+const SSE_HEADERS = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' };
+
+// api_format 'openai_chat': the Claude CLI speaks Anthropic Messages; the platform only has
+// /chat/completions. Translate both ways (lib/openai-translator.js). Only Content-Type, Accept and
+// the platform key go upstream — none of the caller's headers (proxy token, anthropic-*) are forwarded.
+async function proxyOpenAIChat(res, plat, keys, raw) {
+  const parsed = parseJsonBody(raw);
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)) {
+    return json(res, anthropicError('invalid_request_error', 'messages: array required'), 400);
+  }
+  let target;
+  try { target = openaiTranslator.chatCompletionsUrl(plat.base_url); } catch {
+    return json(res, anthropicError('api_error', 'Platform base URL is missing or invalid'), 503);
+  }
+  const reqModel = typeof parsed.model === 'string' ? parsed.model : '';
+  const model = openaiTranslator.pickModel(reqModel, plat);
+  const wantStream = parsed.stream === true;
+  const upstream = await fetchWithKeyRotation(target, keys, key => ({
+    'Content-Type': 'application/json',
+    Accept: wantStream ? 'text/event-stream' : 'application/json',
+    Authorization: `Bearer ${key}`,
+  }), JSON.stringify(openaiTranslator.toOpenAIRequest(parsed, model)));
+  if (!upstream) return json(res, anthropicError('api_error', 'Platform unreachable'), 502);
+  console.log(`[openai-proxy] ${reqModel || '?'} → ${model || '?'} @ ${plat.id} status=${upstream.status}`);
+  if (!upstream.ok) {
+    const m = openaiTranslator.mapError(upstream.status, await upstream.text().catch(() => ''));
+    return json(res, m.body, m.status);
+  }
+
+  if (upstream.headers.get('content-type')?.includes('text/event-stream')) {
+    const tr = openaiTranslator.createStreamTranslator(reqModel);
+    const reader = upstream.body.getReader();
+    const dec = new TextDecoder();
+    res.writeHead(200, SSE_HEADERS);
+    res.on('close', () => { reader.cancel().catch(() => {}); });
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(tr.push(dec.decode()) + tr.end()); return; }
+        // Back-pressure not awaited — same trade-off as the Ollama pump below.
+        const out = tr.push(dec.decode(value, { stream: true }));
+        if (out) res.write(out);
+      }
+    };
+    pump().catch(e => { if (!res.writableEnded) res.end(tr.fail(`Platform stream failed: ${e.message}`)); });
+    return;
+  }
+
+  const oa = parseJsonBody(await upstream.text());
+  if (!oa || typeof oa !== 'object' || !Array.isArray(oa.choices)) {
+    const m = openaiTranslator.mapError(502, JSON.stringify(oa?.error ? oa : { error: 'Platform returned an unrecognised response' }));
+    return json(res, m.body, m.status);
+  }
+  const msg = openaiTranslator.fromOpenAIResponse(oa, reqModel);
+  // Upstream ignored stream:true — still answer in the event format the caller asked for.
+  if (wantStream) { res.writeHead(200, SSE_HEADERS); return res.end(openaiTranslator.messageToStreamEvents(msg)); }
+  return json(res, msg);
+}
+
 // → platId on success, null otherwise.
 function verifyProxyToken(bearer) {
   if (typeof bearer !== 'string' || !bearer.startsWith('stoa-proxy:') || bearer.length > 512) return null;
@@ -1635,6 +1724,7 @@ const { matchAgentRoute, agentScopeEnforced, isSelfAuthenticatedPath } = require
 const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
 const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
+const openaiTranslator = require('./lib/openai-translator');
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 
@@ -2023,9 +2113,9 @@ function requireAuth(req, res, url) {
   if (url.pathname === '/api/agent/register') return true;
   // Client file API used by agents for auto-update (public repo code, whitelisted names)
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
-  // Ollama proxy — the Claude SDK sends only a Bearer token (no cookie). The handler verifies
+  // Platform LLM proxy — the Claude SDK sends only a Bearer token (no cookie). The handler verifies
   // the HMAC proxy token (or agent headers) before reading the body.
-  if (url.pathname === '/v1/messages') return true;
+  if (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/count_tokens') return true;
   // MCP gateway / MCP events — bearer token verified by mcpGateway.handle / mcpEvents.handle before anything else.
   if (isSelfAuthenticatedPath(url.pathname)) return true;
 
@@ -3670,6 +3760,7 @@ const server = http.createServer(async (req, res) => {
       ...p,
       api_keys: p.api_keys || (p.api_key ? [p.api_key] : []),
       api_key: undefined,
+      api_format: p.api_format || 'anthropic',
     }));
     return json(res, safe);
   }
@@ -3680,8 +3771,11 @@ const server = http.createServer(async (req, res) => {
     const platforms = structuredClone(getParsedSetting('ai_platforms') ?? []);
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'A platform with this name already exists' })); }
+    const apiFormat = body.api_format === undefined ? 'anthropic' : body.api_format;
+    const formatErr = platformApiFormatError(apiFormat, body.vendor || 'generic');
+    if (formatErr) return json(res, { error: formatErr }, 400);
     const keys = Array.isArray(body.api_keys) ? body.api_keys : (body.api_key ? [body.api_key] : []);
-    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic' };
+    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic', api_format: apiFormat };
     platforms.push(platform);
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platform);
@@ -3703,6 +3797,13 @@ const server = http.createServer(async (req, res) => {
       platforms[idx].api_keys = Array.isArray(body.api_keys) ? body.api_keys.filter(Boolean) : [];
     }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
+    if (body.vendor !== undefined || body.api_format !== undefined) {
+      const vendor = body.vendor !== undefined ? body.vendor : platforms[idx].vendor;
+      const apiFormat = body.api_format !== undefined ? body.api_format : (platforms[idx].api_format || 'anthropic');
+      const formatErr = platformApiFormatError(apiFormat, vendor);
+      if (formatErr) return json(res, { error: formatErr }, 400);
+      platforms[idx].api_format = apiFormat;
+    }
     if (body.vendor !== undefined) platforms[idx].vendor = body.vendor;
     if (body.enabled_models !== undefined) platforms[idx].enabled_models = Array.isArray(body.enabled_models) ? body.enabled_models : null;
     setSetting('ai_platforms', JSON.stringify(platforms));
@@ -5231,8 +5332,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, r.body, r.status);
   }
 
-  // Ollama Cloud proxy — forward /v1/messages to ollama.com with API key rotation
-  if (req.method === 'POST' && url.pathname === '/v1/messages') {
+  // Platform LLM proxy for rooms on a proxied platform (isProxyPlatform): Ollama Cloud is forwarded
+  // as is to ollama.com; api_format 'openai_chat' is translated to the platform's /chat/completions.
+  if (req.method === 'POST' && (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/count_tokens')) {
     // Auth BEFORE reading the body. Bearer = HMAC proxy token minted per trigger (see mintProxyToken).
     // The SDK may send it as Authorization: Bearer or as x-api-key.
     const authz = req.headers['authorization'];
@@ -5240,50 +5342,37 @@ Write-Host "Logs   : pm2 logs $AgentName"
       : (typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'].trim() : '');
     const proxyPlatId = verifyProxyToken(bearer);
     if (!proxyPlatId && !verifyAgentRequest(req)) {
-      return json(res, { type: 'error', error: { type: 'authentication_error', message: 'invalid or missing Stoa proxy token' } }, 401);
+      return json(res, anthropicError('authentication_error', 'invalid or missing Stoa proxy token'), 401);
     }
     const platforms = getParsedSetting('ai_platforms') ?? [];
     // Agent-header callers still name the platform in the bearer ("stoa-proxy:<platId>[:...]"); no fallback platform.
     const rest = bearer.startsWith('stoa-proxy:') ? bearer.slice('stoa-proxy:'.length) : '';
-    const plat = platforms.find(p => p.vendor === 'ollama' && p.id
+    const plat = platforms.find(p => isProxyPlatform(p) && p.id
       && (proxyPlatId ? p.id === proxyPlatId : (rest === p.id || rest.startsWith(p.id + ':'))));
-    if (!plat) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No Ollama Cloud platform configured' } })); }
+    if (!plat) return json(res, anthropicError('service_unavailable', 'No proxied platform configured for this token'), 503);
+
+    // Neither upstream offers count_tokens; the CLI only uses it to budget context, so an estimate will do.
+    if (url.pathname === '/v1/messages/count_tokens') {
+      const parsed = parseJsonBody(await readBody(req));
+      if (!parsed || typeof parsed !== 'object') return json(res, anthropicError('invalid_request_error', 'Invalid JSON body'), 400);
+      return json(res, { input_tokens: openaiTranslator.estimateTokens(parsed) });
+    }
+
     const keys = getPlatKeys(plat);
-    if (!keys.length) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No API keys configured for Ollama Cloud' } })); }
+    if (!keys.length) return json(res, anthropicError('service_unavailable', `No API keys configured for ${plat.vendor === 'ollama' ? 'Ollama Cloud' : 'this platform'}`), 503);
 
     const body = await readBody(req);
-    const TARGET = 'https://ollama.com/v1/messages';
-
-    async function tryWithKey(keyIdx) {
-      if (keyIdx >= keys.length) return null;
-      const fwdHeaders = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${keys[keyIdx]}`,
-      };
-      if (req.headers['anthropic-version']) fwdHeaders['anthropic-version'] = req.headers['anthropic-version'];
-      if (req.headers['anthropic-beta']) fwdHeaders['anthropic-beta'] = req.headers['anthropic-beta'];
-      let connTimer;
-      try {
-        const ctrl = new AbortController();
-        connTimer = setTimeout(() => ctrl.abort(), 30000);
-        const upstream = await fetch(TARGET, { method: 'POST', headers: fwdHeaders, body, signal: ctrl.signal });
-        clearTimeout(connTimer);
-        // 429=rate-limited, 401=key invalid (next key may be valid), 402=quota exhausted (next key may have remaining quota)
-        if (upstream.status === 429 || upstream.status === 401 || upstream.status === 402) {
-          const next = await tryWithKey(keyIdx + 1);
-          return next || upstream;
-        }
-        return upstream;
-      } catch (e) {
-        clearTimeout(connTimer);
-        return tryWithKey(keyIdx + 1);
-      }
-    }
+    if (plat.vendor !== 'ollama') return proxyOpenAIChat(res, plat, keys, body);
 
     let reqModel = '?';
     try { reqModel = JSON.parse(body)?.model || '?'; } catch {}
-    const upstream = await tryWithKey(0);
-    if (!upstream) { res.writeHead(502); return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Ollama Cloud unreachable' } })); }
+    const upstream = await fetchWithKeyRotation('https://ollama.com/v1/messages', keys, key => {
+      const h = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
+      if (req.headers['anthropic-version']) h['anthropic-version'] = req.headers['anthropic-version'];
+      if (req.headers['anthropic-beta']) h['anthropic-beta'] = req.headers['anthropic-beta'];
+      return h;
+    }, body);
+    if (!upstream) return json(res, anthropicError('api_error', 'Ollama Cloud unreachable'), 502);
     console.log(`[ollama-proxy] ${reqModel} → ollama.com status=${upstream.status}`);
 
     const isStream = upstream.headers.get('content-type')?.includes('text/event-stream');
@@ -8063,7 +8152,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         if (platforms) {
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
-            if (plat.vendor === 'ollama') {
+            if (isProxyPlatform(plat)) {
               // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
               modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
               const proxyToken = mintProxyToken(cfg.platform_id, ai.actor_id);

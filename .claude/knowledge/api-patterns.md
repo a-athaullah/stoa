@@ -66,6 +66,9 @@ Authorization: Bearer stoa-proxy:<platId>:<actorId>:<sig>
 - `sig = HMAC-SHA256(signingKey, 'proxy|' + platId + '|' + actorId + '|' + sha256(actor.secret))`
 - Old format `stoa-proxy:<id>` → 401; empty bearer → 401
 - Also accepts: `X-Agent-Id` / `X-Agent-Secret` valid headers
+- Token is only honoured for a **proxied platform**: `vendor:'ollama'` (forwarded as is to ollama.com) or `api_format:'openai_chat'`
+- `api_format` (platform setting, `'anthropic'` default | `'openai_chat'`; validated on POST/PATCH `/api/ai/platforms`, `openai_chat` refused for ollama, missing = anthropic in GET). With `openai_chat` the trigger sends `base_url` = Stoa public URL + proxy token; `lib/openai-translator.js` (pure) turns the Anthropic request into `POST <base_url>/chat/completions` (bare origin → `/v1/chat/completions`, other paths kept) and the reply/SSE back into Anthropic events (text streams live, tool_calls emitted as whole `tool_use` blocks at stream end, upstream errors → Anthropic error shape with upstream status). Only Content-Type/Accept/platform key go upstream. Model not listed by the platform (CLI haiku side-calls) → first `enabled_models`, else first `cached_models`. Key rotation on 429/401/402 (`fetchWithKeyRotation`, shared with Ollama)
+- `POST /v1/messages/count_tokens` — same auth, returns `{ input_tokens }` estimate (~4 chars/token), never calls upstream
 
 #### CSRF Protection
 - Non-GET/HEAD/OPTIONS requests authenticated via **session cookie** (not agent header) check `Origin` header
