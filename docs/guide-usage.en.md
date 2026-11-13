@@ -1499,10 +1499,18 @@ If the server exits at startup with `[db] better-sqlite3 cannot load in this Nod
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
 
-- **Type** — **Ollama Cloud** (built-in proxy, no URL needed) or **Custom Platform** (any OpenAI-compatible API)
+- **Type** — **Ollama Cloud** (built-in proxy, no URL needed) or **Custom Platform** (any AI API provider)
 - **Name** — a label for the platform (e.g., "My OpenRouter")
 - **Base URL** — required for Custom Platform (e.g., `https://openrouter.ai/api/v1`)
+- **API format** — Custom Platform only: **Anthropic Messages (default)** or **OpenAI Chat Completions**. See below.
 - **API Key** — your API key for that provider
+
+**API format** controls how Stoa communicates with the platform:
+
+- **Anthropic Messages** (default) — the base URL must serve the Anthropic Messages API at `/v1/messages`. Compatible with OpenRouter, Together AI, Groq, and other providers that the Claude CLI supports via `ANTHROPIC_BASE_URL`.
+- **OpenAI Chat Completions** — the base URL must serve `/chat/completions` (with or without a leading `/v1`, or supplied as the full endpoint). Stoa's server-side proxy intercepts the agent's requests and translates them from Anthropic format to OpenAI Chat Completions format before forwarding, then translates the response back. The platform card shows a **· OpenAI Chat** badge. Tool-calling quality depends on the model's support for OpenAI-style function calling. Not available for Ollama Cloud.
+
+If the agent requests a model that is not in the platform's enabled list, Stoa automatically falls back to the first enabled model on that platform.
 
 On a new platform, click **add & discover** to save and probe available models in one step. On existing platforms, click **discover models** to re-probe. Discovery detects capabilities per model — vision support (👁) and tool-calling support (⚙). Models without tool-calling are included and usable, but run in text-only mode.
 
@@ -1510,7 +1518,7 @@ On a new platform, click **add & discover** to save and probe available models i
 
 The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
-**Supported providers** — any OpenAI-compatible API endpoint works:
+**Supported providers** — any provider that exposes an Anthropic Messages or OpenAI Chat Completions endpoint works:
 - **Ollama Cloud** — select the "Ollama Cloud" type (built-in proxy with key rotation, 40+ models up to 480B)
 - **Local Ollama** — `http://localhost:11434/v1` (free, private, works offline — see [Ollama setup guide](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
