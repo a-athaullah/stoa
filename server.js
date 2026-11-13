@@ -3826,19 +3826,24 @@ const server = http.createServer(async (req, res) => {
     return h;
   }
 
-  async function probeCapabilities(modelNames, baseUrl, headers) {
-    const showUrl = new URL(baseUrl).origin + '/api/show';
+  // tools:false makes the agent start the CLI with --tools "" (no tool at all), so it is only set when
+  // Ollama's /api/show answers with a capabilities list lacking 'tools'. Any other outcome (no such
+  // endpoint, error, unreadable body) means unknown and keeps tools on. openai_chat platforms are not
+  // Ollama: /api/show is skipped and tools pass through the translator.
+  async function probeCapabilities(modelNames, plat, headers) {
+    const unknown = (model) => ({ model, vision: false, tools: true });
+    if (plat.api_format === 'openai_chat') return modelNames.map(unknown);
+    const showUrl = new URL(plat.base_url).origin + '/api/show';
     return Promise.all(modelNames.map(async (model) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
       try {
         const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
-        clearTimeout(t);
-        if (!r.ok) return { model, vision: false, tools: false };
+        if (!r.ok) return unknown(model);
         const d = await r.json().catch(() => null);
-        const caps = Array.isArray(d?.capabilities) ? d.capabilities : [];
-        return { model, vision: caps.includes('vision'), tools: caps.includes('tools') };
-      } catch { clearTimeout(t); return { model, vision: false, tools: false }; }
+        if (!Array.isArray(d?.capabilities)) return unknown(model);
+        return { model, vision: d.capabilities.includes('vision'), tools: d.capabilities.includes('tools') };
+      } catch { return unknown(model); } finally { clearTimeout(t); }
     }));
   }
 
@@ -3996,7 +4001,7 @@ const server = http.createServer(async (req, res) => {
 
       const usableNames = results.filter(r => r.ok).map(r => r.model);
       const localSet = new Set(localModels);
-      const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
+      const usable = (await probeCapabilities(usableNames, plat, headers))
         .map(m => ({ ...m, local: localSet.has(m.model) }));
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
@@ -4035,7 +4040,7 @@ const server = http.createServer(async (req, res) => {
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
-      const models = await probeCapabilities(allModels, plat.base_url, headers);
+      const models = await probeCapabilities(allModels, plat, headers);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {

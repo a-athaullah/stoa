@@ -14562,6 +14562,69 @@ async function run() {
     }
   });
 
+  // tools:false starts the agent CLI with --tools "" (no tools at all): it must only come from an
+  // /api/show answer whose capabilities lack 'tools' — never from a probe the platform cannot answer.
+  await test('POST /api/ai/platforms/:id/health + discover-models — tools flag: /api/show only decides when it answers; openai_chat never probed', async () => {
+    const shows = [];
+    const mock = http.createServer((rq, rs) => {
+      let raw = '';
+      rq.on('data', c => { raw += c; });
+      rq.on('end', () => {
+        if (rq.url === '/v1/models') {
+          rs.writeHead(200, { 'Content-Type': 'application/json' });
+          return rs.end(JSON.stringify({ data: ['m-404', 'm-err', 'm-badjson', 'm-nocaps', 'm-notools', 'm-tools'].map(id => ({ id })) }));
+        }
+        if (rq.url === '/v1/chat/completions') { rs.writeHead(200, { 'Content-Type': 'application/json' }); return rs.end('{"choices":[{"message":{"content":"h"}}]}'); }
+        if (rq.url === '/api/show') {
+          const { model } = JSON.parse(raw);
+          shows.push(model);
+          if (model === 'm-err') return rq.socket.destroy();
+          if (model === 'm-404') { rs.writeHead(404); return rs.end('not found'); }
+          rs.writeHead(200, { 'Content-Type': 'application/json' });
+          if (model === 'm-badjson') return rs.end('<html>');
+          if (model === 'm-nocaps') return rs.end('{"details":{}}');
+          return rs.end(JSON.stringify({ capabilities: model === 'm-tools' ? ['completion', 'tools', 'vision'] : ['completion'] }));
+        }
+        rs.writeHead(404); rs.end();
+      });
+    });
+    await new Promise(r => mock.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${mock.address().port}/v1`;
+    const pdb = require('./db');
+    const stored = (id) => JSON.parse(pdb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get().value).find(p => p.id === id).cached_models;
+    const flags = (models) => Object.fromEntries(models.map(m => [m.model, [m.tools, m.vision]]));
+    const ids = [];
+    try {
+      const gen = await req('POST', '/api/ai/platforms', { name: '__test-probe-generic__', base_url: base });
+      assert.strictEqual(gen.status, 200, JSON.stringify(gen.body));
+      ids.push(gen.body.id);
+      const h = await req('POST', `/api/ai/platforms/${encodeURIComponent(gen.body.id)}/health`);
+      assert.strictEqual(h.body.status, 'ok', JSON.stringify(h.body));
+      const want = { 'm-404': [true, false], 'm-err': [true, false], 'm-badjson': [true, false], 'm-nocaps': [true, false], 'm-notools': [false, false], 'm-tools': [true, true] };
+      assert.deepStrictEqual(flags(h.body.models), want, 'unanswered probe = unknown (tools on); answered without tools = off');
+      assert.deepStrictEqual(flags(stored(gen.body.id)), want, 'stored cached_models match');
+      assert.strictEqual(shows.length, 6, 'generic platform probes /api/show once per model');
+
+      shows.length = 0;
+      const oai = await req('POST', '/api/ai/platforms', { name: '__test-probe-oai__', base_url: base, api_format: 'openai_chat' });
+      assert.strictEqual(oai.status, 200, JSON.stringify(oai.body));
+      ids.push(oai.body.id);
+      const ho = await req('POST', `/api/ai/platforms/${encodeURIComponent(oai.body.id)}/health`);
+      assert.strictEqual(ho.body.status, 'ok', JSON.stringify(ho.body));
+      assert.ok(ho.body.models.length === 6 && ho.body.models.every(m => m.tools === true && m.vision === false), JSON.stringify(ho.body.models));
+      const d = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(oai.body.id)}/discover-models`, 30000);
+      const done = d.events.find(e => e.type === 'done');
+      assert.ok(done, JSON.stringify(d.events.at(-1)));
+      assert.strictEqual(done.usable.length, 6);
+      assert.ok(done.usable.every(m => m.tools === true), JSON.stringify(done.usable));
+      assert.ok(stored(oai.body.id).every(m => m.tools === true), 'stored openai_chat models keep tools on');
+      assert.deepStrictEqual(shows, [], 'openai_chat platform must never hit /api/show');
+    } finally {
+      mock.close();
+      for (const id of ids) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+    }
+  });
+
   await test('POST /api/ai/platforms/:id/discover-models — nonexistent platform → 404', async () => {
     const r = await streamReq('POST', '/api/ai/platforms/nonexistent-platform-xyz/discover-models', 5000);
     assert.strictEqual(r.status, 404);
