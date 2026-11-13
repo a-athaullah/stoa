@@ -354,6 +354,7 @@ POST   /api/rooms/:id/tasks/:tid/fail        → Task  (running card → Backlog
 POST   /api/rooms/:id/tasks/:tid/retry       → Task  (failed card → idle; any room participant, MCP stoa__task_retry)
 POST   /api/rooms/:id/tasks/:tid/comments    → 201 Event
 GET,PATCH  /api/rooms/:id/tasks/settings     → {settings}  (PATCH: owner only)
+GET    /api/rooms/:id/tasks/stats?tz=<min>   → {totals, finished:{week, month}, duration, retries}  (read; tz -840..840 else 400)
 POST   /api/rooms/:id/tasks/runner/play      → {settings, counts}  (owner only)
 POST   /api/rooms/:id/tasks/runner/pause     → {settings, counts}  (owner only)
 POST   /api/rooms/:id/tasks/runner/stop      → {settings, counts}  (owner only)
