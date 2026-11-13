@@ -17542,6 +17542,103 @@ async function run() {
     assert.ok(txt(run(`tbStateBox(${T({})})`)).includes('Kira is working on it'));
   });
 
+  await test('task board UI — statistics panel: tz sent as minutes east of UTC, bucket table for screen readers, empty state, a late answer after a room switch is dropped, task events refresh it only while open', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(t) { this.tag = t; this.children = []; this.attrs = {}; this.dataset = {}; this.style = { setProperty() {} }; this._t = ''; this.parent = null; const cls = new Set(); this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)), contains: c => cls.has(c) }; this._cls = cls; }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      set textContent(v) { this._t = String(v); this.children = []; }
+      get textContent() { return this._t + this.children.map(c => (typeof c === 'string' ? c : c.textContent)).join(''); }
+      appendChild(c) { if (c && typeof c === 'object') c.parent = this; this.children.push(c); return c; }
+      append(...c) { c.forEach(x => this.appendChild(x)); }
+      replaceChildren(...c) { this.children = []; this._t = ''; c.forEach(x => this.appendChild(x)); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      addEventListener() {}
+      focus(o) { this.focusOpts = o; }
+      contains(n) { for (let p = n; p; p = p.parent) if (p === this) return true; return false; }
+      all() { return this.children.filter(c => typeof c === 'object').flatMap(c => [c, ...c.all()]); }
+      querySelector(sel) { const cls = sel.startsWith('.') ? sel.slice(1) : null; return this.all().find(n => cls && n.classList.contains(cls)) || null; }
+    }
+    const panel = new El('aside');
+    const pending = [];
+    const calls = [];
+    const ctx = {
+      console, setTimeout, clearTimeout, URLSearchParams,
+      localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, activeElement: null, getElementById: id => (id === 'tb-stats' ? panel : null), createElement: t => new El(t), createElementNS: (ns, t) => new El(t), querySelector: () => null },
+      window: { addEventListener() {} }, showToast() {}, showLogin() {},
+      fetch: url => { calls.push(url); return new Promise(r => pending.push(r)); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/tasks/api.js', 'public/js/tasks/board.js', 'public/js/tasks/stats.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const reply = body => pending.shift()({ ok: true, status: 200, json: async () => body });
+    const flush = () => new Promise(r => setTimeout(r, 0));
+    const find = cls => panel.all().filter(n => n.classList.contains(cls));
+
+    assert.strictEqual(run('tbStatsTz({ getTimezoneOffset: () => -420 })'), 420, 'WIB (UTC+7): getTimezoneOffset is -420, the API wants +420');
+    assert.strictEqual(run('tbStatsTz({ getTimezoneOffset: () => 300 })'), -300);
+    assert.throws(() => run('TasksApi.stats(5, 900)'), /Invalid time zone/);
+    assert.throws(() => run('TasksApi.stats(5, 1.5)'), /Invalid time zone/);
+
+    const weeks = [['2026-08-24', 0], ['2026-08-31', 2], ['2026-09-07', 0], ['2026-09-14', 0], ['2026-09-21', 0], ['2026-09-28', 0], ['2026-10-05', 0], ['2026-10-12', 7], ['2026-10-19', 0], ['2026-10-26', 0], ['2026-11-02', 1], ['2026-11-09', 3]].map(([start, count]) => ({ start, count }));
+    const months = weeks.map((w, i) => ({ start: `2026-${String(i + 1).padStart(2, '0')}-01`, count: 0 }));
+    const stats = { totals: { all: 20, awaiting: 1, backlog: 6, ongoing: 1, finished: 40, failed: 2, blocked: 1, running: 1 }, finished: { week: weeks, month: months },
+      duration: { samples: 13, avg_seconds: 3725.6, median_seconds: 600, max_seconds: 90000 }, retries: { tasks_with_retry: 3, total_retries: 5, failed_events: 6, tasks_failed_now: 2 } };
+
+    const tzBefore = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles'; // west of UTC: parsing '2026-10-12' as UTC would land on 11 October
+    run('tasksUi.roomId = 5');
+    run('tasksOpenStats()');
+    assert.ok(panel.classList.contains('open'));
+    assert.match(calls[0], /^\/api\/rooms\/5\/tasks\/stats\?tz=-?\d+$/, 'tz is always sent');
+    assert.ok(panel.textContent.includes('Loading'), 'loading state before the answer');
+    await new Promise(r => setTimeout(r, 40));
+    assert.deepStrictEqual({ ...panel.focusOpts }, { preventScroll: true }, 'the panel is still off-screen while it slides in: focusing it must not scroll the board sideways');
+    reply(stats);
+    await flush(); await flush();
+    const vals = find('tb-s-v').map(n => n.textContent);
+    assert.deepStrictEqual(vals, ['20', '40', '2', '1h 2m'], 'tiles: all, finished, failed, average run formatted like card durations');
+    assert.ok(panel.textContent.includes('median 10m · longest 1d 1h'));
+    const note = find('tb-s-note')[0].textContent;
+    assert.ok(note.startsWith('13 finished in the last 12 weeks · busiest week: ') && note.endsWith('(7)'), 'the chart total sums the buckets (13), not totals.finished (40): ' + note);
+    const table = panel.all().find(n => n.tag === 'table');
+    const rows = table.all().filter(n => n.tag === 'tr').slice(1).map(r => r.children.map(c => c.textContent));
+    assert.strictEqual(rows.length, 12, 'every bucket, empty ones included');
+    assert.deepStrictEqual(rows[7][1], '7');
+    assert.match(rows[7][0], /Week of 12 October 2026|Week of October 12, 2026/, 'bucket start is read as a local calendar date, never shifted by UTC');
+    if (tzBefore === undefined) delete process.env.TZ; else process.env.TZ = tzBefore;
+    assert.strictEqual(find('tb-s-bar').filter(b => b.classList.contains('zero')).length, 8, 'empty buckets draw a hairline, not a bar');
+    assert.ok(find('tb-s-col')[11].classList.contains('now'), 'the current bucket is the last one');
+    assert.strictEqual(find('tb-s-chart')[0].getAttribute('aria-hidden'), 'true', 'the bars are decoration, the table carries the numbers');
+
+    run("_tbS.range = 'month'; tbRenderStats()");
+    assert.strictEqual(find('tb-s-empty').length, 1, 'no finished task in 12 months: empty state, no chart');
+    assert.ok(find('tb-s-empty')[0].textContent.includes('last 12 months'));
+    assert.strictEqual(find('tb-s-chart').length, 0);
+
+    run('tasksStatsNoteChange()');
+    await new Promise(r => setTimeout(r, run('TB_STATS_REFRESH_MS') + 50));
+    assert.strictEqual(calls.length, 2, 'a task change refreshes the open panel (debounced)');
+    run('tasksStatsRoomChanged(); tasksUi.roomId = 6');
+    assert.ok(!panel.classList.contains('open'), 'a room switch closes the panel');
+    run('tasksStatsNoteChange()');
+    await new Promise(r => setTimeout(r, run('TB_STATS_REFRESH_MS') + 50));
+    assert.strictEqual(calls.length, 2, 'closed panel: task events do not fetch');
+    run('tasksOpenStats()');
+    assert.match(calls[2], /^\/api\/rooms\/6\//);
+    reply({ ...stats, totals: { ...stats.totals, all: 999 } });
+    await flush(); await flush();
+    assert.ok(panel.textContent.includes('Loading') && !panel.textContent.includes('999'), 'room 5 answer landing while room 6 loads is dropped');
+    reply({ totals: {}, finished: { week: [{ start: '<img>', count: 1 }] } });
+    await flush(); await flush();
+    assert.ok(panel.textContent.includes('cannot read'), 'malformed payload: error state, nothing rendered from it');
+    assert.ok(!panel.textContent.includes('<img>'));
+  });
+
   await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
     const vm = require('vm');
     const fs = require('fs');
