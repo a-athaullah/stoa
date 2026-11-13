@@ -24,12 +24,13 @@ const TASK_ICONS = {
   alert: 'M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17zM12 8v5M12 16.2v.1', check: 'M5 12.5l4.5 4.5L19 7.5',
   spin: 'M12 3.5a8.5 8.5 0 1 0 8.5 8.5', grip: 'M9.5 6.5v.1M14.5 6.5v.1M9.5 12v.1M14.5 12v.1M9.5 17.5v.1M14.5 17.5v.1',
   thread: 'M4.5 5h15v10.5H9.5l-5 4z', retry: 'M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4h4', arrow: 'M7 17L17 7M9 7h8v8',
-  board: 'M4.5 4.5h4v15h-4zM10 4.5h4v10h-4zM15.5 4.5h4v12.5h-4z', checks: 'M4.5 7l2 2 3.5-4M4.5 15l2 2 3.5-4M13 7.5h6.5M13 15.5h6.5',
+  board: 'M4.5 4.5h4v15h-4zM10 4.5h4v10h-4zM15.5 4.5h4v12.5h-4z', chevron: 'M9.5 6l6 6-6 6', checks: 'M4.5 7l2 2 3.5-4M4.5 15l2 2 3.5-4M13 7.5h6.5M13 15.5h6.5',
 };
 
 // Shared with tasks/drawer.js.
 const tasksUi = {
   roomId: null,
+  roomTitle: '',
   seq: 0,
   loaded: false,
   loadError: null,
@@ -264,7 +265,7 @@ function tasksOnRoomOpen(room) {
   tbCloseAllTransient();
   if (typeof tasksCloseDrawer === 'function') tasksCloseDrawer({ focus: false });
   Object.assign(tasksUi, {
-    roomId: room.id, loaded: false, loadError: null, quickAdd: null, quickAddFocus: false, bannerDismissed: null,
+    roomId: room.id, roomTitle: room.title || '', loaded: false, loadError: null, quickAdd: null, quickAddFocus: false, bannerDismissed: null,
     pending: null, grab: null, openId: null, pendingOpenId: null,
   });
   tasksUi.seq++;
@@ -366,13 +367,18 @@ function tasksHandleWs(msg) {
 // ── View switching ───────────────────────────────────────────────────────────
 function tasksBoardOpen() { return tasksUi.view === 'board'; }
 
-function tasksSetView(view, { store = true, render = true } = {}) {
+// The board slides over #chat-feed-col (tb-mode shows it, tb-shown slides it in); tb-covered hides the chat
+// underneath once the slide has finished, so the chat stays visible while the board moves.
+const TB_SLIDE_MS = 200;
+let _tbSlideTimer = 0;
+
+function tasksSetView(view, { store = true, render = true, focus = false } = {}) {
   const col = document.getElementById('chat-feed-col');
   const msgs = document.getElementById('messages');
   const next = view === 'board' ? 'board' : 'chat';
   if (next === tasksUi.view && col && col.classList.contains('tb-mode') === (next === 'board')) { if (render) tasksRender(); return; }
   if (next === 'board') {
-    if (msgs) tasksUi.chatScroll = msgs.scrollTop;
+    if (msgs && !(col && col.classList.contains('tb-mode'))) tasksUi.chatScroll = msgs.scrollTop;
     if (typeof closeRoomSearch === 'function') closeRoomSearch();
   } else {
     tbCloseAllTransient();
@@ -380,14 +386,45 @@ function tasksSetView(view, { store = true, render = true } = {}) {
   }
   tasksUi.view = next;
   tbEnsureRoot();
-  if (col) col.classList.toggle('tb-mode', next === 'board');
+  if (col) tbSlide(col, next === 'board', render && !window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   if (next === 'chat' && msgs && tasksUi.chatScroll !== undefined) msgs.scrollTop = tasksUi.chatScroll;
   if (store && tasksUi.roomId) tbStoreView(tasksUi.roomId, next);
   if (typeof _hideRsbTooltip === 'function') _hideRsbTooltip();
   if (render) tasksRender();
+  if (focus && next === 'board') {
+    const close = document.getElementById('tb-close');
+    if (close) close.focus({ preventScroll: true });
+  }
 }
 
-function tasksToggleView() { tasksSetView(tasksBoardOpen() ? 'chat' : 'board'); }
+function tbSlide(col, open, animate) {
+  clearTimeout(_tbSlideTimer);
+  if (open) {
+    if (!animate) { col.classList.add('tb-mode', 'tb-shown', 'tb-covered'); return; }
+    if (!col.classList.contains('tb-mode')) {
+      col.classList.add('tb-mode');
+      col.getBoundingClientRect();
+    }
+    col.classList.add('tb-shown');
+    _tbSlideTimer = setTimeout(() => col.classList.add('tb-covered'), TB_SLIDE_MS);
+    return;
+  }
+  col.classList.remove('tb-covered', 'tb-shown');
+  if (!animate) { col.classList.remove('tb-mode'); return; }
+  _tbSlideTimer = setTimeout(() => col.classList.remove('tb-mode'), TB_SLIDE_MS);
+}
+
+function tasksToggleView() {
+  if (tasksBoardOpen()) tbCloseBoard();
+  else tasksSetView('board', { focus: true });
+}
+
+// Back to chat from the board header, Esc or the Tasks button; focus returns to the visible Tasks button.
+function tbCloseBoard() {
+  tasksSetView('chat');
+  const nav = [document.getElementById('rsb-tasks'), document.getElementById('tb-hbtn')].find(b => b && b.getClientRects().length);
+  if (nav) nav.focus({ preventScroll: true });
+}
 
 // "Task #seq" in a chat message: open the board (if needed) and the card's drawer.
 function tasksOpenFromMessage(taskId, seq) {
@@ -406,7 +443,7 @@ function tbOpenTaskById(ref) {
   tasksOpenDrawer(id, null);
 }
 
-// ── Navigation: rail button (desktop) + header button and crumb (under 1024px) ──
+// ── Navigation: rail button (desktop) + header button (under 1024px, where the rail is hidden) ──
 function tasksRailButton(mkBtn) {
   const b = mkBtn('Tasks', '', () => tasksToggleView());
   b.id = 'rsb-tasks';
@@ -416,31 +453,27 @@ function tasksRailButton(mkBtn) {
   return b;
 }
 
-function tasksHeaderControls() {
-  const frag = document.createDocumentFragment();
-  const crumb = tbEl('span', 'tb-crumb');
-  crumb.id = 'tb-crumb';
-  frag.appendChild(crumb);
+function tasksHeaderControls(room) {
+  if (room) tasksRoomRenamed(room.id, room.title);
   const b = tbEl('button', 'tb-nav-btn tb-hbtn');
   b.type = 'button';
   b.id = 'tb-hbtn';
+  b.title = 'Open Tasks';
   b.setAttribute('aria-controls', 'task-board');
   b.addEventListener('click', () => tasksToggleView());
-  frag.appendChild(b);
-  tbPaintHeader(crumb, b);
-  return frag;
+  tbPaintNavBtn(b);
+  return b;
 }
 
-function tbPaintHeader(crumb, b) {
-  const on = tasksBoardOpen();
-  if (crumb) {
-    crumb.hidden = !on;
-    crumb.replaceChildren(tbIcon('board'), tbEl('span', null, 'Tasks'));
-  }
-  if (b) {
-    tbPaintNavBtn(b);
-    b.title = on ? 'Back to chat' : 'Open Tasks';
-  }
+function tasksRoomRenamed(roomId, title) {
+  if (roomId !== tasksUi.roomId) return;
+  tasksUi.roomTitle = title || '';
+  tbPaintTitle();
+}
+
+function tbPaintTitle() {
+  const name = document.getElementById('tb-title-room');
+  if (name) name.textContent = tasksUi.roomTitle;
 }
 
 function tbPaintNavBtn(b) {
@@ -460,7 +493,8 @@ function tbPaintNavBtn(b) {
 function tasksPaintNav() {
   const rail = document.getElementById('rsb-tasks');
   if (rail) tbPaintNavBtn(rail);
-  tbPaintHeader(document.getElementById('tb-crumb'), document.getElementById('tb-hbtn'));
+  const hbtn = document.getElementById('tb-hbtn');
+  if (hbtn) tbPaintNavBtn(hbtn);
 }
 
 // ── Root ─────────────────────────────────────────────────────────────────────
@@ -472,7 +506,21 @@ function tbEnsureRoot() {
   if (!col || !header) return null;
   root = tbEl('section', 'tb-root');
   root.id = 'task-board';
-  root.setAttribute('aria-label', 'Tasks');
+  root.setAttribute('aria-labelledby', 'tb-title');
+
+  const head = tbEl('div', 'tb-head');
+  const close = tbButton('tb-close', 'chevron');
+  close.id = 'tb-close';
+  close.title = 'Back to chat';
+  close.setAttribute('aria-label', 'Close Tasks, back to chat');
+  close.addEventListener('click', tbCloseBoard);
+  const title = tbEl('h2', 'tb-title');
+  title.id = 'tb-title';
+  const roomName = tbEl('span', 'tb-title-room');
+  roomName.id = 'tb-title-room';
+  roomName.textContent = tasksUi.roomTitle;
+  title.append('Task', tbEl('span', 'tb-title-sep', ' · '), roomName);
+  head.append(close, title);
 
   const bar = tbEl('div', 'tb-toolbar');
   const g1 = tbEl('div', 'tb-group');
@@ -557,7 +605,7 @@ function tbEnsureRoot() {
   drawer.setAttribute('aria-labelledby', 'tb-d-title');
   drawer.tabIndex = -1;
 
-  root.append(bar, banner, board, drawer);
+  root.append(head, bar, banner, board, drawer);
   header.after(root);
   return root;
 }
@@ -1314,11 +1362,20 @@ document.addEventListener('pointerdown', e => {
   if (_tbPop && !_tbPop.node.contains(e.target) && !_tbPop.btn.contains(e.target)) tbClosePop({ focus: false });
 });
 window.addEventListener('resize', () => tbClosePop({ focus: false }));
-// Registered before init/main.js, so the board's Esc (popover, drag, drawer) never reaches the global
-// handler that stops a running generation.
+// Registered before init/main.js, so the board's Esc (popover, drag, drawer, then the board itself) never
+// reaches the global handler that stops a running generation.
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !tasksBoardOpen() || document.querySelector('dialog[open]')) return;
   if (_tbPop) { tbClosePop(); e.stopImmediatePropagation(); return; }
   if (_tbDrag && _tbDrag.started) { tbEndDrag(false); e.stopImmediatePropagation(); return; }
-  if (tasksUi.openId && !tasksUi.grab) { tasksCloseDrawer(); e.stopImmediatePropagation(); }
+  if (tasksUi.openId && !tasksUi.grab) { tasksCloseDrawer(); e.stopImmediatePropagation(); return; }
+  if (!e.defaultPrevented && !tasksUi.grab && tbEscClosesBoard(e.target)) { e.stopImmediatePropagation(); tbCloseBoard(); }
 });
+// Esc closes the board only when nothing above it handles Esc: focus is on the board, a Tasks button or the
+// page itself (not the thread panel, workspace or settings), and no workspace overlay is open.
+function tbEscClosesBoard(target) {
+  if (typeof wsExpanded !== 'undefined' && wsExpanded) return false;
+  if (document.querySelector('.ws-scrim, .ws-ctx-menu')) return false;
+  if (!target || target === document.body || target === document.documentElement) return true;
+  return !!(target.closest && target.closest('#task-board, #rsb-tasks, #tb-hbtn'));
+}
