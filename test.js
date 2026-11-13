@@ -2542,52 +2542,6 @@ function runUnitTests() {
     assert.deepStrictEqual(oat.mapError(500, '<html>bad gateway</html>').body.error, { type: 'api_error', message: '<html>bad gateway</html>' });
     assert.strictEqual(oat.mapError(418, '').body.error.message, 'upstream HTTP 418');
   });
-  const opd = require('./lib/openai-proxy-debug');
-  ut('openai proxy debug — leak detector: marker split across stream deltas found, head capped at 600, clean text not flagged', () => {
-    const d = opd.createLeakDetector();
-    for (const piece of ['<｜DS', 'ML｜ calls>', '\n<｜DSML｜ invoke name="Bash">', 'x'.repeat(700)]) d.push(piece);
-    assert.strictEqual(d.leaked, true);
-    assert.strictEqual(d.head.length, 600);
-    assert.ok(d.head.startsWith('<｜DSML｜ calls>\n<｜DSML｜ invoke name="Bash">'));
-    const split3 = opd.createLeakDetector();
-    for (const ch of 'abc DSML def') split3.push(ch);
-    assert.strictEqual(split3.leaked, true, 'one character per delta');
-    const clean = opd.createLeakDetector();
-    for (const piece of ['DS', 'L', 'M', 'dsml', 'D S M L', '', null]) clean.push(piece);
-    assert.strictEqual(clean.leaked, false);
-  });
-  ut('openai proxy debug — leak entry: request shape only (counts, dropped tool names, flags), no message/system text, no key', () => {
-    const body = {
-      model: 'deepseek', max_tokens: 32000, stream: true, thinking: { type: 'enabled', budget_tokens: 1000 }, metadata: { user_id: 'u-secret-id' },
-      system: [{ type: 'text', text: 'SYSTEM-PROMPT-SECRET' }, { type: 'text', text: 'abc' }],
-      tools: [{ name: 'Bash', input_schema: { type: 'object' } }, { name: 'web_search', type: 'web_search_20250305' }, { name: 'Read', input_schema: { type: 'object' } }],
-      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-      messages: [{ role: 'user', content: 'USER-TEXT-SECRET' }, { role: 'assistant', content: 'a' }, { role: 'user', content: 'b' }],
-    };
-    const sent = oat.toOpenAIRequest(body, 'deepseek-up');
-    const e = opd.buildLeakEntry({ body, sent, reqModel: 'deepseek', model: 'deepseek-up', platformId: 'netra', stream: true, head: '<｜DSML｜ calls>', finishReason: 'stop', now: new Date(0) });
-    assert.deepStrictEqual(e, {
-      ts: '1970-01-01T00:00:00.000Z', platform: 'netra', requested_model: 'deepseek', upstream_model: 'deepseek-up', stream: true,
-      tools_in: 3, tools_sent: 2, tools_dropped: ['web_search'], tools_dropped_total: 1,
-      tool_choice: { type: 'auto', disable_parallel_tool_use: true }, tool_choice_sent: 'auto',
-      messages_in: 3, messages_sent: 4, last_role: 'user', system_chars: 'SYSTEM-PROMPT-SECRET'.length + 3,
-      has_thinking: true, thinking_type: 'enabled', has_metadata: true, max_tokens: 32000, finish_reason: 'stop', content_head: '<｜DSML｜ calls>',
-    });
-    const line = JSON.stringify(e);
-    for (const secret of ['SYSTEM-PROMPT-SECRET', 'USER-TEXT-SECRET', 'u-secret-id']) assert.ok(!line.includes(secret), `${secret} leaked into the entry`);
-    const bare = opd.buildLeakEntry({ body: { messages: 'x', tools: 'x', system: 5 }, sent: {}, head: 'y'.repeat(900) });
-    assert.deepStrictEqual([bare.tools_in, bare.tools_sent, bare.messages_in, bare.system_chars, bare.tool_choice, bare.has_thinking, bare.content_head.length], [0, 0, 0, 0, null, false, 600]);
-  });
-  ut('openai stream — onText sees each text delta without changing the output; finishReason exposed', () => {
-    const seenText = [];
-    const wire = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\ndata: {"choices":[{"delta":{"content":"b"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
-    const withHook = oat.createStreamTranslator('m', { onText: t => seenText.push(t) });
-    const plain = oat.createStreamTranslator('m');
-    const strip = (x) => x.replace(/msg_[a-f0-9]+/g, 'msg_');
-    assert.strictEqual(strip(withHook.push(wire) + withHook.end()), strip(plain.push(wire) + plain.end()));
-    assert.deepStrictEqual(seenText, ['a', 'b']);
-    assert.strictEqual(withHook.finishReason, 'stop');
-  });
   ut('openai estimateTokens — ~4 chars/token over system, text, tool I/O, tools; image counted', () => {
     assert.strictEqual(oat.estimateTokens({ system: 'x'.repeat(40), messages: [{ role: 'user', content: 'y'.repeat(40) }] }), 20);
     const base = oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'text', text: 'abcd' }] }] });
@@ -2623,23 +2577,6 @@ async function runAsyncUnitTests() {
     try { await fn(); console.log(`  ✓ ${name}`); p++; }
     catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
   }
-
-  await uta('openai proxy debug — appendLeakEntry: creates the folder, one JSON line per entry, rotates to .1 past the size cap', async () => {
-    const fsD = require('fs'), osD = require('os'), pathD = require('path');
-    const { appendLeakEntry } = require('./lib/openai-proxy-debug');
-    const root = fsD.mkdtempSync(pathD.join(osD.tmpdir(), 'stoa-oai-debug-'));
-    try {
-      const file = pathD.join(root, 'nested', 'debug.log');
-      await appendLeakEntry(file, { n: 1 }, 40);
-      await appendLeakEntry(file, { n: 2 }, 40);
-      assert.deepStrictEqual(fsD.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse), [{ n: 1 }, { n: 2 }]);
-      assert.strictEqual(fsD.statSync(file).mode & 0o777, 0o600);
-      await appendLeakEntry(file, { pad: 'z'.repeat(40) }, 40);
-      await appendLeakEntry(file, { n: 4 }, 40);
-      assert.deepStrictEqual(fsD.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse), [{ n: 4 }], 'file over the cap is rotated before the write');
-      assert.strictEqual(fsD.readFileSync(`${file}.1`, 'utf8').trim().split('\n').length, 3);
-    } finally { fsD.rmSync(root, { recursive: true, force: true }); }
-  });
 
   // Workspace tree (lib/workspace-tree.js): same tree as the old sync walk, without blocking the loop.
   {
@@ -11320,15 +11257,6 @@ async function run() {
           const last = b.messages.at(-1)?.content;
           if (last === 'fail please') { rs.writeHead(400, { 'Content-Type': 'application/json' }); return rs.end('{"error":{"message":"model variants are unavailable on this endpoint"}}'); }
           if (last === 'garbage please') { rs.writeHead(200, { 'Content-Type': 'application/json' }); return rs.end('<html>oops</html>'); }
-          if (last === 'dsml json') {
-            rs.writeHead(200, { 'Content-Type': 'application/json' });
-            return rs.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '<｜DSML｜ calls>\n<｜DSML｜ invoke name="Bash">' }, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
-          }
-          if (last === 'dsml stream') {
-            rs.writeHead(200, { 'Content-Type': 'text/event-stream' });
-            const parts = ['<｜DS', 'ML｜ calls>', ' ls'].map(t => `data: ${JSON.stringify({ choices: [{ delta: { content: t } }] })}\n\n`);
-            return rs.end(parts.join('') + `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
-          }
           if (!b.stream) {
             rs.writeHead(200, { 'Content-Type': 'application/json' });
             return rs.end(JSON.stringify({ id: 'cc-1', choices: [{ message: { role: 'assistant', content: 'short', tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 9, completion_tokens: 3 } }));
@@ -11424,33 +11352,6 @@ async function run() {
         const eShape = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', messages: 'nope' }, auth), true);
         assert.strictEqual(eShape.status, 400);
         assert.strictEqual(eShape.body.error.type, 'invalid_request_error');
-
-        // DSML markup in the reply text: relayed to the client untouched, one diagnostic line logged
-        // (request shape only — no key, no message or system text). Clean replies above logged nothing.
-        const dbgLog = process.env.STOA_OPENAI_DEBUG_LOG;
-        assert.ok(dbgLog, 'run-tests.js must point STOA_OPENAI_DEBUG_LOG at a temp file');
-        const fsDbg = require('fs');
-        const readDbg = () => { try { return fsDbg.readFileSync(dbgLog, 'utf8').split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
-        assert.strictEqual(readDbg().length, 0, 'replies without DSML must not be logged');
-        const dsmlTools = [{ name: 'Bash', description: 'run', input_schema: { type: 'object' } }, { name: 'web_search', type: 'web_search_20250305' }];
-        const dj = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', max_tokens: 50, system: 'SYS-SECRET-TEXT', tools: dsmlTools, messages: [{ role: 'user', content: 'dsml json' }] }, auth), true);
-        assert.strictEqual(dj.status, 200, dj.raw);
-        assert.deepStrictEqual([dj.body.content, dj.body.stop_reason], [[{ type: 'text', text: '<｜DSML｜ calls>\n<｜DSML｜ invoke name="Bash">' }], 'end_turn']);
-        const ds = await anon(() => req('POST', '/v1/messages', { model: 'ds/v4', stream: true, max_tokens: 50, tools: dsmlTools, tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: 'dsml stream' }] }, auth), true);
-        assert.strictEqual(ds.status, 200, ds.raw);
-        const dsEv = ds.raw.split('\n\n').filter(Boolean).map(c => JSON.parse(c.match(/^data: (.+)$/m)[1]));
-        assert.strictEqual(dsEv.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join(''), '<｜DSML｜ calls> ls');
-        assert.strictEqual(dsEv.at(-1).type, 'message_stop');
-        let dbg = [];
-        for (let i = 0; i < 20 && dbg.length < 2; i++) { await new Promise(r => setTimeout(r, 100)); dbg = readDbg(); }
-        assert.strictEqual(dbg.length, 2, 'one line per leaking reply');
-        assert.deepStrictEqual(dbg.map(e => [e.platform, e.upstream_model, e.stream, e.tools_in, e.tools_sent, e.tools_dropped, e.finish_reason]), [
-          ['__sec-oai', 'ds/v4', false, 2, 1, ['web_search'], 'stop'],
-          ['__sec-oai', 'ds/v4', true, 2, 1, ['web_search'], 'stop'],
-        ]);
-        assert.deepStrictEqual([dbg[0].system_chars, dbg[0].content_head, dbg[1].content_head, dbg[1].tool_choice], [15, '<｜DSML｜ calls>\n<｜DSML｜ invoke name="Bash">', '<｜DSML｜ calls> ls', { type: 'auto' }]);
-        const dbgRaw = fsDbg.readFileSync(dbgLog, 'utf8');
-        for (const secret of ['k-good', 'k-limited', 'Bearer', 'stoa-proxy', 'SYS-SECRET-TEXT', 'dsml json', 'dsml stream']) assert.ok(!dbgRaw.includes(secret), `${secret} leaked into the debug log`);
 
         // count_tokens: estimate, same auth.
         seen.length = 0;

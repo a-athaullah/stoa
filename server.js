@@ -1663,12 +1663,11 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
   const reqModel = typeof parsed.model === 'string' ? parsed.model : '';
   const model = openaiTranslator.pickModel(reqModel, plat);
   const wantStream = parsed.stream === true;
-  const sent = openaiTranslator.toOpenAIRequest(parsed, model);
   const upstream = await fetchWithKeyRotation(target, keys, key => ({
     'Content-Type': 'application/json',
     Accept: wantStream ? 'text/event-stream' : 'application/json',
     Authorization: `Bearer ${key}`,
-  }), JSON.stringify(sent));
+  }), JSON.stringify(openaiTranslator.toOpenAIRequest(parsed, model)));
   if (!upstream) return json(res, anthropicError('api_error', 'Platform unreachable'), 502);
   console.log(`[openai-proxy] ${reqModel || '?'} → ${model || '?'} @ ${plat.id} status=${upstream.status}`);
   if (!upstream.ok) {
@@ -1676,16 +1675,8 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     return json(res, m.body, m.status);
   }
 
-  const leak = proxyDebug.createLeakDetector();
-  const reportLeak = (finishReason) => {
-    if (!leak.leaked) return;
-    console.log(`[openai-proxy] DSML leak detected: ${reqModel || '?'} → ${model || '?'} @ ${plat.id} finish=${finishReason ?? '?'} tools=${sent.tools?.length || 0}/${Array.isArray(parsed.tools) ? parsed.tools.length : 0} → ${OPENAI_PROXY_DEBUG_LOG}`);
-    const entry = proxyDebug.buildLeakEntry({ body: parsed, sent, reqModel, model, platformId: plat.id, stream: wantStream, head: leak.head, finishReason });
-    proxyDebug.appendLeakEntry(OPENAI_PROXY_DEBUG_LOG, entry).catch(e => console.error(`[openai-proxy] debug log write failed: ${e.message}`));
-  };
-
   if (upstream.headers.get('content-type')?.includes('text/event-stream')) {
-    const tr = openaiTranslator.createStreamTranslator(reqModel, { onText: t => leak.push(t) });
+    const tr = openaiTranslator.createStreamTranslator(reqModel);
     const reader = upstream.body.getReader();
     const dec = new TextDecoder();
     res.writeHead(200, SSE_HEADERS);
@@ -1693,7 +1684,7 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     const pump = async () => {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) { res.end(tr.push(dec.decode()) + tr.end()); reportLeak(tr.finishReason); return; }
+        if (done) { res.end(tr.push(dec.decode()) + tr.end()); return; }
         // Back-pressure not awaited — same trade-off as the Ollama pump below.
         const out = tr.push(dec.decode(value, { stream: true }));
         if (out) res.write(out);
@@ -1709,8 +1700,6 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     return json(res, m.body, m.status);
   }
   const msg = openaiTranslator.fromOpenAIResponse(oa, reqModel);
-  if (typeof oa.choices[0]?.message?.content === 'string') leak.push(oa.choices[0].message.content);
-  reportLeak(oa.choices[0]?.finish_reason);
   // Upstream ignored stream:true — still answer in the event format the caller asked for.
   if (wantStream) { res.writeHead(200, SSE_HEADERS); return res.end(openaiTranslator.messageToStreamEvents(msg)); }
   return json(res, msg);
@@ -1736,8 +1725,6 @@ const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
 const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
 const openaiTranslator = require('./lib/openai-translator');
-const proxyDebug = require('./lib/openai-proxy-debug');
-const OPENAI_PROXY_DEBUG_LOG = path.resolve(process.env.STOA_OPENAI_DEBUG_LOG || path.join(__dirname, 'logs', 'openai-proxy-debug.log'));
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 

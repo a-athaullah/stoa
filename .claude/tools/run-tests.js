@@ -168,8 +168,6 @@ function waitUp(port, tries = 50) {
     STOA_UPLOADS_DIR: tmpUploadsDir,
     STOA_CONNECTOR_MEDIA_DIR: tmpMediaDir,
     STOA_SKILL_BLOBS_DIR: tmpSkillBlobsDir,
-    // DSML-leak diagnostics from the openai_chat proxy tests stay out of the live logs/ folder.
-    STOA_OPENAI_DEBUG_LOG: path.join(tmpEnvDir, 'openai-proxy-debug.log'),
     // Expired-retrigger sweep (60 s in prod) fast enough for the offline-agent give-up test.
     RETRIGGER_SWEEP_MS: '500',
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
