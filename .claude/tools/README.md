@@ -47,6 +47,12 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
   Output: `{dir, maxBytes, dryRun, files: [{file, size, rotated}]}`. Dipasang di crontab hourly. **Jangan** rotasi dengan `mv`/rename: launchd tetap menulis ke inode lama dan semua log hilang.
 
 ### ✏️ Development Flow
+- **`pre-restart-check.js`** — Cek "setelah merge, sebelum restart server" (read-only; build percobaan ke temp, `dist/` tidak disentuh)
+  ```bash
+  node .claude/tools/pre-restart-check.js [--no-fetch] [--base=master]
+  ```
+  Output: `{pass, summary, checks[{name,status PASS|FAIL|WARN,detail}], pendingMigrations[]}`, exit 1 jika ada FAIL. Cek: marker konflik di file tracked, file UU/unmerged, master sama dengan origin (git pull sudah) + tree bersih, syntax `server.js`/`stoa.js`, `dist/stoa.js` ada & valid, build esbuild bundle agent bisa jalan, daftar migration pending (DB dibuka readonly). Jalankan di `~/project/Stoa` setelah merge + `git pull`, baru minta Aan restart. Latar: insiden 2026-11-13 (3 file UU membuat bundle gagal `<<`).
+
 - **`bump-client-version.js`** — Bump CLIENT_VERSION patch di stoa.js (wajib setiap ada perubahan di `public/`)
   ```bash
   node .claude/tools/bump-client-version.js           # patch: 0.4.1 → 0.4.2
