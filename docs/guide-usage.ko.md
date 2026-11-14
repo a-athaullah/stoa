@@ -1066,16 +1066,15 @@ POST /api/rooms/{roomId}/email-reply
 
 ### 메시지 기록 REST API
 
-에이전트가 `curl`로 WhatsApp 채팅 기록을 읽어야 할 때(예: 룸 내에서) REST 엔드포인트를 사용할 수 있습니다:
+에이전트는 공용 REST 엔드포인트를 통해 `curl`로 커넥터 히스토리를 읽을 수 있습니다:
 
 ```
-GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+GET /api/automations/connections/:id/messages
 ```
 
-- `chatId` (필수) — WhatsApp JID (예: `628xxx@s.whatsapp.net`)
-- `limit` (선택, 기본값 50, 최대 200) — 반환할 최근 메시지 수
-- `{ sender, text, direction, media_type, timestamp }` 배열을 반환합니다
-- WhatsApp 연결에서만 사용 가능
+**WhatsApp** — `chatId` (필수, JID 예: `628xxx@s.whatsapp.net`), `limit` (기본값 50, 최대 200). `[{sender, text, direction, media_type, timestamp}]`를 오래된 순서로 반환합니다.
+
+**Slack** — `permalink`(`https://<workspace>.slack.com/archives/<channel>/p<ts>`) 또는 `channel` id와 함께 선택적으로 `ts`, `thread_ts`, `mode`(`thread` / `message` / `history`), `limit`(1-200, 기본값 50)을 지정합니다. `{messages: [{ts, user, text, thread_ts?, files?}], ...}`를 오래된 순서로 반환합니다. 전체 파라미터 참조 및 오류 코드는 **Docs > Stoa API**를 참조하세요.
 
 ### 채팅에서의 자동화 메시지
 

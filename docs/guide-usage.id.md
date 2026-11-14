@@ -1071,16 +1071,15 @@ Agent yang memiliki akses tool dapat berinteraksi langsung dengan koneksi aktif 
 
 ### API Riwayat Pesan (REST)
 
-Untuk agent yang perlu membaca riwayat chat WhatsApp via `curl` (misalnya dari dalam room), tersedia endpoint REST:
+Agent dapat membaca riwayat konektor via `curl` melalui endpoint REST bersama:
 
 ```
-GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+GET /api/automations/connections/:id/messages
 ```
 
-- `chatId` (wajib) — JID WhatsApp (contoh: `628xxx@s.whatsapp.net`)
-- `limit` (opsional, default 50, maks 200) — jumlah pesan terbaru yang dikembalikan
-- Mengembalikan array `{ sender, text, direction, media_type, timestamp }`
-- Hanya tersedia untuk koneksi WhatsApp
+**WhatsApp** — `chatId` (wajib, JID contoh `628xxx@s.whatsapp.net`), `limit` (default 50, maks 200). Mengembalikan `[{sender, text, direction, media_type, timestamp}]`, dari yang terlama.
+
+**Slack** — berikan `permalink` (`https://<workspace>.slack.com/archives/<channel>/p<ts>`) atau id `channel` dengan opsional `ts`, `thread_ts`, `mode` (`thread` / `message` / `history`), dan `limit` (1-200, default 50). Mengembalikan `{messages: [{ts, user, text, thread_ts?, files?}], ...}`, dari yang terlama. Lihat **Docs > Stoa API** untuk referensi parameter lengkap dan kode error.
 
 ### Pesan Otomasi di Chat
 

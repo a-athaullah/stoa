@@ -28,6 +28,7 @@ const { createSkillsHttp } = require('./lib/skills-http');
 const { createHarnessAccounts, MACHINE_ID_RE } = require('./lib/harness-accounts');
 const { claudeModelKey, claudeModelLabel, rankClaudeModelIds, KNOWN_HARNESSES, validateHarnessStatus, sanitizeUpdateError } = require('./harness-session');
 const { createAutomationCrud } = require('./lib/automation-crud');
+const { createSlackHistory } = require('./lib/slack-history');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
@@ -1865,13 +1866,19 @@ const subAgents = createSubAgents({
   },
 });
 const automationCrud = createAutomationCrud({ db, validateConditions, postNotice: postAutomationChangeNotice });
+const slackHistory = createSlackHistory({
+  getConnectionRow: (id) => db.prepare('SELECT id, provider, status FROM automation_connections WHERE id=?').get(id),
+  getSlackConnection: (id) => connectionManager.getSlackConnection(id),
+});
 const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
     ...taskMcpTools(roomTasks),
     ...stoaMcpTools({
-      db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles,
+      db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, slackHistory,
+      connectionAllowed: (ident, connId) => agentScopeAllowed(ident.actorId, { scope: 'connection', id: connId }, ident.subAgentId ?? null),
+      readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles,
       requestThreadComplete: (roomId, rootId, ident) => threadCompleteDefer.request(roomId, rootId, { fromTurn: true, actorId: ident.actorId, subAgentId: ident.subAgentId ?? null }),
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
       mcpServers: {
@@ -5271,6 +5278,13 @@ Write-Host "Logs   : pm2 logs $AgentName"
       }
     }
 
+    if (req.method === 'GET' && sub === '/messages' && conn.provider === 'slack') {
+      const q = url.searchParams;
+      const r = await slackHistory.read(connId, { permalink: q.get('permalink'), channel: q.get('channel'), ts: q.get('ts'), thread_ts: q.get('thread_ts'), mode: q.get('mode'), limit: q.get('limit') });
+      if (r.status === 200) return json(res, r.body);
+      res.writeHead(r.status); return res.end(JSON.stringify(r.body));
+    }
+
     if (req.method === 'GET' && sub === '/messages') {
       const chatId = url.searchParams.get('chatId');
       if (!chatId) { res.writeHead(400); return res.end(JSON.stringify({ error: 'chatId is required' })); }
@@ -5288,7 +5302,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
           media_type: r.media_type || null, timestamp: r.created_at,
         })));
       }
-      res.writeHead(400); return res.end(JSON.stringify({ error: 'history only available for whatsapp connections' }));
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'history only available for whatsapp and slack connections' }));
     }
 
     if (req.method === 'DELETE' && sub === '') {

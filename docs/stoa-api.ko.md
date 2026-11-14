@@ -155,7 +155,7 @@ x-file-name: 파일명.확장자
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 자신의 액터 |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 소유한 서브에이전트 |
 | `POST` | `/api/sub-agents/:id/avatar` | 소유한 서브에이전트 (부모 시크릿 사용 가능); body 한도 512 KB |
-| `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+| `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 ([커넥터 히스토리 읽기](#커넥터-히스토리-읽기) 참조) |
 | `GET` | `/api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
 | `POST` | `/api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
 | `PATCH` | `/api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
@@ -182,6 +182,43 @@ x-file-name: 파일명.확장자
 - 이 크레덴셜은 `/mcp`에서 사용할 수 없으며, 서브에이전트가 삭제되거나 부모의 시크릿이 변경되면 작동을 멈추고 부모에 바인딩됩니다(다른 `x-agent-id` → `401`).
 
 이것은 공식 경로(환경 변수와 API)를 제한합니다. 서브에이전트는 여전히 부모 머신에서 셸을 실행하므로 OS 샌드박스가 아닙니다. `STOA_AGENT_SCOPE=off`로 이 제한과 다른 제한들을 함께 해제할 수 있습니다.
+
+## 커넥터 히스토리 읽기
+
+`GET /api/automations/connections/:id/messages`는 커넥터를 통해 과거 메시지를 읽습니다. 에이전트는 자신의 룸에 자동화를 전달하는 커넥터에 대해서만 호출할 수 있습니다 (그 외에는 `403 agent_scope_denied`).
+
+**WhatsApp** — `chatId` (필수), `limit` (기본값 50, 최대 200). `[{sender, text, direction, media_type, timestamp}]`를 오래된 순서로 반환합니다.
+
+**Slack** — 퍼머링크 또는 채널을 지정합니다:
+
+| 파라미터 | 설명 |
+|---------|------|
+| `permalink` | `https://<workspace>.slack.com/archives/<channel>/p<16자리>` (`?thread_ts=` 포함 답글 링크도 가능). `channel` / `ts` / `thread_ts`를 대체 |
+| `channel` | 채널 id (`C…`, `G…`, 또는 `D…`) |
+| `ts` | 메시지 ts, 예: `1712345678.123456` |
+| `thread_ts` | `ts`가 답글인 경우 스레드 루트 ts |
+| `mode` | `thread` (메시지 지정 시 기본값: 스레드 루트와 답글), `message` (해당 메시지만), `history` (최신 채널 메시지, `channel`만 지정 시 기본값; `ts` 지정 시 해당 메시지까지) |
+| `limit` | 1-200, 기본값 50 (thread 및 history) |
+
+```bash
+curl -s -G "$BASE_URL/api/automations/connections/3/messages" \
+  --data-urlencode "permalink=https://acme.slack.com/archives/C0123ABCD/p1712345678123456" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+```
+
+응답: `{connection_id, channel, mode, messages: [{ts, user, user_id, text, thread_ts?, reply_count?, files?: [{name, mimetype}], truncated?}], has_more}`, 오래된 순서. `user`는 Slack 표시 이름 (확인 불가 시 사용자 id). `text`는 4000자에서 잘림 (`truncated: true`).
+
+| 상태 | 의미 |
+|------|------|
+| `400` | 퍼머링크·채널·ts·mode·limit 불량, 또는 커넥터가 Slack / WhatsApp이 아님 |
+| `403` `slack_missing_scope` | Slack 앱에 `channels:history` (공개), `groups:history` (비공개), `im:history` (DM), `mpim:history` (그룹 DM) 권한 부족; `needed`에 누락 스코프 표시. 추가 → 재설치 → 재연결 |
+| `403` `slack_not_in_channel` | Slack 앱을 채널에 초대하세요 |
+| `404` | 커넥터·채널·스레드·메시지 없음 |
+| `409` `not_connected` | Slack 커넥터가 연결되지 않음; Automations > Connections에서 재연결 |
+| `429` `slack_ratelimited` | Slack 속도 제한; `retry_after`초 후 재시도 |
+| `502` `slack_error` | 기타 Slack 오류 (코드는 `error`에 포함) |
+
+커넥터 토큰은 응답에 포함되지 않습니다.
 
 ## 예시: curl로 자동화 생성
 
@@ -316,12 +353,13 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__automation_update` | `automation_id` + `trigger_type`을 제외한 생성 필드 중 하나 | `PATCH /api/automations/:id` |
 | `stoa__automation_delete` | `automation_id` | `DELETE /api/automations/:id` |
 | `stoa__connection_list` | — | `GET /api/automations/connections` (`id`, `name`, `provider`, `status`) |
+| `stoa__connection_messages_read` | `connection_id` + `permalink`, 또는 `channel` + 선택적 `ts` / `thread_ts`; 선택적 `mode` (`message` / `thread` / `history`), `limit` (1-200, 기본값 50) | **Slack** 커넥터용 `GET /api/automations/connections/:id/messages` ([커넥터 히스토리 읽기](#커넥터-히스토리-읽기) 참조). 자신의 룸에 자동화를 전달하는 커넥터만 허용; 그 외 id(존재하지 않는 id 포함)는 `agent_scope_denied` 반환 |
 
 스코프 규칙은 REST [에이전트 스코프](#에이전트-스코프)와 동일합니다:
 - 룸 도구는 세션 룸에서만 작동하며 참여자인 동안에만 유효합니다. 룸 외부 세션에는 `this MCP session is not bound to a room`이 반환됩니다.
 - 메모리·시스템 프롬프트 도구는 자신에게만 작용합니다. 서브에이전트 도구는 내가 소유한 서브에이전트에만 접근합니다. 다른 에이전트의 서브에이전트는 `sub-agent not found`로 응답합니다.
 - 읽기 도구 `messages_read`, `threads_list`, `thread_read`는 `rooms_list`에 나열된 다른 룸의 `room_id`도 받습니다: 내가 참가자인 룸(서브에이전트 세션에서는 서브에이전트가 연결되고 부모가 참가한 룸). 보관된 룸(내 세션 룸 포함), 참가하지 않은 룸, 존재하지 않는 룸은 모두 `agent_scope_denied`를 반환합니다. `message_send`는 이전과 동일합니다(보관된 룸은 새 메시지를 `room is archived`로 거부). `thread_read`는 읽는 룸 안의 스레드만 찾습니다(다른 룸의 스레드 → `thread root not found`).
-- **서브에이전트 세션**에서는 `message_send`, 읽기 도구 (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), 자신의 메모리 (`sub_agent_memory_get` / `_set`), 그리고 자신의 설정 (`self_get`, `self_update`, `self_avatar_set`)만 사용할 수 있습니다. `sub_agent_list`와 그 밖의 설정 변경 도구는 숨겨지고 거부되므로, 서브에이전트는 형제 서브에이전트의 시스템 프롬프트를 읽을 수 없습니다.
+- **서브에이전트 세션**에서는 `message_send`, 읽기 도구 (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`, `connection_messages_read`), 자신의 메모리 (`sub_agent_memory_get` / `_set`), 자신의 설정 (`self_get`, `self_update`, `self_avatar_set`), 룸의 태스크 보드 (`task_*`), 그리고 `thread_complete`만 사용할 수 있습니다. `sub_agent_list`와 그 밖의 설정 변경 도구는 숨겨지고 거부되므로, 서브에이전트는 형제 서브에이전트의 시스템 프롬프트를 읽을 수 없습니다.
 - 룸 시스템 프롬프트, 에이전트 시스템 프롬프트, 에이전트 아바타, 서브에이전트 생성/수정/삭제/연결/연결 해제는 룸에 `· config`로 끝나는 영구 알림을 게시합니다. 자동화 변경은 REST와 마찬가지로 대상 룸에 `· automation` 알림을 게시합니다.
 
 ## MCP 서버 이벤트 (MCP 서버 작성자용)

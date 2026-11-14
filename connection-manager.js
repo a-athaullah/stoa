@@ -13,12 +13,15 @@ function safeAck(ack, connId) {
   });
 }
 
+const READ_METHODS = new Set(['conversations.history', 'conversations.replies', 'users.info']);
+
 class SlackConnection extends EventEmitter {
   constructor(connId) {
     super();
     this.connId = connId;
     this.client = null;
     this.webClient = null;
+    this.readClient = null;
     this.running = false;
     this.workspaceName = null;
     this.workspaceDomain = null;
@@ -34,6 +37,9 @@ class SlackConnection extends EventEmitter {
 
     if (!token) throw new Error('token is required');
     this.webClient = new WebClient(token);
+    // History reads answer an agent's HTTP/MCP call: a rate limit must come back as an error now,
+    // not as the default client's retries for up to ~30 minutes.
+    this.readClient = new WebClient(token, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 15000 });
 
     try {
       const info = await this.webClient.auth.test();
@@ -91,12 +97,20 @@ class SlackConnection extends EventEmitter {
     return this.webClient.conversations.history({ channel: channelId, limit: limit || 50 });
   }
 
+  // Read-only Web API calls for lib/slack-history.js; the token stays inside this class.
+  async readApi(method, args) {
+    if (!READ_METHODS.has(method)) throw new Error(`slack read method not allowed: ${method}`);
+    if (!this.readClient) throw new Error('not connected');
+    return this.readClient.apiCall(method, args);
+  }
+
   async stop() {
     if (this.client) {
       try { await this.client.disconnect(); } catch {}
       this.client = null;
     }
     this.webClient = null;
+    this.readClient = null;
     this.running = false;
     this.workspaceName = null;
     this.workspaceDomain = null;

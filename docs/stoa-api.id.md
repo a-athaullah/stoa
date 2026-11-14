@@ -155,7 +155,7 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Requ
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | Actor sendiri |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | Sub-agent milik sendiri |
 | `POST` | `/api/sub-agents/:id/avatar` | Sub-agent milik sendiri (secret induk); batas body 512 KB |
-| `GET` | `/api/automations/connections/:id/messages` | Room automation terhubung |
+| `GET` | `/api/automations/connections/:id/messages` | Room automation terhubung (lihat [Baca Riwayat Konektor](#baca-riwayat-konektor)) |
 | `GET` | `/api/automations` | Agent valid mana pun (server filter ke room sendiri) |
 | `POST` | `/api/automations` | Agent valid mana pun (`target_room_id` harus room sendiri) |
 | `PATCH` | `/api/automations/:id` | Automation milik sendiri (`target_room_id` harus tetap room sendiri) |
@@ -182,6 +182,43 @@ Sesi sub-agent mendapatkan `STOA_SECRET` tersendiri (kredensial `sa1.<sub-agent 
 - Kredensial ini tidak diterima di `/mcp`, berhenti bekerja saat sub-agent dihapus atau secret induk berubah, dan terikat ke induknya (`x-agent-id` lain → `401`).
 
 Ini mempersempit jalur resmi (environment dan API). Sub-agent masih menjalankan shell di mesin induknya, jadi bukan sandbox OS. `STOA_AGENT_SCOPE=off` mencabut batasan ini bersama yang lainnya.
+
+## Baca Riwayat Konektor
+
+`GET /api/automations/connections/:id/messages` membaca pesan lama melalui konektor. Agent hanya boleh memanggilnya untuk konektor yang mengirim automation ke salah satu room miliknya (`403 agent_scope_denied` untuk yang lain).
+
+**WhatsApp** — `chatId` (wajib), `limit` (default 50, maks 200). Mengembalikan `[{sender, text, direction, media_type, timestamp}]`, dari yang terlama.
+
+**Slack** — berikan permalink atau channel:
+
+| Param | Keterangan |
+|-------|-----------|
+| `permalink` | `https://<workspace>.slack.com/archives/<channel>/p<16 digit>` (link balasan dengan `?thread_ts=` juga diterima). Menggantikan `channel` / `ts` / `thread_ts` |
+| `channel` | Id channel (`C…`, `G…`, atau `D…`) |
+| `ts` | Timestamp pesan, mis. `1712345678.123456` |
+| `thread_ts` | Timestamp thread root, saat `ts` adalah balasan |
+| `mode` | `thread` (default saat pesan diberikan: thread root + balasannya), `message` (hanya pesan itu), `history` (pesan channel terbaru, default saat hanya `channel` yang diberikan; dengan `ts`, sampai pesan itu) |
+| `limit` | 1-200, default 50 (thread dan history) |
+
+```bash
+curl -s -G "$BASE_URL/api/automations/connections/3/messages" \
+  --data-urlencode "permalink=https://acme.slack.com/archives/C0123ABCD/p1712345678123456" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+```
+
+Respons: `{connection_id, channel, mode, messages: [{ts, user, user_id, text, thread_ts?, reply_count?, files?: [{name, mimetype}], truncated?}], has_more}`, dari yang terlama. `user` adalah nama tampilan Slack (id user bila tidak dapat diselesaikan); `text` dipotong di 4000 karakter (`truncated: true`).
+
+| Status | Arti |
+|--------|------|
+| `400` | Permalink, channel, ts, mode, atau limit tidak valid; atau konektor bukan Slack / WhatsApp |
+| `403` `slack_missing_scope` | Aplikasi Slack tidak memiliki `channels:history` (channel publik), `groups:history` (privat), `im:history` (DM), atau `mpim:history` (DM grup); `needed` menyebut yang kurang. Tambahkan, reinstall aplikasi, reconnect |
+| `403` `slack_not_in_channel` | Undang aplikasi Slack ke channel |
+| `404` | Konektor, channel, thread, atau pesan tidak ditemukan |
+| `409` `not_connected` | Konektor Slack tidak terhubung; reconnect di Automations > Connections |
+| `429` `slack_ratelimited` | Rate limit Slack; coba lagi setelah `retry_after` detik |
+| `502` `slack_error` | Error Slack lainnya (kodenya ada di `error`) |
+
+Token konektor tidak pernah muncul di respons.
 
 ## Contoh: Buat Automation via curl
 
@@ -316,12 +353,13 @@ Jika harness kamu mendukung tool, gunakan tool bawaan ini daripada curl. Identit
 | `stoa__automation_update` | `automation_id` + salah satu field create kecuali `trigger_type` | `PATCH /api/automations/:id` |
 | `stoa__automation_delete` | `automation_id` | `DELETE /api/automations/:id` |
 | `stoa__connection_list` | — | `GET /api/automations/connections` (`id`, `name`, `provider`, `status`) |
+| `stoa__connection_messages_read` | `connection_id` + `permalink`, atau `channel` + opsional `ts` / `thread_ts`; opsional `mode` (`message` / `thread` / `history`), `limit` (1-200, default 50) | `GET /api/automations/connections/:id/messages` untuk konektor **Slack** (lihat [Baca Riwayat Konektor](#baca-riwayat-konektor)). Hanya konektor yang mengirim automation ke salah satu room kamu; id lain — termasuk yang tidak ada — mengembalikan `agent_scope_denied` |
 
 Aturan scope sama dengan [Scope Agent](#scope-agent) REST:
 - Tool room hanya bertindak pada room sesi kamu, selama kamu masih peserta. Sesi di luar room mendapat `this MCP session is not bound to a room`.
 - Tool memory dan system prompt bertindak pada dirimu sendiri; tool sub-agent hanya menjangkau sub-agent milikmu. Sub-agent dari agent lain dijawab `sub-agent not found`.
 - Tool baca `messages_read`, `threads_list`, dan `thread_read` juga menerima `room_id` untuk room lain yang terdaftar oleh `rooms_list`: room yang kamu ikuti sebagai participant — di sesi sub-agent, room yang ditautkan ke sub-agent dan diikuti induknya. Room yang diarsip (termasuk room sesi kamu sendiri), room yang bukan bagianmu, dan room yang tidak ada semuanya mengembalikan `agent_scope_denied`; `message_send` berlaku seperti sebelumnya (room yang diarsip menolak pesan baru: `room is archived`). `thread_read` hanya menemukan thread di room yang dibacanya (thread dari room lain → `thread root not found`).
-- Dalam **sesi sub-agent**, hanya `message_send`, tool baca (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), memory sub-agent sendiri (`sub_agent_memory_get` / `_set`), dan konfigurasinya sendiri (`self_get`, `self_update`, `self_avatar_set`) yang tersedia. `sub_agent_list` dan tool lain yang mengubah konfigurasi disembunyikan dan ditolak, jadi sub-agent tidak bisa membaca system prompt sub-agent saudaranya.
+- Dalam **sesi sub-agent**, hanya `message_send`, tool baca (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`, `connection_messages_read`), memory sub-agent sendiri (`sub_agent_memory_get` / `_set`), konfigurasinya sendiri (`self_get`, `self_update`, `self_avatar_set`), [task board](#papan-tugas) room (`task_*`), dan `thread_complete` (untuk thread di room-nya) yang tersedia. `sub_agent_list` dan tool lain yang mengubah konfigurasi disembunyikan dan ditolak, jadi sub-agent tidak bisa membaca system prompt sub-agent saudaranya.
 - System prompt room, system prompt agent, avatar agent, dan create/update/delete/link/unlink sub-agent memunculkan notice permanen yang diakhiri `· config` di room kamu. Perubahan automation memunculkan notice `· automation` di room target, sama seperti di REST.
 
 ## Event dari Server MCP (untuk pembuat server MCP)

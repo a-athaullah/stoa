@@ -11883,6 +11883,21 @@ async function run() {
       }
     });
 
+    await test('Agent scope — Slack history: connector feeding the agent\'s room passes scope (409 not connected), other connector 403', async () => {
+      const mk = () => scDb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__scope-slack__', 'slack', 'bot', 'disconnected')").run().lastInsertRowid;
+      const fed = mk(), foreign = mk();
+      const auto = scDb.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template, enabled, connection_id) VALUES ('__scope-auto__', 'slack', 'message', ?, 'x', 0, ?)").run(roomA, fed).lastInsertRowid;
+      const q = '?permalink=' + encodeURIComponent('https://x.slack.com/archives/C0123ABC/p1712345678123456');
+      try {
+        const r = await asAgent(agA, 'GET', `/api/automations/connections/${fed}/messages${q}`);
+        assert.deepStrictEqual([r.status, r.body.code], [409, 'not_connected'], r.raw);
+        denied(await asAgent(agA, 'GET', `/api/automations/connections/${foreign}/messages${q}`), 'foreign slack connector');
+      } finally {
+        scDb.prepare('DELETE FROM automations WHERE id=?').run(auto);
+        scDb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?)').run(fed, foreign);
+      }
+    });
+
     await test('Agent automations — create/edit/delete in own room 200, each leaves a persistent notice', async () => {
       const notices = async () => {
         const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=100`);
@@ -13267,13 +13282,164 @@ async function run() {
     }
   });
 
-  await test('GET /api/automations/connections/:id/messages — slack conn → 400', async () => {
-    const conns = await req('GET', '/api/automations/connections');
-    const slackConn = conns.body.find(c => c.provider === 'slack');
-    if (slackConn) {
-      const r = await req('GET', `/api/automations/connections/${slackConn.id}/messages?chatId=test`);
-      if (r.status === 405) return; // server not restarted yet
-      assert.strictEqual(r.status, 400);
+  await test('slack history — parseSlackPermalink: ts with dot, thread_ts, rejects lookalikes', async () => {
+    const { parseSlackPermalink } = require('./lib/slack-history');
+    assert.deepStrictEqual(parseSlackPermalink('https://qiscustech.slack.com/archives/C0B6Q16RNTH/p1712345678123456'),
+      { channel: 'C0B6Q16RNTH', ts: '1712345678.123456', thread_ts: null });
+    assert.deepStrictEqual(parseSlackPermalink('https://x.slack.com/archives/G01ABC/p1712345679000100?thread_ts=1712345678.123456&cid=G01ABC'),
+      { channel: 'G01ABC', ts: '1712345679.000100', thread_ts: '1712345678.123456' });
+    for (const bad of [
+      'http://x.slack.com/archives/C0123ABC/p1712345678123456',          // not https
+      'https://slack.com.evil.io/archives/C0123ABC/p1712345678123456',   // not a slack.com host
+      'https://x.slack.com/archives/c0123abc/p1712345678123456',         // lower-case channel
+      'https://x.slack.com/archives/X0123ABC/p1712345678123456',         // unknown channel prefix
+      'https://x.slack.com/archives/C0123ABC/1712345678123456',          // no p
+      'https://x.slack.com/archives/C0123ABC/p171234',                   // too short
+      'https://x.slack.com/archives/C0123ABC/p1712345678123456?thread_ts=1712;rm',
+      'https://x.slack.com/archives/C0123ABC/../p1712345678123456',
+      'not a url', '', null, 'https://x.slack.com/archives/C0123ABC/p' + '1'.repeat(3000),
+    ]) assert.strictEqual(parseSlackPermalink(bad), null, String(bad).slice(0, 80));
+  });
+
+  await test('slack history — resolveTarget: default mode, limit cap, invalid input → error', async () => {
+    const { resolveTarget } = require('./lib/slack-history');
+    assert.deepStrictEqual(resolveTarget({ channel: 'C0123ABC' }), { channel: 'C0123ABC', ts: null, thread_ts: null, mode: 'history', limit: 50 });
+    assert.strictEqual(resolveTarget({ permalink: 'https://x.slack.com/archives/C0123ABC/p1712345678123456' }).mode, 'thread');
+    assert.strictEqual(resolveTarget({ channel: 'C0123ABC', limit: '999' }).limit, 200);
+    assert.strictEqual(resolveTarget({ channel: 'C0123ABC', limit: 7 }).limit, 7);
+    assert.match(resolveTarget({}).error, /permalink or channel/);
+    assert.match(resolveTarget({ channel: 'C0123ABC; DROP' }).error, /permalink or channel/);
+    assert.match(resolveTarget({ channel: 'C0123ABC', ts: '12.ab' }).error, /ts must/);
+    assert.match(resolveTarget({ channel: 'C0123ABC', mode: 'all' }).error, /mode must/);
+    assert.match(resolveTarget({ channel: 'C0123ABC', mode: 'message' }).error, /needs a permalink or ts/);
+    assert.match(resolveTarget({ channel: 'C0123ABC', limit: '0' }).error, /limit must/);
+    assert.match(resolveTarget({ permalink: 'https://x.slack.com/archives/C0123ABC/p12' }).error, /invalid Slack permalink/);
+  });
+
+  await test('slack history — read() through a real SlackConnection against a mock Slack API: modes, names, files, order, errors, no token leak', async () => {
+    const http = require('http');
+    const { WebClient } = require('@slack/web-api');
+    const { SlackConnection } = require('./connection-manager');
+    const { createSlackHistory } = require('./lib/slack-history');
+    const TOKEN = 'xoxb-secret-token-must-not-leak';
+    const calls = [];
+    let mode = 'ok';
+    const srv = http.createServer((rq, rs) => {
+      let b = ''; rq.on('data', c => { b += c; }); rq.on('end', () => {
+        const method = rq.url.replace(/^\/+/, '').split('?')[0];
+        const args = Object.fromEntries(new URLSearchParams(b));
+        calls.push({ method, args, auth: rq.headers.authorization });
+        const send = (o, status = 200, headers = {}) => { rs.writeHead(status, { 'content-type': 'application/json', ...headers }); rs.end(JSON.stringify(o)); };
+        if (mode === 'missing_scope') return send({ ok: false, error: 'missing_scope', needed: 'groups:history', provided: 'channels:history' });
+        if (mode === 'not_in_channel') return send({ ok: false, error: 'not_in_channel' });
+        if (mode === 'ratelimited' && method !== 'users.info') return send({ ok: false, error: 'ratelimited' }, 429, { 'retry-after': '30' });
+        if (method === 'users.info') {
+          if (args.user === 'U0BROKEN') return send({ ok: false, error: 'user_not_found' });
+          return send({ ok: true, user: { id: args.user, profile: { display_name: args.user === 'U0AAA' ? 'Aan' : '', real_name: 'Real ' + args.user } } });
+        }
+        if (method === 'conversations.history') {
+          if (args.oldest) return send({ ok: true, messages: [{ ts: args.oldest, user: 'U0AAA', text: 'single' }], has_more: false });
+          return send({ ok: true, has_more: true, messages: [  // Slack: newest first
+            { ts: '1712345690.000300', user: 'U0BROKEN', text: 'third', files: [{ name: 'a.pdf', mimetype: 'application/pdf', url_private: 'https://files.slack.com/secret' }] },
+            { ts: '1712345680.000200', bot_id: 'B0BOT', username: 'deploybot', text: 'second' },
+            { ts: '1712345678.123456', user: 'U0AAA', text: 'first', thread_ts: '1712345678.123456', reply_count: 2 },
+          ] });
+        }
+        if (method === 'conversations.replies') {
+          return send({ ok: true, has_more: false, messages: [
+            { ts: '1712345678.123456', user: 'U0AAA', text: 'root', thread_ts: '1712345678.123456', reply_count: 2 },
+            { ts: '1712345679.000100', user: 'U0AAA', text: 'reply 1', thread_ts: '1712345678.123456' },
+            { ts: '1712345679.000500', user: 'U0BBB', text: 'reply 2', thread_ts: '1712345678.123456' },
+          ] });
+        }
+        send({ ok: false, error: 'unknown_method' });
+      });
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const conn = new SlackConnection(77);
+    conn.readClient = new WebClient(TOKEN, { slackApiUrl: `http://127.0.0.1:${srv.address().port}/`, rejectRateLimitedCalls: true, retryConfig: { retries: 0 } });
+    conn.running = true;
+    let row = { id: 77, provider: 'slack', status: 'connected' };
+    const logs = [];
+    const h = createSlackHistory({ getConnectionRow: (id) => (id === 77 ? row : undefined), getSlackConnection: () => conn, log: { error: (m) => logs.push(m) } });
+    try {
+      const hist = await h.read(77, { channel: 'C0123ABC', limit: '3' });
+      assert.strictEqual(hist.status, 200);
+      assert.deepStrictEqual(hist.body.messages.map(m => [m.ts, m.user, m.text]), [
+        ['1712345678.123456', 'Aan', 'first'], ['1712345680.000200', 'deploybot', 'second'], ['1712345690.000300', 'U0BROKEN', 'third']], 'oldest first, names resolved, fallback to id');
+      assert.deepStrictEqual(hist.body.messages[2].files, [{ name: 'a.pdf', mimetype: 'application/pdf' }], 'file name + mimetype only');
+      assert.deepStrictEqual([hist.body.messages[0].thread_ts, hist.body.messages[0].reply_count, hist.body.has_more, hist.body.mode], ['1712345678.123456', 2, true, 'history']);
+      assert.strictEqual(calls.filter(c => c.method === 'users.info').length, 2, 'one users.info per distinct user');
+      assert.strictEqual(calls.find(c => c.method === 'conversations.history').args.limit, '3');
+
+      calls.length = 0;
+      const thr = await h.read(77, { permalink: 'https://x.slack.com/archives/C0123ABC/p1712345679000100?thread_ts=1712345678.123456' });
+      assert.strictEqual(thr.status, 200);
+      assert.strictEqual(thr.body.mode, 'thread');
+      assert.deepStrictEqual(calls.find(c => c.method === 'conversations.replies').args.ts, '1712345678.123456', 'thread read from the root');
+      assert.deepStrictEqual(thr.body.messages.map(m => m.user), ['Aan', 'Aan', 'Real U0BBB']);
+
+      calls.length = 0;
+      const one = await h.read(77, { permalink: 'https://x.slack.com/archives/C0123ABC/p1712345679000100?thread_ts=1712345678.123456', mode: 'message' });
+      assert.deepStrictEqual(one.body.messages.map(m => m.text), ['reply 1'], 'a reply is picked out of conversations.replies');
+      const top = await h.read(77, { channel: 'C0123ABC', ts: '1712345600.000001', mode: 'message' });
+      assert.deepStrictEqual(top.body.messages.map(m => m.text), ['single']);
+      assert.ok(calls.every(c => c.auth === `Bearer ${TOKEN}`), 'calls use the connector token');
+
+      for (const [m, status, code, re] of [
+        ['missing_scope', 403, 'slack_missing_scope', /groups:history.*channels:history \(public channels\), groups:history \(private channels\), im:history/],
+        ['not_in_channel', 403, 'slack_not_in_channel', /not a member of channel C0123ABC/],
+        ['ratelimited', 429, 'slack_ratelimited', /retry in 30s/],
+      ]) {
+        mode = m;
+        const r = await h.read(77, { channel: 'C0123ABC' });
+        assert.deepStrictEqual([r.status, r.body.code], [status, code], m);
+        assert.match(r.body.error, re, m);
+      }
+      mode = 'ok';
+      assert.ok(!JSON.stringify(logs).includes(TOKEN) && logs.length === 3, 'errors logged without the token');
+
+      row = { id: 77, provider: 'slack', status: 'disconnected' };
+      const off = await h.read(77, { channel: 'C0123ABC' });
+      assert.deepStrictEqual([off.status, off.body.code], [409, 'not_connected']);
+      row = { id: 77, provider: 'whatsapp', status: 'connected' };
+      assert.strictEqual((await h.read(77, { channel: 'C0123ABC' })).status, 400);
+      assert.strictEqual((await h.read(78, { channel: 'C0123ABC' })).status, 404);
+      await assert.rejects(conn.readApi('chat.postMessage', { channel: 'C0123ABC', text: 'x' }), /not allowed/, 'readApi is read-only');
+    } finally { srv.close(); }
+  });
+
+  await test('GET /api/automations/connections/:id/messages — slack: invalid input 400, not connected 409, email 400, whatsapp unchanged', async () => {
+    const sdb = require('./db');
+    const mk = (provider, status) => sdb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__test-slack-hist__', ?, 'bot', ?)").run(provider, status).lastInsertRowid;
+    const slack = mk('slack', 'disconnected'), email = mk('email', 'disconnected'), wa = mk('whatsapp', 'disconnected');
+    const base = (id) => `/api/automations/connections/${id}/messages`;
+    try {
+      for (const [q, re] of [
+        ['', /permalink or channel/],
+        ['?chatId=test', /permalink or channel/],
+        ['?permalink=' + encodeURIComponent('https://evil.example/archives/C0123ABC/p1712345678123456'), /invalid Slack permalink/],
+        ['?channel=C0123ABC&mode=everything', /mode must/],
+        ['?channel=C0123ABC&ts=1.2.3', /ts must/],
+      ]) {
+        const r = await req('GET', base(slack) + q);
+        assert.strictEqual(r.status, 400, q + ' ' + r.raw);
+        assert.match(r.body.error, re, q);
+      }
+      const nc = await req('GET', base(slack) + '?permalink=' + encodeURIComponent('https://x.slack.com/archives/C0123ABC/p1712345678123456'));
+      assert.strictEqual(nc.status, 409, nc.raw);
+      assert.strictEqual(nc.body.code, 'not_connected');
+      const em = await req('GET', base(email) + '?chatId=x');
+      assert.strictEqual(em.status, 400);
+      assert.match(em.body.error, /whatsapp and slack/);
+      sdb.prepare("INSERT INTO wa_incoming_messages (connection_id, chat_id, sender, text, msg_key, direction) VALUES (?, 'c1', 'Budi', 'halo', 'k-slack-hist', 'in')").run(wa);
+      const w = await req('GET', base(wa) + '?chatId=c1');
+      assert.strictEqual(w.status, 200, w.raw);
+      assert.deepStrictEqual(w.body.map(m => [m.sender, m.text, m.direction]), [['Budi', 'halo', 'in']]);
+      assert.strictEqual((await req('GET', base(wa))).status, 400, 'whatsapp still needs chatId');
+    } finally {
+      sdb.prepare('DELETE FROM wa_incoming_messages WHERE connection_id=?').run(wa);
+      sdb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?, ?)').run(slack, email, wa);
     }
   });
 
@@ -23706,7 +23872,7 @@ async function run() {
     const listNames = async (token) => (await listAll(token)).map(t => t.name).filter(n => !n.startsWith('stoa__')).sort();
     const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
-      'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
+      'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list', 'connection_messages_read',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set', 'rooms_list',
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
@@ -23714,7 +23880,7 @@ async function run() {
       'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update',
       'thread_complete', 'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
-    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
+    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'connection_messages_read', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
       'self_avatar_set', 'self_get', 'self_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_complete', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
@@ -24715,7 +24881,7 @@ async function run() {
         assert.strictEqual(t.inputSchema.additionalProperties, false, `${t.name} rejects unknown args`);
       }
       for (const n of ['sub_agent_delete', 'automation_delete']) assert.strictEqual(main[`stoa__${n}`].annotations.destructiveHint, true, n);
-      for (const n of ['rooms_list', 'messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list']) {
+      for (const n of ['rooms_list', 'messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list', 'connection_messages_read']) {
         assert.strictEqual(main[`stoa__${n}`].annotations.readOnlyHint, true, n);
       }
       for (const n of ['message_send', 'room_memory_set', 'sub_agent_create', 'sub_agent_link', 'sub_agent_unlink', 'automation_update']) {
@@ -25839,6 +26005,23 @@ async function run() {
 
         const conns = (await stoaOk(tokA, 'connection_list')).connections;
         assert.ok(conns.every(cn => Object.keys(cn).sort().join() === 'id,name,provider,status'), 'no credentials');
+
+        const mkConn = (provider) => mDb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__test-mcp-slack__', ?, 'bot', 'disconnected')").run(provider).lastInsertRowid;
+        const fedSlack = mkConn('slack'), foreignSlack = mkConn('slack'), fedEmail = mkConn('email');
+        const feed = mDb.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template, enabled, connection_id) VALUES ('__test-mcp-feed__', 'slack', 'message', ?, 'x', 0, ?)");
+        const feeds = [feed.run(roomA, fedSlack).lastInsertRowid, feed.run(roomA, fedEmail).lastInsertRowid];
+        const link = 'https://x.slack.com/archives/C0123ABC/p1712345678123456';
+        try {
+          assert.strictEqual(await stoaErr(tokA, 'connection_messages_read', { connection_id: foreignSlack, permalink: link }), 'agent_scope_denied');
+          assert.strictEqual(await stoaErr(tokB, 'connection_messages_read', { connection_id: fedSlack, permalink: link }), 'agent_scope_denied', 'agent B is not in the target room');
+          assert.strictEqual(await stoaErr(tokA, 'connection_messages_read', { connection_id: 99999999, permalink: link }), 'agent_scope_denied', 'unknown id answers like a foreign one');
+          assert.match(await stoaErr(tokA, 'connection_messages_read', { connection_id: fedSlack, permalink: 'https://x.slack.com/archives/C0123ABC/p12' }), /invalid Slack permalink/);
+          assert.match(await stoaErr(tokA, 'connection_messages_read', { connection_id: fedEmail, permalink: link }), /email connector; this reads Slack connectors only/);
+          assert.match(await stoaErr(tokA, 'connection_messages_read', { connection_id: fedSlack, permalink: link }), /is not connected \(status: disconnected\)/);
+        } finally {
+          mDb.prepare(`DELETE FROM automations WHERE id IN (${feeds.join(',')})`).run();
+          mDb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?, ?)').run(fedSlack, foreignSlack, fedEmail);
+        }
 
         assert.deepStrictEqual(await stoaOk(tokA, 'automation_delete', { automation_id: created.id }), { ok: true });
         assert.strictEqual(mDb.prepare('SELECT 1 FROM automations WHERE id=?').get(created.id), undefined);

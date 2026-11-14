@@ -1066,16 +1066,15 @@ POST /api/rooms/{roomId}/email-reply
 
 ### 消息历史 REST API
 
-当代理需要通过 `curl` 读取 WhatsApp 聊天记录时（例如从房间内），可使用 REST 端点：
+代理可通过统一的 REST 端点使用 `curl` 读取连接器历史：
 
 ```
-GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+GET /api/automations/connections/:id/messages
 ```
 
-- `chatId`（必填） — WhatsApp JID（例如：`628xxx@s.whatsapp.net`）
-- `limit`（可选，默认 50，最大 200） — 返回的最近消息数量
-- 返回 `{ sender, text, direction, media_type, timestamp }` 数组
-- 仅适用于 WhatsApp 连接
+**WhatsApp** — `chatId`（必填，JID 例如 `628xxx@s.whatsapp.net`）、`limit`（默认 50，最大 200）。返回 `[{sender, text, direction, media_type, timestamp}]`，按从旧到新排序。
+
+**Slack** — 提供 `permalink`（`https://<workspace>.slack.com/archives/<channel>/p<ts>`）或 `channel` id，并可选填 `ts`、`thread_ts`、`mode`（`thread` / `message` / `history`）和 `limit`（1-200，默认 50）。返回 `{messages: [{ts, user, text, thread_ts?, files?}], ...}`，按从旧到新排序。完整参数说明和错误码请参阅 **Docs > Stoa API**。
 
 ### 聊天中的自动化消息
 

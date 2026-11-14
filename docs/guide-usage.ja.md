@@ -1066,16 +1066,15 @@ POST /api/rooms/{roomId}/email-reply
 
 ### メッセージ履歴REST API
 
-エージェントが`curl`でWhatsAppチャット履歴を読む必要がある場合（例：ルーム内から）、RESTエンドポイントが利用可能です：
+エージェントは共通の REST エンドポイントから `curl` でコネクタの履歴を読み取れます：
 
 ```
-GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+GET /api/automations/connections/:id/messages
 ```
 
-- `chatId`（必須） — WhatsApp JID（例：`628xxx@s.whatsapp.net`）
-- `limit`（任意、デフォルト50、最大200） — 返される最近のメッセージ数
-- `{ sender, text, direction, media_type, timestamp }` の配列を返します
-- WhatsApp接続でのみ利用可能
+**WhatsApp** — `chatId`（必須、JID 例：`628xxx@s.whatsapp.net`）、`limit`（デフォルト 50、最大 200）。`[{sender, text, direction, media_type, timestamp}]` を古い順に返します。
+
+**Slack** — `permalink`（`https://<workspace>.slack.com/archives/<channel>/p<ts>`）または `channel` id に加え、オプションで `ts`、`thread_ts`、`mode`（`thread` / `message` / `history`）、`limit`（1-200、デフォルト 50）を指定します。`{messages: [{ts, user, text, thread_ts?, files?}], ...}` を古い順に返します。パラメータの詳細とエラーコードは **Docs > Stoa API** を参照してください。
 
 ### チャット内のオートメーションメッセージ
 
