@@ -25103,12 +25103,13 @@ async function run() {
       } finally { await req('PATCH', `/api/rooms/${roomA}`, { archived: false }); }
       await new Promise(r => setTimeout(r, 2600));
       assert.strictEqual(await completed(), false, 'refused calls left nothing pending');
-      assert.strictEqual(await completed(rootB), false);
+      assert.strictEqual(marker(rootB).at, null, 'room B thread untouched');
 
-      // 7. A sub-agent session marks its own thread (its closing reply carries sub_agent_id).
-      const subThread = (await stoaOk(tokSub, 'thread_read', {})).thread_id;
-      assert.strictEqual((await reopen(subThread)).status, 200);
-      assert.deepStrictEqual([(await stoaOk(tokSub, 'thread_complete')).thread_id], [subThread]);
+      // 7. A sub-agent session (this one runs at room level: thread_id required) marks a thread of its room;
+      // only its own closing reply (sub_agent_id) settles it, not its parent's.
+      assert.match(await stoaErr(tokSub, 'thread_complete'), /thread_id required/);
+      const subThread = threadA;
+      assert.deepStrictEqual(await stoaOk(tokSub, 'thread_complete', { thread_id: subThread }), { thread_id: subThread, status: 'pending', note: 'The thread is marked complete once your turn is over.' });
       await agentPost({ content: 'parent note', thread_id: subThread, unsolicited: true, background_running: false });
       await new Promise(r => setTimeout(r, 200));
       assert.strictEqual(await completed(subThread), false, 'the parent closing reply is not the sub-agent one');
