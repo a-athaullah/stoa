@@ -320,6 +320,18 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### 10. Agent Thread Complete Waits for the Agent's Turn; Reopen Stays Human-Only
+**Decision (2026-11-14):** `stoa__thread_complete` (separate from the task board) and `stoa__task_complete` never write the thread mark mid-turn. `lib/thread-complete-defer.js` keeps the request pending until the requesting agent's turn is over: the Stoa run ends, or, for a CLI turn that started on its own after a background task (no `activeSequences` entry, no run in flight), its `unsolicited` closing reply arrives with no background task left. A fallback timer (`THREAD_COMPLETE_SETTLE_MS`, 10 min, re-armed by the agent's posts in the thread) writes it when no closing reply ever comes.
+
+**Why:** The mark covers the replies that exist when written; a newer reply reopens the thread (auto-reopen, owner decision). The old defer only waited on `activeSequences`, so a `task_complete` from a background wake-up was written at once and the agent's own closing report reopened it (thread 69571, card #18).
+
+**Not a finding:**
+- Pending requests are in memory: a server restart drops them and the thread stays open (as before the call). No migration on purpose.
+- Agents can mark but never reopen; reopen (PUT `completed:false`) stays owner-only (`lib/agent-scope.js` does not list the PUT route). A human message in the thread or an owner mark/reopen cancels a pending agent mark.
+- An agent mark can land up to `THREAD_COMPLETE_SETTLE_MS` late when the turn produced no closing reply: correctness (not reopened by its own reply) over latency.
+
+---
+
 ### 6. Harness CLI Update Holds That Harness's Triggers
 **Decision:** While `claude update` / `codex update` is pending on an agent, new triggers for that harness wait in the agent queue. npm rewrites files in place, so a run starting mid-install could hit a half-written CLI; waiting also lets `waiting_idle` end under steady traffic. Other harnesses keep running. A restart requested meanwhile waits for the update (an interrupted install can leave the CLI broken).
 
