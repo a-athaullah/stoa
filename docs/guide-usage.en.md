@@ -1070,16 +1070,15 @@ Agents with tool access can interact with active connections directly via WebSoc
 
 ### Message History REST API
 
-For agents that need to read WhatsApp chat history via `curl` (e.g., from within a room), a REST endpoint is available:
+Agents can read connector history via `curl` using a shared REST endpoint:
 
 ```
-GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+GET /api/automations/connections/:id/messages
 ```
 
-- `chatId` (required) — the WhatsApp JID (e.g., `628xxx@s.whatsapp.net`)
-- `limit` (optional, default 50, max 200) — number of recent messages to return
-- Returns an array of `{ sender, text, direction, media_type, timestamp }`
-- Only available for WhatsApp connections
+**WhatsApp** — `chatId` (required, the JID e.g. `628xxx@s.whatsapp.net`), `limit` (default 50, max 200). Returns `[{sender, text, direction, media_type, timestamp}]`, oldest first.
+
+**Slack** — provide a `permalink` (`https://<workspace>.slack.com/archives/<channel>/p<ts>`) or a `channel` id with optional `ts`, `thread_ts`, `mode` (`thread` / `message` / `history`), and `limit` (1-200, default 50). Returns `{messages: [{ts, user, text, thread_ts?, files?}], ...}`, oldest first. See **Docs > Stoa API** for the full parameter reference and error codes.
 
 ### Automation Messages in Chat
 
