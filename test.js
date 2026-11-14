@@ -3523,6 +3523,63 @@ async function runAsyncUnitTests() {
     }
   });
 
+  await uta('agent update check — verifies a download before replacing the running file, keeps a .bak, never re-fetches a rejected hash', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');
+    const h = (t) => cryptoM.createHash('sha256').update(Buffer.from(t, 'utf8')).digest('hex').slice(0, 12);
+    let served = {};
+    let promised = null;
+    let fileHits = 0;
+    const srv = require('http').createServer((req, res) => {
+      if (req.url === '/api/client/manifest') return res.end(JSON.stringify({ files: Object.fromEntries(Object.entries(promised || served).map(([n, b]) => [n, h(b)])) }));
+      fileHits++;
+      const name = decodeURIComponent(req.url.replace('/api/client/file/', ''));
+      res.end(served[name]);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const baseUrl = `http://127.0.0.1:${srv.address().port}`;
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-verify-'));
+    const installed = '// installed v1\nmodule.exports = 1;\n';
+    const read = () => fsM.readFileSync(pathM.join(dir, 'stoa.js'), 'utf8');
+    let restarts = 0;
+    stoa.__setDeps({ doRestart: () => { restarts++; } });
+    try {
+      stoa.activeTriggers.clear();
+      fsM.writeFileSync(pathM.join(dir, 'stoa.js'), installed);
+      const manifest = { 'stoa.js': h(installed) };
+      const leftovers = () => fsM.readdirSync(dir).filter(f => f.endsWith('.new.js'));
+
+      served = { 'stoa.js': 'var x = ;\n' };
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(read(), installed, 'syntax error → running file untouched');
+      assert.deepStrictEqual([restarts, leftovers(), manifest['stoa.js']], [0, [], h(installed)], 'no restart, temp file removed, hash not advanced');
+      const hits = fileHits;
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(fileHits, hits, 'same rejected hash is not downloaded again');
+
+      served = { 'stoa.js': 'var a = require("./lib/cf-access");\nvar b = require("./claude-session");\n' };
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(read(), installed, 'raw source needing ./lib → not installed (it parses, but would crash on load)');
+      assert.deepStrictEqual([restarts, leftovers()], [0, []]);
+
+      const fresh = '#!/usr/bin/env node\nvar a = require("./claude-session.js");\nvar CLIENT_VERSION = "9.9.9";\n';
+      served = { 'stoa.js': fresh };
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(read(), fresh, 'valid bundle installed');
+      assert.strictEqual(fsM.readFileSync(pathM.join(dir, 'stoa.js.bak'), 'utf8'), installed, 'previous version kept as .bak');
+      assert.deepStrictEqual([restarts, leftovers(), manifest['stoa.js']], [1, [], h(fresh)]);
+
+      promised = { 'stoa.js': '// what the manifest promised\n' };
+      served = { 'stoa.js': '// something else\n' };
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(read(), fresh, 'hash mismatch → installed file untouched');
+      assert.strictEqual(restarts, 1);
+    } finally {
+      stoa.activeTriggers.clear(); stoa.__resetDeps();
+      srv.close(); fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await uta('agent pre-connect update — restarts before connecting when an update exists, gives up after the cap when the server hangs', async () => {
     const stoa = require('./stoa.js');
     const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');
@@ -10836,6 +10893,99 @@ async function run() {
     // Restore original
     fs.writeFileSync(bundlePath, origContent);
   });
+
+  // Incident 2026-11-13: dist/stoa.js vanished while the server ran and the raw source (which
+  // needs ./lib/*) was served to every agent. Each case breaks the live test bundle in place.
+  {
+    const fsB = require('fs');
+    const bundlePath = path.join(process.env.STOA_AGENT_BUNDLE_DIR, 'stoa.js');
+    const rawSource = fsB.readFileSync(path.join(__dirname, 'stoa.js'));
+    const expectWithheld = async (label) => {
+      const m = await req('GET', '/api/client/manifest');
+      assert.strictEqual(m.status, 200, label);
+      assert.ok(!('stoa.js' in m.body.files), `${label}: manifest must not offer stoa.js`);
+      assert.ok('claude-session.js' in m.body.files, `${label}: other client files still offered`);
+      const f = await req('GET', '/api/client/file/stoa.js');
+      assert.strictEqual(f.status, 503, label);
+      assert.ok(!f.raw.includes('CLIENT_VERSION') && !f.raw.includes('./lib/'), `${label}: no agent code in the 503 body`);
+    };
+    const withBrokenBundle = async (label, breakIt) => {
+      const orig = fsB.readFileSync(bundlePath);
+      const origHash = (await req('GET', '/api/client/manifest')).body.files['stoa.js'];
+      assert.ok(origHash, 'bundle is served before the break');
+      try {
+        breakIt(orig);
+        await expectWithheld(label);
+      } finally {
+        fsB.writeFileSync(bundlePath, orig);
+      }
+      const back = await req('GET', '/api/client/manifest');
+      assert.strictEqual(back.body.files['stoa.js'], origHash, `${label}: served again once the bundle is valid`);
+      assert.strictEqual((await req('GET', '/api/client/file/stoa.js')).status, 200);
+    };
+
+    await test('GET /api/client/* — bundle deleted at runtime → manifest drops stoa.js, file 503, raw source never served', () =>
+      withBrokenBundle('missing', () => fsB.unlinkSync(bundlePath)));
+
+    await test('GET /api/client/* — bundle replaced by the raw stoa.js source → withheld (needs ./lib/*)', () =>
+      withBrokenBundle('raw source', () => fsB.writeFileSync(bundlePath, rawSource)));
+
+    await test('GET /api/client/* — truncated bundle (syntax error) → withheld', () =>
+      withBrokenBundle('truncated', (orig) => fsB.writeFileSync(bundlePath, orig.subarray(0, Math.floor(orig.length / 2)))));
+
+    await test('GET /api/client/* — empty bundle → withheld', () =>
+      withBrokenBundle('empty', () => fsB.writeFileSync(bundlePath, '')));
+
+    await test('GET /api/client/* — bundle without CLIENT_VERSION → withheld', () =>
+      withBrokenBundle('no version', (orig) => fsB.writeFileSync(bundlePath, orig.toString('utf8').replace(/CLIENT_VERSION\s*=\s*"[^"]+"/, 'CLIENT_VERSION_X = "1"'))));
+
+    // A failed build leaves the previous boot's bundle in place: valid JS, wrong version. Booted
+    // on its own (smoke-boot) server whose bundle dir cannot be written, so esbuild fails.
+    await test('server boot — agent bundle build fails → stale bundle on disk is not served', async () => {
+      const osM = require('os');
+      const Database = require('better-sqlite3');
+      const dir = fsB.mkdtempSync(path.join(osM.tmpdir(), 'stoa-bundle-fail-'));
+      const distDir = path.join(dir, 'dist');
+      fsB.mkdirSync(distDir);
+      fsB.writeFileSync(path.join(distDir, 'stoa.js'), '#!/usr/bin/env node\nvar CLIENT_VERSION = "0.0.1";\nmodule.exports = {};\n');
+      fsB.chmodSync(path.join(distDir, 'stoa.js'), 0o444);
+      fsB.chmodSync(distDir, 0o555);
+      const src = new Database(process.env.DB_PATH, { readonly: true });
+      try { await src.backup(path.join(dir, 'stoa.db'), { progress: () => 1e9 }); } finally { src.close(); }
+      fsB.copyFileSync(process.env.STOA_ENV_FILE, path.join(dir, '.env'));
+      const port = await new Promise(r => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+      const env = { ...process.env, PORT: String(port), DB_PATH: path.join(dir, 'stoa.db'), STOA_ENV_FILE: path.join(dir, '.env'),
+        STOA_AGENT_BUNDLE_DIR: distDir, STOA_MCP_WORK_DIR: path.join(dir, 'mcp'),
+        STOA_UPDATE_STATE_FILE: path.join(dir, 'update-state.json'), STOA_UPDATE_REPO_DIR: path.join(dir, 'no-repo'),
+        STOA_SMOKE_BOOT: '1', STOA_SEMANTIC_SEARCH: 'off', STOA_ORPHAN_WAKE: 'off' };
+      const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let log = '';
+      child.stdout.on('data', d => { log += d; });
+      child.stderr.on('data', d => { log += d; });
+      const exited = new Promise(r => child.once('exit', r));
+      const get = (p) => new Promise((resolve, reject) => {
+        http.get({ hostname: '127.0.0.1', port, path: p }, res => {
+          let out = ''; res.on('data', c => { out += c; });
+          res.on('end', () => resolve({ status: res.statusCode, raw: out }));
+        }).on('error', reject);
+      });
+      try {
+        await waitUntil(() => get('/api/client/manifest').then(() => true, () => false), 30000, 200);
+        assert.match(log, /Agent bundle FAILED/, 'the build really failed');
+        const m = await get('/api/client/manifest');
+        assert.strictEqual(m.status, 200);
+        assert.ok(!('stoa.js' in JSON.parse(m.raw).files), log.slice(-500));
+        const f = await get('/api/client/file/stoa.js');
+        assert.strictEqual(f.status, 503);
+        assert.ok(!f.raw.includes('CLIENT_VERSION'));
+        assert.match(log, /agent bundle .* rejected \(build failed at startup/);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+        fsB.chmodSync(distDir, 0o755);
+        fsB.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   // Install scripts
   console.log('\n[Install Scripts]');

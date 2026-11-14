@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.496";
+var CLIENT_VERSION = "0.4.497";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -248,6 +248,7 @@ var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require
 var { detectSupervisor } = require("./lib/supervisor");
 var { readAvatarFile } = require("./lib/avatar-image");
 var { extractSendMarkers, failureNotes } = require("./lib/send-markers");
+var { unshippedAgentRequires } = require("./lib/agent-bundle-check");
 var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
@@ -346,15 +347,71 @@ function buildLocalManifest() {
 }
 var localManifest = buildLocalManifest();
 var updateChecker = null;
+var UPDATE_VERIFY_TIMEOUT_MS = 30e3;
+// name -> manifest hash whose content failed verification. Content is fixed by its hash, so it is
+// not downloaded again until the server publishes a different hash.
+var rejectedUpdates = /* @__PURE__ */ new Map();
+var updateInFlight = null;
+// A downloaded file must prove it can load BEFORE it replaces the running one: a file that fails
+// here would crash every restart (incident 2026-11-13: raw stoa.js source, MODULE_NOT_FOUND loop).
+function verifyUpdateFile(name, file, content) {
+  if (name === "stoa.js") {
+    const unshipped = unshippedAgentRequires(content);
+    if (unshipped.length) return Promise.reject(new Error(`needs modules not shipped with the agent: ${unshipped.slice(0, 3).join(", ")}`));
+  }
+  const { execFile } = require("child_process");
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, ["--check", file], { encoding: "utf8", timeout: UPDATE_VERIFY_TIMEOUT_MS, windowsHide: true }, (err, _stdout, stderr) => {
+      if (!err) return resolve();
+      const detail = (stderr || err.message).trim().split("\n").slice(0, 4).join(" | ");
+      reject(new Error(`node --check failed: ${detail}`));
+    });
+  });
+}
+// Writes <base>.new.js (node --check needs a .js extension), verifies it, keeps the old file as
+// <name>.bak (manual rollback), then renames over the original — intact until that atomic rename.
+async function installUpdateFile(dir, name, content, hash) {
+  const target = path.join(dir, name);
+  const tmp = path.join(dir, name.replace(/\.js$/, "") + ".new.js");
+  try {
+    fs.writeFileSync(tmp, content, "utf8");
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    console.error(`[stoa:update] ${name} not written \u2014 ${err.message}`);
+    return false;
+  }
+  try {
+    await verifyUpdateFile(name, tmp, content);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    rejectedUpdates.set(name, hash);
+    console.error(`[stoa:update] ${name} rejected (${hash}) \u2014 ${err.message}; keeping the installed version`);
+    return false;
+  }
+  try {
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.bak`);
+    fs.renameSync(tmp, target);
+    return true;
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    console.error(`[stoa:update] ${name} not installed \u2014 ${err.message}`);
+    return false;
+  }
+}
 // opts exist for tests only; production always updates the agent's own directory.
-async function checkForUpdates(opts = {}) {
+function checkForUpdates(opts = {}) {
+  // The 2-minute poll and a server force_update can overlap; both would write <base>.new.js.
+  if (!updateInFlight) updateInFlight = runUpdateCheck(opts).finally(() => { updateInFlight = null; });
+  return updateInFlight;
+}
+async function runUpdateCheck(opts) {
   const baseUrl = opts.baseUrl || STOA_URL.replace(/^ws/, "http");
   const dir = opts.dir || __dirname;
   const manifest = opts.manifest || localManifest;
   try {
     const body = await fetchText(`${baseUrl}/api/client/manifest`);
     const remote = JSON.parse(body).files || {};
-    const changed = filesToUpdate(remote, manifest, UPDATE_FILES);
+    const changed = filesToUpdate(remote, manifest, UPDATE_FILES).filter((name) => rejectedUpdates.get(name) !== remote[name]);
     if (!changed.length) return;
     console.log(`[stoa:update] update detected: ${changed.join(", ")}`);
     const updated = [];
@@ -367,7 +424,7 @@ async function checkForUpdates(opts = {}) {
         console.warn(`[stoa:update] ${name} skipped \u2014 hash ${got} != manifest ${remote[name]}`);
         continue;
       }
-      fs.writeFileSync(path.join(dir, name), content, "utf8");
+      if (!await installUpdateFile(dir, name, content, remote[name])) continue;
       manifest[name] = remote[name];
       updated.push(name);
       console.log(`[stoa:update] ${name} updated`);
@@ -2942,6 +2999,7 @@ function __resetDeps() {
   FETCH_TIMEOUT_MS = 60000;
   consecutiveTriggerErrors = 0;
   _restartOverride = null;
+  rejectedUpdates.clear();
   restartAfterUpdate = false;
   pendingRestart = false;
   pendingRestartSince = 0;

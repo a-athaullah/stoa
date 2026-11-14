@@ -7,6 +7,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const vm = require('vm');
+const Module = require('module');
 const { pipeline } = require('stream');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
@@ -35,6 +37,7 @@ const { createStaticFiles } = require('./lib/static-files');
 const { createFileListService, parseMaxDepth, gitDiff } = require('./lib/workspace-tree');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
+const { unshippedAgentRequires } = require('./lib/agent-bundle-check');
 const { recordToolStep } = require('./lib/tool-steps');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations, pendingMigrations } = require('./lib/migrations');
@@ -65,7 +68,9 @@ const EXPECTED_CLIENT_VERSION = (() => {
 // unmerged branch code to every live agent via auto-update.
 const AGENT_BUNDLE_DIR = process.env.STOA_AGENT_BUNDLE_DIR || path.join(__dirname, 'dist');
 const AGENT_BUNDLE_PATH = path.join(AGENT_BUNDLE_DIR, 'stoa.js');
-let agentBundleReady = false;
+// A failed build leaves the previous boot's bundle on disk: valid JS, but not this checkout's
+// agent, so a failed build withholds stoa.js for the whole boot (agentBundleStatus).
+let agentBundleBuildError = null;
 (() => {
   try {
     const distDir = AGENT_BUNDLE_DIR;
@@ -78,26 +83,59 @@ let agentBundleReady = false;
       external: ['ws', './claude-session', './codex-session'],
       outfile: AGENT_BUNDLE_PATH,
     });
-    agentBundleReady = true;
     console.log('[build] Agent bundle ready');
   } catch (e) {
+    agentBundleBuildError = String(e.message).replace(/\s+/g, ' ').slice(0, 300);
     console.error('[build] Agent bundle FAILED — agent updates will be blocked until resolved:', e.message);
   }
 })();
 
-// Hash of the agent bundle (or source stoa.js fallback) at startup — used as the "safe"
-// baseline for the monotonic downgrade guard in the manifest endpoint.
-function clientFilePath(name) {
-  if (name === 'stoa.js' && fs.existsSync(AGENT_BUNDLE_PATH)) return AGENT_BUNDLE_PATH;
-  return path.join(__dirname, name);
+function inspectAgentBundle(buf) {
+  if (!buf.length) return { ok: false, reason: 'empty file' };
+  const src = buf.toString('utf8');
+  const unshipped = unshippedAgentRequires(src);
+  if (unshipped.length) return { ok: false, reason: `not a bundle — requires ${unshipped.slice(0, 3).join(', ')}` };
+  if (!parseClientVersion(src)) return { ok: false, reason: 'no CLIENT_VERSION' };
+  try {
+    // Compile only (never run): same wrapper and hashbang handling as node --check.
+    new vm.Script(Module.wrap(src.replace(/^#!.*/, '')), { filename: AGENT_BUNDLE_PATH });
+  } catch (e) {
+    return { ok: false, reason: `syntax error: ${e.message}` };
+  }
+  return { ok: true, reason: null };
 }
 
-const SAFE_CLIENT_BUNDLE = (() => {
-  try { return fs.readFileSync(clientFilePath('stoa.js')); } catch { return null; }
+// Re-checked on every manifest/file request: the bundle can vanish or be rewritten while the
+// server runs. The file is re-read each time (bounded, ~170KB) so what is served is exactly
+// what was checked; the compile check is cached by content hash.
+let agentBundleVerdict = { hash: null, ok: false, reason: null };
+let agentBundleLoggedReason = null;
+function agentBundleStatus() {
+  let buf, verdict;
+  if (agentBundleBuildError) verdict = { ok: false, reason: `build failed at startup: ${agentBundleBuildError}` };
+  else try { buf = fs.readFileSync(AGENT_BUNDLE_PATH); } catch (e) { verdict = { ok: false, reason: e.code === 'ENOENT' ? 'missing' : e.message }; }
+  if (buf) {
+    const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 12);
+    if (agentBundleVerdict.hash !== hash) agentBundleVerdict = { hash, ...inspectAgentBundle(buf) };
+    verdict = agentBundleVerdict;
+  }
+  // Log each distinct failure once (agents poll every 2 min), and once more on recovery.
+  if (!verdict.ok && verdict.reason !== agentBundleLoggedReason) {
+    console.error(`[update-guard] agent bundle ${AGENT_BUNDLE_PATH} rejected (${verdict.reason}) — stoa.js withheld from agents until the bundle is rebuilt (restart the server)`);
+    agentBundleLoggedReason = verdict.reason;
+  } else if (verdict.ok && agentBundleLoggedReason !== null) {
+    console.log('[update-guard] agent bundle valid again — serving stoa.js');
+    agentBundleLoggedReason = null;
+  }
+  return verdict.ok ? { ok: true, buf, hash: verdict.hash } : { ok: false, reason: verdict.reason };
+}
+
+// The startup bundle is the "safe" baseline for the monotonic downgrade guard — taken only from
+// a bundle that passed the check, so the fallback can never be the raw source.
+const { SAFE_CLIENT_BUNDLE, SAFE_CLIENT_HASH } = (() => {
+  const st = agentBundleStatus();
+  return st.ok ? { SAFE_CLIENT_BUNDLE: st.buf, SAFE_CLIENT_HASH: st.hash } : { SAFE_CLIENT_BUNDLE: null, SAFE_CLIENT_HASH: null };
 })();
-const SAFE_CLIENT_HASH = SAFE_CLIENT_BUNDLE
-  ? crypto.createHash('sha256').update(SAFE_CLIENT_BUNDLE).digest('hex').slice(0, 12)
-  : null;
 
 // Resolve a participant's workspace directory: their own workdir_id, else the room workdir
 // (only if it belongs to this agent), else the agent's default workdir, else null (the agent
@@ -1251,8 +1289,10 @@ setInterval(() => {
   for (const [t, v] of installTokens) if (v.expires < now) installTokens.delete(t);
 }, 60_000);
 
+// Session files ship as-is from the repo. stoa.js never goes through here: it is served only from
+// the checked bundle (agentBundleStatus), never the raw source that needs ./lib/* (incident 2026-11-13).
 function clientFileHash(name) {
-  const fp = clientFilePath(name);
+  const fp = path.join(__dirname, name);
   if (!fs.existsSync(fp)) return null;
   return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
 }
@@ -4337,25 +4377,26 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/client/manifest') {
     const files = {};
     for (const name of CLIENT_FILES) {
-      if (name === 'stoa.js' && !agentBundleReady) continue;
-      let hash = clientFileHash(name);
-      if (!hash) continue;
-      // Monotonic downgrade guard: if stoa.js on disk has changed from startup and is now
-      // a lower version than EXPECTED_CLIENT_VERSION, report the startup hash instead.
-      // This prevents clients from auto-downloading a downgrade that would send them into a
-      // force_update loop (EXPECTED is cached at startup; serving a lower version causes
-      // client to restart with client_version < expected indefinitely).
-      if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
-        try {
-          const diskSrc = fs.readFileSync(clientFilePath(name), 'utf8');
-          const diskVer = parseClientVersion(diskSrc);
+      if (name === 'stoa.js') {
+        // Rejected bundle → no stoa.js entry, so agents stay on the version they run.
+        const bundle = agentBundleStatus();
+        if (!bundle.ok) continue;
+        let hash = bundle.hash;
+        // Monotonic downgrade guard: if the bundle has changed from startup and is now a lower
+        // version than EXPECTED_CLIENT_VERSION, report the startup hash instead. EXPECTED is
+        // cached at startup, so serving a lower version would put agents in a force_update loop.
+        if (SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
+          const diskVer = parseClientVersion(bundle.buf.toString('utf8'));
           if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
             console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
             hash = SAFE_CLIENT_HASH;
           }
-        } catch {}
+        }
+        files[name] = hash;
+        continue;
       }
-      files[name] = hash;
+      const hash = clientFileHash(name);
+      if (hash) files[name] = hash;
     }
     return json(res, { files });
   }
@@ -4363,19 +4404,22 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname.startsWith('/api/client/file/')) {
     const name = path.basename(url.pathname.slice('/api/client/file/'.length));
     if (!CLIENT_FILES.has(name)) { res.writeHead(404); return res.end('Not found'); }
-    if (name === 'stoa.js' && !agentBundleReady) {
-      console.error('[update] Blocked serving unbundled stoa.js — esbuild build failed at startup');
-      res.writeHead(503); return res.end('Agent bundle not available');
-    }
-    const fp = clientFilePath(name);
-    if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
-    let content = fs.readFileSync(fp);
-    if (name === 'stoa.js' && SAFE_CLIENT_BUNDLE && EXPECTED_CLIENT_VERSION) {
-      const diskVer = parseClientVersion(content.toString('utf8'));
-      if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
-        console.warn(`[update-guard] file endpoint: stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — serving startup bundle`);
-        content = SAFE_CLIENT_BUNDLE;
+    let content;
+    if (name === 'stoa.js') {
+      const bundle = agentBundleStatus();
+      if (!bundle.ok) { res.writeHead(503); return res.end('Agent bundle not available'); }
+      content = bundle.buf;
+      if (SAFE_CLIENT_BUNDLE && EXPECTED_CLIENT_VERSION) {
+        const diskVer = parseClientVersion(content.toString('utf8'));
+        if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
+          console.warn(`[update-guard] file endpoint: stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — serving startup bundle`);
+          content = SAFE_CLIENT_BUNDLE;
+        }
       }
+    } else {
+      const fp = path.join(__dirname, name);
+      if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
+      content = fs.readFileSync(fp);
     }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(content);
