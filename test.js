@@ -5499,11 +5499,16 @@ async function runAsyncUnitTests() {
         INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (10,7);`);
       const sent = [];
       const push = (roomId, d) => sent.push({ roomId, ...d });
-      const msgs = createRoomMessagesT({ db, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
-      // Threads with an agent turn running (what server.js reads from activeSequences).
+      const msgs = createRoomMessagesT({ db, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions: async () => {}, uploadsDir: '/tmp',
+        onAgentPost: (...a) => threadDefer.agentPosted(...a) });
+      // Threads where the agent has a run in flight (what server.js reads from pendingActorMeta) and
+      // threads with an agent sequence running (activeSequences).
       const turns = new Set();
+      const seqs = new Set();
       const threadDefer = createThreadCompleteDeferT({
-        turnActive: (roomId, rootId) => turns.has(rootId),
+        seqActive: (roomId, rootId) => seqs.has(rootId),
+        agentRunning: (roomId, rootId) => turns.has(rootId),
+        settleMs: 86_400_000, // the fallback timer has its own tests; here it never fires
         complete: (roomId, rootId) => {
           const r = msgs.setThreadCompleted(roomId, rootId, true);
           if (r.status === 200) push(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
@@ -5536,7 +5541,14 @@ async function runAsyncUnitTests() {
       const threadDone = (taskId) => db.prepare('SELECT m.thread_completed_at FROM messages m JOIN room_tasks t ON t.thread_id=m.id WHERE t.id=?').get(taskId).thread_completed_at;
       const through = (taskId) => db.prepare('SELECT m.thread_completed_through AS t FROM messages m JOIN room_tasks t ON t.thread_id=m.id WHERE t.id=?').get(taskId).t;
       const lastReply = (taskId) => db.prepare('SELECT MAX(id) AS id FROM messages WHERE thread_id=(SELECT thread_id FROM room_tasks WHERE id=?)').get(taskId).id;
-      return { db, tasks, runner, deps, sent, reply, threadDone, through, lastReply, turns, threadDefer, close: () => db.close() };
+      // The closing reply of a turn the CLI ran on its own (stoa.js posts it with unsolicited: true).
+      const unsolicited = (taskId, actorId, content, backgroundRunning = false) => {
+        const t = db.prepare('SELECT room_id, thread_id FROM room_tasks WHERE id=?').get(taskId);
+        const r = msgs.send(t.room_id, actorId, { content, thread_id: t.thread_id, unsolicited: true, background_running: backgroundRunning });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        return r.body.message_id;
+      };
+      return { db, msgs, tasks, runner, deps, sent, reply, unsolicited, threadDone, through, lastReply, turns, seqs, threadDefer, close: () => db.close() };
     };
     const H = { actorId: null };
     const AG = { actorId: 2, subAgentId: null };
@@ -6104,7 +6116,7 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks completion_mode agent — task_complete: Finished with the agent summary, thread marked complete (event), next card runs; quiet mode marks it too', async () => {
+    await uta('Tasks completion_mode agent — task_complete: Finished with the agent summary, thread marked complete through the closing reply (event), next card runs; quiet mode marks it too', async () => {
       const w = world();
       try {
         agentMode(w);
@@ -6114,9 +6126,13 @@ async function runAsyncUnitTests() {
         assert.deepStrictEqual(w.deps.dispatched.map(d => d.automation.task_id), [a.id], 'concurrency 1');
         w.reply(a.id, 2, 'interim');
         w.runner.checkRuns(); w.runner.checkRuns();
+        // No run in flight: the agent woke up after a background task (the thread #18 case).
         const done = w.tasks.complete(10, AG, a.id, { summary: 'deployed v2, all checks green' });
         assert.deepStrictEqual([done.status, done.body.col, done.body.status, done.body.result_summary], [200, 'finished', 'done', 'deployed v2, all checks green']);
+        assert.strictEqual(w.threadDone(a.id), null, 'not marked before the closing reply');
+        const closing = w.unsolicited(a.id, 2, 'merged PR, v2 shipped');
         assert.ok(w.threadDone(a.id), 'thread_completed_at set');
+        assert.strictEqual(w.through(a.id), closing, 'through = the closing reply, so it does not reopen the thread');
         const ev = w.sent.find(e => e.type === 'thread_status');
         assert.deepStrictEqual([ev.thread_id, ev.completed], [done.body.thread_id, true], 'thread_status broadcast');
         await tick();
@@ -6126,6 +6142,8 @@ async function runAsyncUnitTests() {
         w.tasks.updateSettings(10, H, { completion_mode: 'quiet' });
         w.reply(b.id, 2, 'ok');
         assert.strictEqual(w.tasks.complete(10, AG, b.id, { summary: 's' }).status, 200);
+        assert.strictEqual(w.threadDone(b.id), null);
+        w.unsolicited(b.id, 2, 'done');
         assert.ok(w.threadDone(b.id), 'quiet mode: thread_completed_at set');
         assert.strictEqual(w.through(b.id), w.lastReply(b.id));
       } finally { w.close(); }
@@ -6232,12 +6250,107 @@ async function runAsyncUnitTests() {
         w.turns.delete(rb); w.threadDefer.turnEnded(10, rb);
         assert.ok(w.threadDone(b.id), 'marked even though the turn failed');
         assert.strictEqual(w.through(b.id), w.lastReply(b.id));
-        // no turn running: immediate, as before.
+        // no run in flight (a turn the CLI ran on its own): waits for that turn's closing reply.
         const c = mk(w, 'C');
         w.runner.checkRuns(); await tick();
         w.reply(c.id, 2, 'z');
         assert.strictEqual(w.tasks.complete(10, AG, c.id, {}).status, 200);
-        assert.ok(w.threadDone(c.id), 'no turn → immediate');
+        assert.strictEqual(w.threadDone(c.id), null, 'no run → waits for the closing reply');
+        w.unsolicited(c.id, 2, 'closing');
+        assert.ok(w.threadDone(c.id));
+      } finally { w.close(); }
+    });
+
+    await uta('Thread complete defer — waits for the requesting agent turn (run end / unsolicited closing reply / sequence end), fallback timer re-armed by its posts, human request at once, cancel drops it', async () => {
+      // Fake timers: each arm() replaces the previous one, so `timers` holds at most one live callback per thread.
+      const timers = new Map(); let nextT = 0;
+      const marks = [];
+      const runs = new Set(), seqs = new Set();
+      const errors = [];
+      let failNext = false;
+      const d = createThreadCompleteDeferT({
+        seqActive: (r, t) => seqs.has(t),
+        agentRunning: (r, t, a, s) => runs.has(`${t}:${a}:${s}`),
+        complete: (r, t) => { if (failNext) { failNext = false; throw new Error('db locked'); } marks.push(`${r}:${t}`); },
+        settleMs: 1000, log: { error: (...a) => errors.push(a.join(' ')) },
+        setTimer: (fn, ms) => { const id = ++nextT; timers.set(id, { fn, ms }); return id; },
+        clearTimer: (id) => timers.delete(id),
+      });
+      const fire = () => { const all = [...timers.entries()]; timers.clear(); for (const [, t] of all) t.fn(); };
+      // 1. A Stoa-started run (in flight): its own posts and an unsolicited reply do not settle; the run end does.
+      runs.add('100:2:null');
+      assert.strictEqual(d.request(10, 100, { fromTurn: true, actorId: 2 }), 'deferred');
+      d.agentPosted(10, 100, 2, null, { final: true });
+      d.turnEnded(10, 100);
+      assert.deepStrictEqual(marks, [], 'run still in flight');
+      runs.delete('100:2:null'); d.turnEnded(10, 100);
+      assert.deepStrictEqual(marks, ['10:100'], 'run ended → marked');
+      assert.strictEqual(d.pendingCount(), 0);
+      // 2. No run (a turn the CLI ran on its own): progress, other agents, other sub-agents do not settle.
+      assert.strictEqual(d.request(10, 200, { fromTurn: true, actorId: 2, subAgentId: 7 }), 'deferred');
+      d.turnEnded(10, 200);
+      d.agentPosted(10, 200, 2, 7, { final: false });
+      d.agentPosted(10, 200, 3, null, { final: true });
+      d.agentPosted(10, 200, 2, null, { final: true });
+      d.agentPosted(10, 200, 2, 8, { final: true });
+      assert.ok(d.isPending(10, 200) && !marks.includes('10:200'), 'only the requesting sub-agent closing reply settles');
+      // ... and an agent sequence running in the thread holds it until the sequence ends.
+      seqs.add(200);
+      d.agentPosted(10, 200, 2, 7, { final: true });
+      assert.ok(d.isPending(10, 200), 'sequence running');
+      seqs.delete(200); d.turnEnded(10, 200);
+      assert.deepStrictEqual(marks.filter(m => m === '10:200'), ['10:200'], 'marked once at the sequence end');
+      // 3. Fallback timer: no closing reply ever comes. A busy thread re-arms; a quiet one marks.
+      d.request(10, 300, { fromTurn: true, actorId: 2 });
+      assert.deepStrictEqual([...timers.values()].map(t => t.ms), [1000]);
+      d.agentPosted(10, 300, 2, null, { final: false });
+      assert.strictEqual(timers.size, 1, 'a post re-arms (replaces) the timer');
+      seqs.add(300); fire();
+      assert.ok(d.isPending(10, 300) && timers.size === 1, 'busy at expiry → re-armed');
+      seqs.delete(300); fire();
+      assert.ok(marks.includes('10:300') && !d.isPending(10, 300), 'quiet at expiry → marked');
+      // 4. cancel (human mark / reopen / message) drops it; a stale timer then does nothing.
+      d.request(10, 400, { fromTurn: true, actorId: 2 });
+      d.cancel(10, 400);
+      d.agentPosted(10, 400, 2, null, { final: true }); fire();
+      assert.ok(!marks.includes('10:400'), 'cancelled request never marks');
+      // 5. A human request marks at once (even with a run in flight) and replaces a waiting one.
+      d.request(10, 500, { fromTurn: true, actorId: 2 });
+      runs.add('500:2:null');
+      assert.strictEqual(d.request(10, 500), 'done');
+      assert.ok(marks.includes('10:500') && !d.isPending(10, 500) && timers.size === 0);
+      runs.delete('500:2:null');
+      // 6. A failing write is logged, never thrown, and leaves nothing pending.
+      d.request(10, 600, { fromTurn: true, actorId: 2 });
+      failNext = true;
+      assert.doesNotThrow(() => d.agentPosted(10, 600, 2, null, { final: true }));
+      assert.deepStrictEqual([d.pendingCount(), errors.length, /db locked/.test(errors[0])], [0, 1, true]);
+    });
+
+    await uta('Tasks — a human message in the thread cancels a pending agent mark; owner reopen too; task_complete on a done card is refused, the thread still settles through the closing reply', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
+        const root = w.tasks.get(10, a.id).body.thread_id;
+        w.reply(a.id, 2, 'working');
+        assert.strictEqual(w.tasks.complete(10, AG, a.id, { summary: 'ok' }).status, 200);
+        assert.ok(w.threadDefer.isPending(10, root));
+        // A second task_complete (card done) is refused; the pending mark is untouched.
+        const again = w.tasks.complete(10, AG, a.id, {});
+        assert.strictEqual(again.status, 409, JSON.stringify(again.body));
+        assert.ok(w.threadDefer.isPending(10, root), 'refused call leaves the pending mark');
+        w.threadDefer.cancel(10, root); // what server.js does on a human message / owner mark in the thread
+        w.unsolicited(a.id, 2, 'closing');
+        assert.strictEqual(w.threadDone(a.id), null, 'cancelled: the closing reply marks nothing');
+        // The agent asks again (stoa__thread_complete on the done card's thread): waits for its closing reply.
+        assert.strictEqual(w.threadDefer.request(10, root, { fromTurn: true, actorId: 2 }), 'deferred');
+        w.unsolicited(a.id, 2, 'still running the suite', true);
+        assert.strictEqual(w.threadDone(a.id), null, 'background task left: progress, not the closing reply');
+        const closing = w.unsolicited(a.id, 2, 'suite green');
+        assert.strictEqual(w.through(a.id), closing);
       } finally { w.close(); }
     });
 
@@ -10127,12 +10240,19 @@ async function run() {
         await completeRun(agA.ws, roomId, m);
         await new Promise(r => setTimeout(r, 1200)); // > TASK_SETTLE_MS + polls
         assert.deepStrictEqual([card(t.id).col, card(t.id).status], ['ongoing', 'running'], 'quiet thread ends nothing');
+        // The turn is over, so this call comes from a turn the CLI ran on its own after the suite: the mark
+        // waits for that turn's closing reply (posted by stoa.js with unsolicited: true).
         const done = await asAgent(agA, 'POST', `${base()}/${t.id}/complete`, { summary: 'deployed, suite green' });
         assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'deployed, suite green']);
+        const thread = () => req('GET', `/api/rooms/${roomId}/threads/${running.thread_id}`);
+        assert.strictEqual((await thread()).body.root.completed, false, 'not marked before the closing reply');
+        const closing = await asAgent(agA, 'POST', `/api/rooms/${roomId}/message`, { content: 'suite green, merged', thread_id: running.thread_id, unsolicited: true, background_running: false });
+        assert.strictEqual(closing.status, 200, closing.raw);
         const ts = await waitFor(() => frames.find(f => f.type === 'thread_status' && f.thread_id === running.thread_id));
         assert.ok(ts && ts.completed === true, 'thread_status broadcast');
-        const th = await req('GET', `/api/rooms/${roomId}/threads/${running.thread_id}`);
-        assert.deepStrictEqual([th.status, th.body.root.completed], [200, true]);
+        const th = await thread();
+        assert.deepStrictEqual([th.status, th.body.root.completed], [200, true], 'the closing reply did not reopen it');
+        assert.strictEqual(tDb.prepare('SELECT thread_completed_through AS t FROM messages WHERE id=?').get(running.thread_id).t, closing.body.message_id);
         await req('DELETE', `${base()}/${t.id}`);
       } finally {
         await req('POST', `${base()}/runner/stop`);
@@ -23426,11 +23546,11 @@ async function run() {
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update',
-      'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
+      'thread_complete', 'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
       'self_avatar_set', 'self_get', 'self_update',
-      'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
+      'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_complete', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
     const SUB_BUILTINS = [...BUILTINS, 'stoa__self_avatar_set', 'stoa__self_get', 'stoa__self_update']
       .filter(n => n.startsWith('stoa__schedule_') || n.startsWith('stoa__task_') || SUB_SESSION_TOOLS.includes(n.slice(6))).sort();
@@ -24896,6 +25016,106 @@ async function run() {
       try {
         assert.deepStrictEqual([(await put(root, { completed: true })).status, marker().thread_completed_at], [400, null], 'archived room: refused');
       } finally { await req('PATCH', `/api/rooms/${roomA}`, { archived: false }); }
+    });
+
+    await test('stoa__thread_complete — marks the session thread after the agent turn: unsolicited closing reply (background wake-up), Stoa run end, fallback timer; human message / owner reopen cancel; guards 400/404', async () => {
+      const marker = (root = threadA) => mDb.prepare('SELECT thread_completed_at AS at, thread_completed_through AS through FROM messages WHERE id=?').get(root);
+      const completed = async (root = threadA) => (await req('GET', `/api/rooms/${roomA}/threads/${root}`)).body.root.completed;
+      const lastId = (root = threadA) => mDb.prepare('SELECT MAX(id) AS id FROM messages WHERE thread_id=?').get(root).id;
+      const agentPost = async (body, roomId = roomA, ag = agA) => {
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomId}/message`, body, subHeaders(ag.secret, ag.actorId)));
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        return r.body.message_id;
+      };
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) return false; await new Promise(r => setTimeout(r, 50)); } return true; };
+      const reopen = (root = threadA) => req('PUT', `/api/rooms/${roomA}/threads/${root}/complete`, { completed: false });
+      const humanSend = async (content) => {
+        const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomA && m.thread_id === threadA && !m.sub_agent, 5000);
+        const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          hws.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          await waitForWsMessage(hws, m => m.type === 'history');
+          hws.send(JSON.stringify({ type: 'send_message', room_id: roomA, content, thread_id: threadA }));
+          return await trig;
+        } finally { hws.close(); }
+      };
+      assert.strictEqual((await reopen()).status, 200);
+
+      // 1. A turn the CLI ran on its own (background task done, no run in flight; the thread #18 case).
+      assert.deepStrictEqual(await stoaOk(tokA, 'thread_complete'), { thread_id: threadA, status: 'pending', note: 'The thread is marked complete once your turn is over.' });
+      assert.strictEqual(await completed(), false, 'pending, not marked yet');
+      await agentPost({ content: 'suite still running', thread_id: threadA, unsolicited: true, background_running: true });
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(await completed(), false, 'a background task is left: progress, not the closing reply');
+      const closing = await agentPost({ content: 'suite green, merged', thread_id: threadA, unsolicited: true, background_running: false });
+      assert.strictEqual(await until(completed, 1000), true, 'marked by the closing reply');
+      assert.strictEqual(marker().through, closing, 'through = the closing reply: it does not reopen the thread');
+
+      // 2. A run Stoa started: a proactive note mid-turn does not settle it; the run end does, well before the fallback timer.
+      const m = await humanSend('one more check please');
+      assert.strictEqual(m.mcp_token, tokA, 'same session');
+      assert.strictEqual((await stoaOk(tokA, 'thread_complete', { thread_id: threadA })).status, 'pending');
+      const note = await agentPost({ content: 'checking', thread_id: threadA });
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(await completed(), false, 'run in flight');
+      await completeRun(agA.ws, roomA, m);
+      assert.strictEqual(await until(completed, 800), true, 'marked at the run end (THREAD_COMPLETE_SETTLE_MS is 2000 here)');
+      assert.strictEqual(marker().through, lastId());
+      assert.ok(note < marker().through || note === marker().through);
+
+      // 3. A human message in the thread cancels a pending mark.
+      await stoaOk(tokA, 'thread_complete');
+      const m2 = await humanSend('wait, also bump the version');
+      await completeRun(agA.ws, roomA, m2);
+      await agentPost({ content: 'bumped', thread_id: threadA, unsolicited: true, background_running: false });
+      await new Promise(r => setTimeout(r, 2600)); // past the fallback timer too
+      assert.strictEqual(await completed(), false, 'human message cancelled it');
+
+      // 4. The owner reopening cancels a pending mark.
+      await stoaOk(tokA, 'thread_complete');
+      assert.strictEqual((await reopen()).status, 200);
+      await agentPost({ content: 'closing again', thread_id: threadA, unsolicited: true, background_running: false });
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(await completed(), false, 'owner reopen cancelled it');
+
+      // 5. No closing reply ever comes (a turn with no output): the fallback timer marks it.
+      await stoaOk(tokA, 'thread_complete');
+      await new Promise(r => setTimeout(r, 1000));
+      assert.strictEqual(await completed(), false, 'before the timer');
+      assert.strictEqual(await until(completed, 3000), true, 'fallback timer marked it');
+      assert.strictEqual(marker().through, lastId());
+      assert.strictEqual((await reopen()).status, 200);
+
+      // 6. Guards.
+      const reply = lastId();
+      assert.match(await stoaErr(tokA, 'thread_complete', { thread_id: reply }), /must be a thread root/, 'a reply');
+      const bare = await agentPost({ content: 'root without replies' });
+      assert.strictEqual(await stoaErr(tokA, 'thread_complete', { thread_id: bare }), 'thread not found', 'a root without replies');
+      const rootB = await agentPost({ content: 'room B root' }, roomB, agB);
+      await agentPost({ content: 'room B reply', thread_id: rootB }, roomB, agB);
+      assert.strictEqual(await stoaErr(tokA, 'thread_complete', { thread_id: rootB }), 'thread not found', 'a thread of another room');
+      assert.strictEqual(await stoaErr(tokB, 'thread_complete', { thread_id: threadA }), 'thread not found', 'another agent session (room B) cannot reach room A');
+      assert.strictEqual(await stoaErr(tokA, 'thread_complete', { thread_id: 99999999 }), 'thread not found');
+      assert.strictEqual((await callText(tokA, 'stoa__thread_complete', { thread_id: 'x' })).isError, true, 'not an integer');
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomA}`, { archived: true })).status, 200);
+      try {
+        assert.strictEqual(await stoaErr(tokA, 'thread_complete'), 'room is archived');
+      } finally { await req('PATCH', `/api/rooms/${roomA}`, { archived: false }); }
+      await new Promise(r => setTimeout(r, 2600));
+      assert.strictEqual(await completed(), false, 'refused calls left nothing pending');
+      assert.strictEqual(await completed(rootB), false);
+
+      // 7. A sub-agent session marks its own thread (its closing reply carries sub_agent_id).
+      const subThread = (await stoaOk(tokSub, 'thread_read', {})).thread_id;
+      assert.strictEqual((await reopen(subThread)).status, 200);
+      assert.deepStrictEqual([(await stoaOk(tokSub, 'thread_complete')).thread_id], [subThread]);
+      await agentPost({ content: 'parent note', thread_id: subThread, unsolicited: true, background_running: false });
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(await completed(subThread), false, 'the parent closing reply is not the sub-agent one');
+      // No background_running (an older client): still its closing reply here, and it wakes no parent run.
+      const subClosing = await agentPost({ content: 'sub-agent done', thread_id: subThread, sub_agent_id: sub.id, unsolicited: true });
+      assert.strictEqual(await until(() => completed(subThread), 1000), true);
+      assert.strictEqual(marker(subThread).through, subClosing);
     });
 
     await test('MCP stoa tools — sub-agent session posts as itself; config tools refused even when called by name', async () => {

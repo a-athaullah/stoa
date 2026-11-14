@@ -182,6 +182,8 @@ function waitUp(port, tries = 50) {
     // Task board runner poll + quiet window (2 s / 3 s in prod) fast enough for the end-to-end runner tests.
     TASK_POLL_MS: '200',
     TASK_SETTLE_MS: '300',
+    // Fallback for a pending agent thread complete (10 min in prod) short enough for its timer test.
+    THREAD_COMPLETE_SETTLE_MS: '2000',
     // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
     MCP_APPROVAL_TIMEOUT_MS: '3000',
     // stoa__skill_use wait for the agent's skill_sync answer (60 s in prod) short enough for its timeout test.

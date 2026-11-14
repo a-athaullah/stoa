@@ -1762,10 +1762,18 @@ const mcpUpstreams = createUpstreamManager({
 // Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
-// Called from inside an agent turn, the mark waits for the turn to end (lib/thread-complete-defer.js), so
-// the turn's closing reply does not reopen the thread. activeSequences/roomMessages exist by call time.
+// Asked by an agent (stoa__thread_complete / stoa__task_complete), the mark waits until that agent's turn
+// is over (lib/thread-complete-defer.js), so its closing reply does not reopen the thread.
+// activeSequences/pendingActorMeta/roomMessages exist by call time.
 const threadCompleteDefer = createThreadCompleteDefer({
-  turnActive: (roomId, rootId) => activeSequences.has(`${roomId}:${rootId}`),
+  seqActive: (roomId, rootId) => activeSequences.has(`${roomId}:${rootId}`),
+  agentRunning: (roomId, rootId, actorId, subAgentId) => {
+    for (const m of pendingActorMeta.values()) {
+      if (Number(m.room_id) === Number(roomId) && Number(m.thread_id) === Number(rootId) && m.actor_id === actorId && (m.sub_agent_id || null) === subAgentId) return true;
+    }
+    return false;
+  },
+  settleMs: parseInt(process.env.THREAD_COMPLETE_SETTLE_MS, 10) || 10 * 60_000,
   complete: (roomId, rootId) => {
     const r = roomMessages.setThreadCompleted(roomId, rootId, true);
     if (r.status === 200) broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
@@ -1802,6 +1810,7 @@ if (process.env.NODE_ENV !== 'test' && !SMOKE_BOOT) {
 const roomMessages = createRoomMessages({
   db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
   cascadeMentions: cascadeMentionsFromProactive, enqueueParentWake, uploadsDir: UPLOADS_DIR,
+  onAgentPost: (roomId, threadId, actorId, subAgentId, info) => threadCompleteDefer.agentPosted(roomId, threadId, actorId, subAgentId, info),
 });
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
@@ -1823,6 +1832,7 @@ const mcpGateway = createMcpGateway({
     ...taskMcpTools(roomTasks),
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles,
+      requestThreadComplete: (roomId, rootId, ident) => threadCompleteDefer.request(roomId, rootId, { fromTurn: true, actorId: ident.actorId, subAgentId: ident.subAgentId ?? null }),
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
       mcpServers: {
         catalog: publicCatalog, list: (ident) => mcpApi.listServersForAgent(ident),
@@ -7680,6 +7690,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     return;
   }
   const humanParticipantId = parts[0].id;
+  // New input in the thread: a completion an agent asked for earlier no longer holds.
+  if (threadId) threadCompleteDefer.cancel(roomId, threadId);
 
   // Idempotent insert: if client supplied event_id and it already exists, return the original message
   if (eventId) {
@@ -8459,6 +8471,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         skills: agentHasSkillCache && skillRefs.length ? skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version, manifest_hash: r.manifest_hash })) : undefined,
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}${skillRefs.length ? ` skills=${skillRefs.map(r => r.name).join(',')}` : ''}`);
+    }).finally(() => {
+      // A sub-agent run mentioned in parallel is not part of any sequence: its end releases a thread
+      // complete it asked for (pendingActorMeta no longer holds the run by now).
+      if (threadId) threadCompleteDefer.turnEnded(roomId, threadId);
     });
 
   } else {
