@@ -358,6 +358,7 @@ body.tb-dragging, body.tb-dragging * { cursor: grabbing !important; }
 .h-task-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .t-automation-tag.h-task-tag {
   display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 6px; cursor: pointer;
+  flex: none; white-space: nowrap;
   font: 500 11.5px var(--h-sans); color: var(--tb-indigo); background: color-mix(in srgb, var(--tb-indigo) 9%, transparent);
   border: 1px solid color-mix(in srgb, var(--tb-indigo) 22%, transparent);
 }
