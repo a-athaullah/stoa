@@ -155,7 +155,7 @@ x-file-name: ファイル名.拡張子
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 自身のアクター |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 所有するサブエージェント |
 | `POST` | `/api/sub-agents/:id/avatar` | 所有するサブエージェント（親のシークレット使用可）。ボディ上限 512 KB |
-| `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
+| `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム（[コネクタ履歴の読み取り](#コネクタ履歴の読み取り)参照） |
 | `GET` | `/api/automations` | 有効なエージェント（サーバーが自分のルームのみにフィルタリング） |
 | `POST` | `/api/automations` | 有効なエージェント（`target_room_id` は自分のルームである必要あり） |
 | `PATCH` | `/api/automations/:id` | 所有オートメーション（`target_room_id` は自分のルームのままである必要あり） |
@@ -182,6 +182,43 @@ x-file-name: ファイル名.拡張子
 - このクレデンシャルは `/mcp` では使用できず、サブエージェントが削除されるか親のシークレットが変更されると無効になります。また親に紐付けられているため、別の `x-agent-id` を使用すると `401` になります。
 
 これは公式パス（環境変数と API）を制限するものです。サブエージェントは依然として親のマシン上でシェルを実行するため、OS サンドボックスではありません。`STOA_AGENT_SCOPE=off` でこれらの制限と他の制限をまとめて解除できます。
+
+## コネクタ履歴の読み取り
+
+`GET /api/automations/connections/:id/messages` はコネクタを通じて過去のメッセージを読み取ります。エージェントは自分のルームにオートメーションを送るコネクタに対してのみ呼び出せます（それ以外は `403 agent_scope_denied`）。
+
+**WhatsApp** — `chatId`（必須）、`limit`（デフォルト 50、最大 200）。`[{sender, text, direction, media_type, timestamp}]` を古い順に返します。
+
+**Slack** — パーマリンクまたはチャンネルを指定します：
+
+| パラメータ | 説明 |
+|-----------|------|
+| `permalink` | `https://<workspace>.slack.com/archives/<channel>/p<16桁>` (`?thread_ts=` 付きの返信リンクも可）。`channel` / `ts` / `thread_ts` の代わりに使用 |
+| `channel` | チャンネル id（`C…`、`G…`、または `D…`） |
+| `ts` | メッセージ ts（例：`1712345678.123456`） |
+| `thread_ts` | `ts` が返信の場合のスレッドルート ts |
+| `mode` | `thread`（メッセージ指定時のデフォルト：スレッドルートとその返信）、`message`（そのメッセージのみ）、`history`（最新チャンネルメッセージ、`channel` のみ指定時のデフォルト；`ts` 指定時はそのメッセージまで） |
+| `limit` | 1-200、デフォルト 50（thread と history） |
+
+```bash
+curl -s -G "$BASE_URL/api/automations/connections/3/messages" \
+  --data-urlencode "permalink=https://acme.slack.com/archives/C0123ABCD/p1712345678123456" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+```
+
+レスポンス: `{connection_id, channel, mode, messages: [{ts, user, user_id, text, thread_ts?, reply_count?, files?: [{name, mimetype}], truncated?}], has_more}`（古い順）。`user` は Slack の表示名（解決できない場合はユーザー id）。`text` は 4000 文字で切り捨て（`truncated: true`）。
+
+| ステータス | 意味 |
+|-----------|------|
+| `400` | パーマリンク・チャンネル・ts・mode・limit が不正、またはコネクタが Slack / WhatsApp でない |
+| `403` `slack_missing_scope` | Slack アプリに `channels:history`（公開）、`groups:history`（非公開）、`im:history`（DM）、`mpim:history`（グループ DM）が不足；`needed` に不足スコープが表示。追加 → 再インストール → 再接続 |
+| `403` `slack_not_in_channel` | Slack アプリをチャンネルに招待してください |
+| `404` | コネクタ・チャンネル・スレッド・メッセージが見つからない |
+| `409` `not_connected` | Slack コネクタが未接続；Automations > Connections で再接続 |
+| `429` `slack_ratelimited` | Slack のレート制限；`retry_after` 秒後に再試行 |
+| `502` `slack_error` | その他の Slack エラー（コードは `error` に格納） |
+
+コネクタのトークンはレスポンスに含まれません。
 
 ## 例：curlでオートメーションを作成
 
@@ -316,12 +353,13 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__automation_update` | `automation_id` + `trigger_type` 以外の任意の作成フィールド | `PATCH /api/automations/:id` |
 | `stoa__automation_delete` | `automation_id` | `DELETE /api/automations/:id` |
 | `stoa__connection_list` | — | `GET /api/automations/connections` (`id`、`name`、`provider`、`status`) |
+| `stoa__connection_messages_read` | `connection_id` + `permalink`、または `channel` + オプション `ts` / `thread_ts`；オプション `mode` (`message` / `thread` / `history`)、`limit`（1-200、デフォルト 50） | **Slack** コネクタ向け `GET /api/automations/connections/:id/messages`（[コネクタ履歴の読み取り](#コネクタ履歴の読み取り)参照）。自分のルームにオートメーションを送るコネクタのみ；それ以外（存在しない id を含む）は `agent_scope_denied` を返します |
 
 スコープのルールは REST の[エージェントスコープ](#エージェントスコープ)と同じです：
 - ルームツールはセッションのルームにのみ作用し、参加者である間のみ有効です。ルーム外のセッションには `this MCP session is not bound to a room` が返ります。
 - メモリ・システムプロンプトツールは自分自身にのみ作用します。サブエージェントツールは自分が所有するサブエージェントにのみ作用します。他のエージェントのサブエージェントには `sub-agent not found` が返ります。
 - 読み取りツール `messages_read`、`threads_list`、`thread_read` は、`rooms_list` に列挙された別のルームの `room_id` も受け付けます: 自分が参加者のルーム（サブエージェントセッションでは、サブエージェントがリンクされかつ親が参加しているルーム）。アーカイブ済みルーム（自分のセッションルームを含む）、参加していないルーム、存在しないルームはすべて `agent_scope_denied` を返します。`message_send` は以前と同様です（アーカイブ済みルームへの新規メッセージは `room is archived` で拒否）。`thread_read` は読み取り対象のルーム内のスレッドのみ検索します（別ルームのスレッドは `thread root not found`）。
-- **サブエージェントセッション**では、`message_send`、読み取りツール (`rooms_list`、`messages_read`、`threads_list`、`thread_read`、`room_memory_get`、`room_system_prompt_get`、`automation_list`、`connection_list`)、自分のメモリ (`sub_agent_memory_get` / `_set`)、および自分の設定 (`self_get`、`self_update`、`self_avatar_set`) のみ利用可能です。`sub_agent_list` とその他の設定変更ツールは非表示となり拒否されるため、サブエージェントは兄弟のシステムプロンプトを読めません。
+- **サブエージェントセッション**では、`message_send`、読み取りツール (`rooms_list`、`messages_read`、`threads_list`、`thread_read`、`room_memory_get`、`room_system_prompt_get`、`automation_list`、`connection_list`、`connection_messages_read`)、自分のメモリ (`sub_agent_memory_get` / `_set`)、自分の設定 (`self_get`、`self_update`、`self_avatar_set`)、ルームのタスクボード (`task_*`)、および `thread_complete` のみ利用可能です。`sub_agent_list` とその他の設定変更ツールは非表示となり拒否されるため、サブエージェントは兄弟のシステムプロンプトを読めません。
 - ルームシステムプロンプト・エージェントシステムプロンプト・エージェントアバター・サブエージェントの作成/更新/削除/リンク/リンク解除は、ルームに `· config` で終わる永続的なノーティスを投稿します。オートメーションの変更は REST と同様に対象ルームに `· automation` ノーティスを投稿します。
 
 ## MCPサーバーからのイベント（MCPサーバー作成者向け）

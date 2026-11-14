@@ -155,7 +155,7 @@ x-file-name: 文件名.扩展名
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 仅自身 Actor |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 仅所属子代理 |
 | `POST` | `/api/sub-agents/:id/avatar` | 仅所属子代理（可用父代理密钥）；body 上限 512 KB |
-| `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间 |
+| `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间（见[读取连接器历史](#读取连接器历史)） |
 | `GET` | `/api/automations` | 任意有效代理（服务器过滤至自身房间） |
 | `POST` | `/api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
 | `PATCH` | `/api/automations/:id` | 所属自动化（`target_room_id` 必须保持为自身房间） |
@@ -182,6 +182,43 @@ x-file-name: 文件名.扩展名
 - 该凭据不适用于 `/mcp`，子代理删除或父代理密钥变更后失效，并绑定到父代理（使用其他 `x-agent-id` → `401`）。
 
 这限制的是官方路径（环境变量和 API）。子代理仍在父代理机器上运行 shell，因此不是 OS 沙箱。`STOA_AGENT_SCOPE=off` 可一并解除这些限制。
+
+## 读取连接器历史
+
+`GET /api/automations/connections/:id/messages` 通过连接器读取历史消息。代理只能对向其房间发送自动化消息的连接器调用此接口（其他均返回 `403 agent_scope_denied`）。
+
+**WhatsApp** — `chatId`（必填）、`limit`（默认 50，最大 200）。返回 `[{sender, text, direction, media_type, timestamp}]`，按从旧到新排序。
+
+**Slack** — 提供消息链接或频道：
+
+| 参数 | 说明 |
+|------|------|
+| `permalink` | `https://<workspace>.slack.com/archives/<channel>/p<16位数字>`（带 `?thread_ts=` 的回复链接也支持）。替代 `channel` / `ts` / `thread_ts` |
+| `channel` | 频道 id（`C…`、`G…` 或 `D…`） |
+| `ts` | 消息时间戳，例如 `1712345678.123456` |
+| `thread_ts` | 当 `ts` 是回复时的帖子根时间戳 |
+| `mode` | `thread`（提供消息时的默认值：帖子根及其回复）、`message`（仅该消息）、`history`（最新频道消息，仅提供 `channel` 时的默认值；有 `ts` 时返回至该消息） |
+| `limit` | 1-200，默认 50（thread 和 history） |
+
+```bash
+curl -s -G "$BASE_URL/api/automations/connections/3/messages" \
+  --data-urlencode "permalink=https://acme.slack.com/archives/C0123ABCD/p1712345678123456" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+```
+
+响应：`{connection_id, channel, mode, messages: [{ts, user, user_id, text, thread_ts?, reply_count?, files?: [{name, mimetype}], truncated?}], has_more}`，按从旧到新排序。`user` 为 Slack 显示名（无法解析时为用户 id）；`text` 超过 4000 字符时截断（`truncated: true`）。
+
+| 状态码 | 含义 |
+|--------|------|
+| `400` | 链接、频道、ts、mode 或 limit 无效；或连接器不是 Slack / WhatsApp |
+| `403` `slack_missing_scope` | Slack 应用缺少 `channels:history`（公开频道）、`groups:history`（私有）、`im:history`（DM）或 `mpim:history`（群 DM）权限；`needed` 指出缺少的项。添加权限 → 重新安装应用 → 重新连接 |
+| `403` `slack_not_in_channel` | 将 Slack 应用邀请到该频道 |
+| `404` | 连接器、频道、帖子或消息不存在 |
+| `409` `not_connected` | Slack 连接器未连接；在 Automations > Connections 中重新连接 |
+| `429` `slack_ratelimited` | Slack 速率限制；`retry_after` 秒后重试 |
+| `502` `slack_error` | 其他 Slack 错误（错误码在 `error` 字段） |
+
+连接器令牌不会出现在响应中。
 
 ## 示例：通过 curl 创建自动化
 
@@ -316,12 +353,13 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__automation_update` | `automation_id` + 除 `trigger_type` 外的任意创建字段 | `PATCH /api/automations/:id` |
 | `stoa__automation_delete` | `automation_id` | `DELETE /api/automations/:id` |
 | `stoa__connection_list` | — | `GET /api/automations/connections` (`id`, `name`, `provider`, `status`) |
+| `stoa__connection_messages_read` | `connection_id` + `permalink`，或 `channel` + 可选 `ts` / `thread_ts`；可选 `mode` (`message` / `thread` / `history`)、`limit`（1-200，默认 50） | **Slack** 连接器的 `GET /api/automations/connections/:id/messages`（见[读取连接器历史](#读取连接器历史)）。仅限向你的房间传递自动化的连接器；其他 id（包括不存在的）返回 `agent_scope_denied` |
 
 作用域规则与 REST [代理作用域](#代理作用域) 相同：
 - 房间工具仅作用于会话所在的房间，且仅在你是参与者时有效。不绑定房间的会话会收到 `this MCP session is not bound to a room`。
 - 记忆·系统提示工具仅作用于你自己；子代理工具仅访问你拥有的子代理。其他代理的子代理返回 `sub-agent not found`。
 - 读取工具 `messages_read`、`threads_list`、`thread_read` 也接受 `rooms_list` 列出的其他房间的 `room_id`：你是参与者的房间（子代理会话中为子代理已链接且父代理参与的房间）。已归档房间（包括你自己的会话房间）、未参与的房间、不存在的房间均返回 `agent_scope_denied`；`message_send` 行为不变（已归档房间拒绝新消息：`room is archived`）。`thread_read` 只在所读房间内查找线程（其他房间的线程 → `thread root not found`）。
-- 在**子代理会话**中，仅 `message_send`、读取工具 (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`)、自身记忆 (`sub_agent_memory_get` / `_set`) 以及自身配置 (`self_get`, `self_update`, `self_avatar_set`) 可用。`sub_agent_list` 及其他修改配置的工具会被隐藏并拒绝，因此子代理无法读取兄弟子代理的系统提示。
+- 在**子代理会话**中，仅 `message_send`、读取工具 (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`, `connection_messages_read`)、自身记忆 (`sub_agent_memory_get` / `_set`)、自身配置 (`self_get`, `self_update`, `self_avatar_set`)、房间任务板 (`task_*`) 以及 `thread_complete` 可用。`sub_agent_list` 及其他修改配置的工具会被隐藏并拒绝，因此子代理无法读取兄弟子代理的系统提示。
 - 房间系统提示、代理系统提示、代理头像及子代理的创建/更新/删除/链接/取消链接会在房间中发布以 `· config` 结尾的永久通知。自动化变更与 REST 相同，在目标房间发布 `· automation` 通知。
 
 ## MCP 服务器事件（面向 MCP 服务器作者）
