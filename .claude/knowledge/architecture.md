@@ -160,6 +160,7 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 - WebSocket connections are ephemeral
 - Reconnect automatically on disconnect
 - Version check on connect (force update if mismatch)
+- Auto-update: manifest + file endpoints serve `stoa.js` only from a `dist/stoa.js` bundle that passes `agentBundleStatus()` (checked per request); the agent verifies each download (`node --check`, no unshipped relative requires) before an atomic replace with a `.bak` (known-issues: Known Bugs #6)
 - On connect: unmigrated CLAUDE.md files imported to room system_prompt
 
 ## Security Model

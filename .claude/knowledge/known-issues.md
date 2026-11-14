@@ -238,6 +238,21 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 - From a worktree without `db/stoa.db`, `run-tests.js` copies the DB and `.env` from the main worktree (`git rev-parse --git-common-dir`). Nobody needs to link the live DB anymore.
 - The copy also sets `mcp_servers.enabled=0` (except slug `stoa`, the built-in row): a live server with `default_access='all'` showed up in the MCP policy tests' tool lists and made real upstream calls.
 
+
+### 6. Agents Crash-Looped After `dist/stoa.js` Vanished on a Live Server (2026-11-13)
+**Symptom:** Kira and Probe coder restarted hundreds of times with `MODULE_NOT_FOUND ./lib/...`.
+
+**Cause:** the server built `dist/stoa.js` once at startup (`agentBundleReady`). When the bundle was deleted later, `clientFilePath('stoa.js')` fell back to the raw `stoa.js` source, the manifest offered its hash, and agents installed a file that requires `./lib/*` they do not have. The agent only compared the hash before overwriting itself.
+
+**Fix (branch bug/update-guardrail-dist, task #16):**
+- Server: `agentBundleStatus()` re-reads `dist/stoa.js` on every `/api/client/manifest` and `/api/client/file/stoa.js` request and rejects it when missing, empty, without `CLIENT_VERSION`, failing a compile check (`vm.Script` over `Module.wrap`, never run; verdict cached by content hash), or requiring relative modules other than `./claude-session` / `./codex-session` (`lib/agent-bundle-check.js`). A failed esbuild at startup rejects for the whole boot, because the previous boot's bundle is still on disk. Rejected → manifest omits `stoa.js` (agents stay on their version), file endpoint 503. The raw source is never served; `SAFE_CLIENT_BUNDLE` (downgrade guard baseline) is only taken from a bundle that passed. One log line per distinct failure, one on recovery. Install scripts download through the same endpoint (`curl -f` + `set -e`, `Invoke-WebRequest` + `Stop`) so a fresh install aborts instead of installing source.
+- Agent (`checkForUpdates`): after the hash check, writes `<base>.new.js`, runs `node --check` in a child process (30 s timeout) and, for `stoa.js`, the same relative-require check. Failure → temp file deleted, running file untouched, no restart, and that manifest hash is remembered (`rejectedUpdates`) so it is not downloaded again until the server publishes a different hash. Success → old file copied to `<name>.bak`, then atomic rename.
+
+**Not a finding:**
+- No automatic rollback after a crash on restart: the rollback code would live in the very file that fails to load (the incident crashed at `require` time, before any agent code ran); doing it right needs a separate launcher in front of pm2. Verification before overwrite covers the incident's failure class; `.bak` is there for a manual rollback.
+- No WS report of a rejected update to the server: no light channel exists, and the agent log line plus the server's own withheld log cover diagnosis. The rejected hash is in memory only: a restart retries it once.
+- Files are verified and installed one by one (same as before): a rejected `claude-session.js` does not block a valid `stoa.js`.
+
 ---
 
 ## Design Constraints
