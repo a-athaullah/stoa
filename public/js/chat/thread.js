@@ -415,7 +415,7 @@ function _createThreadPanel() {
       modelLabel.style.cssText = 'opacity:0.6;transition:opacity 0.15s;white-space:nowrap';
       const syncLabel = () => {
         const t = document.getElementById('model-dropdown-text')?.textContent?.trim();
-        if (t && t !== 'Select model') modelLabel.textContent = t;
+        if (t && t !== 'Select model') { modelLabel.textContent = t; modelLabel.title = t; }
       };
       syncLabel();
       const dropdownText = document.getElementById('model-dropdown-text');

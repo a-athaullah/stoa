@@ -36,6 +36,7 @@ function handleModelUpdate(msg) {
   if (threadModelWrap && threadModelLabel) {
     if (label) {
       threadModelLabel.textContent = label;
+      threadModelLabel.title = label;
       threadModelWrap.style.display = 'inline-flex';
     } else {
       threadModelWrap.style.display = 'none';

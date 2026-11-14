@@ -1349,6 +1349,22 @@ function runUnitTests() {
     assert.ok(Number(m[1]) >= 580, `narrow threshold ${m[1]}px leaves the paused text squeezing the room name`);
   });
 
+  ut('task #14: long task titles and model names stay inside the message meta and the thread composer (code check)', () => {
+    const fs2 = require('fs'), path2 = require('path');
+    const read = (f) => fs2.readFileSync(path2.join(__dirname, f), 'utf8');
+    const chat = read('public/css/chat.css'), tasks = read('public/css/tasks.css');
+    // The task tag has a fixed 20px height: wrapping "TASK #14" onto two lines spills the text out of the box.
+    assert.match(tasks, /\.t-automation-tag\.h-task-tag \{[^}]*flex: none; white-space: nowrap;/);
+    assert.match(chat, /\.h-msg-meta, \.t-meta \{ flex-wrap: wrap; \}/);
+    assert.match(chat, /\.h-msg-name, \.t-name \{ min-width: 0; overflow-wrap: anywhere; \}/);
+    assert.match(chat, /\.h-msg-time, \.t-time \{ flex: none; white-space: nowrap; \}/);
+    assert.match(chat, /#thread-model-selector-wrap \{ min-width: 0; \}/);
+    assert.match(chat, /#thread-model-label \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; \}/);
+    // The label is cut with an ellipsis, so the full model name stays on its tooltip on both write paths.
+    assert.match(read('public/js/chat/thread.js'), /modelLabel\.textContent = t; modelLabel\.title = t;/);
+    assert.match(read('public/js/composer/utils.js'), /threadModelLabel\.textContent = label;\n\s*threadModelLabel\.title = label;/);
+  });
+
   // public/dist is not in git: server.js builds it on a production start (build/build.js).
   {
     const fs2 = require('fs'), path2 = require('path'), os2 = require('os');
