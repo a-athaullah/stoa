@@ -18562,7 +18562,7 @@ async function run() {
     assert.strictEqual(extraRow().style.display, 'flex');
     assert.strictEqual(btn(/^test key$/).style.display, 'none', 'no test key before the platform exists');
     let [url, method, body] = await save();
-    assert.deepStrictEqual([url, method, body.vendor, body.base_url, body.api_format, body.extra_body.venice_parameters.include_venice_system_prompt], ['/api/ai/platforms', 'POST', 'venice', 'https://api.venice.ai/api/v1', 'openai_chat', false]);
+    assert.deepStrictEqual([url, method, body.vendor, 'base_url' in body, body.api_format, body.extra_body.venice_parameters.include_venice_system_prompt], ['/api/ai/platforms', 'POST', 'venice', false, 'openai_chat', false], 'the server owns the Venice URL: the form never sends one');
 
     ctx.sShowPlatformForm();
     named('platform-base-url').value = 'https://router.example/v1';
@@ -18586,6 +18586,7 @@ async function run() {
     named('platform-extra-body').value = '{ "temperature": 0.2, "venice_parameters": { "x": "<b>" } }';
     [, , body] = await save();
     assert.deepStrictEqual(body.extra_body, { temperature: 0.2, venice_parameters: { x: '<b>' } });
+    assert.strictEqual(body.base_url, 'https://router.example/v1', 'other platforms still send their URL');
     ctx.sShowPlatformForm();
     named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://r.example';
     pick('platform-api-format', 'openai_chat');
@@ -18632,7 +18633,21 @@ async function run() {
     calls.length = 0;
     btn(/^test key$/).fire('click'); await flush(); await flush();
     assert.deepStrictEqual(calls.map(c => [c[0], c[1]]), [['/api/ai/platforms/v1', 'PATCH'], ['/api/ai/platforms/v1/health', 'POST']]);
-    assert.deepStrictEqual(calls[0][2].extra_body, platforms[0].extra_body);
+    assert.deepStrictEqual([calls[0][2].extra_body, 'base_url' in calls[0][2]], [platforms[0].extra_body, false]);
+
+    // Edit form of a Venice platform stored without extra body shows it empty (no default re-fill) and saving keeps null;
+    // the default only fills when the vendor is switched to Venice in the form.
+    ctx.sEditPlatform(platforms[1]);
+    assert.strictEqual(named('platform-extra-body').value, '', 'stored null extra body stays empty on edit');
+    [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.extra_body], ['/api/ai/platforms/v2', 'PATCH', null], 'update keeps the stored null');
+    ctx.sEditPlatform(platforms[1]);
+    calls.length = 0;
+    btn(/^test key$/).fire('click'); await flush(); await flush();
+    assert.deepStrictEqual([calls[0][0], calls[0][1], calls[0][2].extra_body], ['/api/ai/platforms/v2', 'PATCH', null], 'test key does not save the default either');
+    ctx.sEditPlatform(platforms[2]);
+    pick('platform-type', 'venice');
+    assert.deepStrictEqual(JSON.parse(named('platform-extra-body').value), { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } }, 'switching an existing platform to Venice fills the default');
 
     // Model list: uncensored / reasoning as text tags; plain entries untouched.
     const wrap = new El('div');

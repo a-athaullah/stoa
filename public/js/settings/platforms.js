@@ -320,7 +320,8 @@ function sShowPlatformForm(existing) {
     if (isVenice) {
       urlF.inp.value = VENICE_BASE_URL;
       fmtSel.value = 'openai_chat';
-      if (!existing?.extra_body && !extraInp.value.trim()) extraInp.value = defaultExtraText;
+      // Opening a saved Venice platform shows exactly what is stored (null = empty); the default only fills a switch to Venice.
+      if (prevType !== 'venice' && !extraInp.value.trim()) extraInp.value = defaultExtraText;
     } else if (prevType === 'venice') {
       urlF.inp.value = customUrl;
       fmtSel.value = customFormat;
