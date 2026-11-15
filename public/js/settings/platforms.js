@@ -706,6 +706,13 @@ function sImageModelsSection(container, platform) {
 }
 
 const S_VIDEO_JOB_STATUSES = new Set(['queued', 'processing', 'completed', 'failed', 'timeout']);
+const S_VIDEO_KIND_LABELS = { t2v: 'text-to-video', i2v: 'image-to-video' };
+const S_VIDEO_SLOTS = [
+  ['model', 'text-to-video', 't2v', false],
+  ['model_uncensored', 'text-to-video (uncensored)', 't2v', true],
+  ['model_i2v', 'image-to-video', 'i2v', false],
+  ['model_i2v_uncensored', 'image-to-video (uncensored)', 'i2v', true],
+];
 let sVideoJobListener = null;
 
 // Owner-only `video_job_update` from the global socket; only the open Venice form listens.
@@ -730,8 +737,8 @@ function sVideoResultHref(raw) {
   } catch { return null; }
 }
 
-// Video settings for a Venice platform: default text-to-video model per mode (standard slot never offers
-// uncensored models), default duration/resolution, the per-job price cap and per-room concurrency cap,
+// Video settings for a Venice platform: default text-to-video and image-to-video model per mode (standard
+// slots never offer uncensored models), default duration/resolution, the per-job price cap and per-room concurrency cap,
 // plus the recent job list (live via video_job_update). The server re-validates everything on save.
 function sVideoSettingsSection(container, platform) {
   let stored = {};
@@ -800,7 +807,7 @@ function sVideoSettingsSection(container, platform) {
     container.appendChild(title);
 
     const models = Array.isArray(cached)
-      ? cached.filter(m => m && typeof m.model === 'string' && (m.kind === undefined || m.kind === 'text-to-video'))
+      ? cached.filter(m => m && typeof m.model === 'string' && (m.kind === 't2v' || m.kind === 'i2v'))
       : [];
     if (!models.length) {
       const hint = document.createElement('div');
@@ -809,21 +816,24 @@ function sVideoSettingsSection(container, platform) {
       container.appendChild(hint);
     } else {
       const pick = key => (keep && key in keep ? keep[key] : stored[key]);
-      const modelSel = makeSelect();
-      const uncSel = makeSelect();
+      const slotSels = {};
+      for (const [slot, , kind, allowUncensored] of S_VIDEO_SLOTS) {
+        const sel = makeSelect();
+        const offered = models.filter(m => m.kind === kind && (allowUncensored || m.uncensored !== true));
+        fillSelect(sel, offered.map(m => [m.model, allowUncensored && m.uncensored === true ? m.model + ' · uncensored' : m.model]), strOrEmpty(pick(slot)), '(none)');
+        slotSels[slot] = sel;
+      }
       const durSel = makeSelect();
       const resSel = makeSelect();
       const usdInp = makeNumber(0, '0.01');
       const concInp = makeNumber(1, '1');
-      fillSelect(modelSel, models.filter(m => m.uncensored !== true).map(m => [m.model, m.model]), strOrEmpty(pick('model')), '(none)');
-      fillSelect(uncSel, models.map(m => [m.model, m.uncensored === true ? m.model + ' · uncensored' : m.model]), strOrEmpty(pick('model_uncensored')), '(none)');
       usdInp.value = numText(pick('max_usd_per_job'));
       concInp.value = numText(pick('max_concurrent_per_room'));
-      fields = { modelSel, uncSel, durSel, resSel, usdInp, concInp };
+      fields = { slotSels, durSel, resSel, usdInp, concInp };
 
-      // Duration/resolution options follow the constraints of the chosen models.
-      const constraintOptions = (key, current) => {
-        const chosen = [modelSel.value, uncSel.value].map(n => models.find(m => m.model === n)).filter(Boolean);
+      // Duration/resolution are the default and the cap agents may ask for; options follow the chosen models.
+      const constraintOptions = key => {
+        const chosen = Object.values(slotSels).map(sel => models.find(m => m.model === sel.value)).filter(Boolean);
         const seen = new Set();
         for (const m of chosen) {
           const list = m.constraints && Array.isArray(m.constraints[key]) ? m.constraints[key] : [];
@@ -836,11 +846,10 @@ function sVideoSettingsSection(container, platform) {
         fillSelect(resSel, constraintOptions('resolutions'), resSel.value || strOrEmpty(pick('resolution')), null);
       };
       refreshConstraints();
-      modelSel.addEventListener('change', refreshConstraints);
-      uncSel.addEventListener('change', refreshConstraints);
-
-      addRow('model', modelSel, 'model');
-      addRow('model (uncensored)', uncSel, 'model_uncensored');
+      for (const [slot, label] of S_VIDEO_SLOTS) {
+        slotSels[slot].addEventListener('change', refreshConstraints);
+        addRow(label, slotSels[slot], slot);
+      }
       addRow('duration', durSel, 'duration');
       addRow('resolution', resSel, 'resolution');
       addRow('max USD per job', usdInp, 'max_usd_per_job');
@@ -872,10 +881,9 @@ function sVideoSettingsSection(container, platform) {
 
   function values() {
     if (!fields) return null;
-    const { modelSel, uncSel, durSel, resSel, usdInp, concInp } = fields;
+    const { slotSels, durSel, resSel, usdInp, concInp } = fields;
     return {
-      model: modelSel.value || null,
-      model_uncensored: uncSel.value || null,
+      ...Object.fromEntries(S_VIDEO_SLOTS.map(([slot]) => [slot, slotSels[slot].value || null])),
       duration: durSel.value || null,
       resolution: resSel.value || null,
       max_usd_per_job: usdInp.value.trim() === '' ? null : Number(usdInp.value),
@@ -908,6 +916,7 @@ function sVideoSettingsSection(container, platform) {
     const meta = document.createElement('span');
     meta.className = 's-plat-video-meta';
     const parts = [];
+    if (Object.hasOwn(S_VIDEO_KIND_LABELS, job.kind ?? '')) parts.push(S_VIDEO_KIND_LABELS[job.kind]);
     if (job.mode === 'uncensored') parts.push('uncensored');
     for (const k of ['duration', 'resolution']) if (typeof job[k] === 'string' && job[k]) parts.push(job[k]);
     parts.push(sVideoUsd(sVideoNum(job.quote_usd)));

@@ -19208,7 +19208,7 @@ async function run() {
     assert.deepStrictEqual(imageCalls().map(c => c[2].image_models.generate), ['<img src=x onerror=alert(1)>'], 'only differs from the refreshed stored value');
   });
 
-  await test('platform form — venice video: model slots from cached_video_models (t2v only, standard hides uncensored), constraint options, numeric caps validated, saves only on change, job list + video_job_update as text', async () => {
+  await test('platform form — venice video: t2v/i2v model slots from cached_video_models (standard slots hide uncensored), constraint options, numeric caps validated, saves only on change, job list + video_job_update as text', async () => {
     const vm = require('vm');
     const fs = require('fs');
     class El {
@@ -19268,7 +19268,7 @@ async function run() {
     const jobRows = () => section().all().filter(e => e.className === 's-plat-video-job');
     const rowText = r => r.all().map(e => e.textContent).filter(Boolean);
     const jobsHint = () => section().all().find(e => e.className === 's-plat-video-jobs').children.map(e => e.textContent);
-    const slots = ['model', 'model_uncensored', 'duration', 'resolution', 'max_usd_per_job', 'max_concurrent_per_room'];
+    const slots = ['model', 'model_uncensored', 'model_i2v', 'model_i2v_uncensored', 'duration', 'resolution', 'max_usd_per_job', 'max_concurrent_per_room'];
 
     // Other vendors hide the section; a new Venice platform shows the hint and does not ask for jobs.
     ctx.sShowPlatformForm();
@@ -19278,32 +19278,41 @@ async function run() {
     assert.ok(section().all().some(e => /Run "discover models" first/.test(e.textContent)));
     assert.strictEqual(named('platform-video-model'), undefined);
     assert.deepStrictEqual(getCalls.filter(u => /video-jobs/.test(u)), [], 'unsaved platform: no job request');
+    ctx.sEditPlatform({ id: 'v0', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null,
+      cached_video_models: [{ model: 'ovi-video-to-video', kind: 'v2v', uncensored: false, constraints: {} }], video_settings: null }); await flush();
+    assert.deepStrictEqual([named('platform-video-model'), section().all().some(e => /Run "discover models" first/.test(e.textContent))], [undefined, true], 'only v2v models: hint, no empty selects');
 
     const cached = [
-      { model: 'wan-2-7-text-to-video', kind: 'text-to-video', uncensored: false, constraints: { durations: ['10s', '5s'], resolutions: ['1080p', '720p'] } },
-      { model: 'longcat-distilled-text-to-video', kind: 'text-to-video', uncensored: true, constraints: { durations: ['5s'], resolutions: ['480p', '720p'] } },
-      { model: 'wan-2-7-image-to-video', kind: 'image-to-video', uncensored: false, constraints: { durations: ['5s'], resolutions: ['720p'] } },
-      { model: '<img src=x onerror=alert(1)>', kind: 'text-to-video', uncensored: false, constraints: { durations: ['<b>3s</b>'], resolutions: [] } },
+      { model: 'wan-2-7-text-to-video', kind: 't2v', uncensored: false, prompt_limit: 2500, constraints: { durations: ['10s', '5s'], resolutions: ['1080p', '720p'], aspect_ratios: ['16:9'], audio: false } },
+      { model: 'longcat-distilled-text-to-video', kind: 't2v', uncensored: true, prompt_limit: 2500, constraints: { durations: ['5s'], resolutions: ['480p', '720p'], aspect_ratios: [], audio: false } },
+      { model: 'wan-2-7-image-to-video', kind: 'i2v', uncensored: false, prompt_limit: 2500, constraints: { durations: ['5s'], resolutions: ['720p'], aspect_ratios: [], audio: false } },
+      { model: 'wan-2-7-uncensored-image-to-video', kind: 'i2v', uncensored: true, prompt_limit: 2500, constraints: { durations: ['15s'], resolutions: ['720p'], aspect_ratios: [], audio: true } },
+      { model: 'ovi-video-to-video', kind: 'v2v', uncensored: false, constraints: { durations: ['20s'], resolutions: ['4k'] } },
+      { model: '<img src=x onerror=alert(1)>', kind: 't2v', uncensored: false, prompt_limit: 2500, constraints: { durations: ['<b>3s</b>'], resolutions: [] } },
     ];
-    const settings = { model: 'wan-2-7-text-to-video', model_uncensored: 'longcat-distilled-text-to-video', duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 };
+    const settings = { model: 'wan-2-7-text-to-video', model_uncensored: 'longcat-distilled-text-to-video', model_i2v: 'wan-2-7-image-to-video', model_i2v_uncensored: null, duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 };
     const v1 = { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null,
       cached_image_models: [], image_models: null, cached_video_models: cached, video_settings: settings };
     jobsReply = [
-      { id: 3, room_id: 7, status: 'completed', model: 'longcat-distilled-text-to-video', mode: 'uncensored', duration: '5s', resolution: '720p', quote_usd: 0.09, error: null, created_at: '2026-11-15 04:00:00', finished_at: '2026-11-15 04:01:00', upload_url: '/uploads/abc.mp4' },
-      { id: 2, room_id: 7, status: 'completed', model: 'wan-2-7-text-to-video', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: 0.55, error: null, created_at: '2026-11-15 03:00:00', finished_at: null, upload_url: 'https://evil.example/x.mp4' },
-      { id: 1, room_id: 7, status: 'failed', model: '<b>m</b>', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: null, error: '<img src=x onerror=alert(1)> content violation', created_at: '2026-11-15 02:00:00', finished_at: null, upload_url: null },
+      { id: 3, room_id: 7, status: 'completed', model: 'longcat-distilled-text-to-video', kind: 't2v', mode: 'uncensored', duration: '5s', resolution: '720p', quote_usd: 0.09, error: null, created_at: '2026-11-15 04:00:00', finished_at: '2026-11-15 04:01:00', upload_url: '/uploads/abc.mp4' },
+      { id: 2, room_id: 7, status: 'completed', model: 'wan-2-7-image-to-video', kind: 'i2v', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: 0.55, error: null, created_at: '2026-11-15 03:00:00', finished_at: null, upload_url: 'https://evil.example/x.mp4' },
+      { id: 1, room_id: 7, status: 'failed', model: '<b>m</b>', kind: 'toString', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: null, error: '<img src=x onerror=alert(1)> content violation', created_at: '2026-11-15 02:00:00', finished_at: null, upload_url: null },
       { id: 0, status: '<i>odd</i>', model: null },
     ];
     ctx.sEditPlatform(v1); await flush();
-    assert.deepStrictEqual(opts('model'), [['', '(none)'], ['wan-2-7-text-to-video', 'wan-2-7-text-to-video'], ['<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>']], 'standard slot: text-to-video only, no uncensored; names are text');
+    assert.deepStrictEqual(opts('model'), [['', '(none)'], ['wan-2-7-text-to-video', 'wan-2-7-text-to-video'], ['<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>']], 'standard t2v slot: t2v only, no uncensored; names are text');
     assert.deepStrictEqual(opts('model_uncensored').map(o => o[1]), ['(none)', 'wan-2-7-text-to-video', 'longcat-distilled-text-to-video · uncensored', '<img src=x onerror=alert(1)>']);
-    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['5s', '10s'], 'durations: union of both chosen models, sorted');
+    assert.deepStrictEqual(opts('model_i2v'), [['', '(none)'], ['wan-2-7-image-to-video', 'wan-2-7-image-to-video']], 'standard i2v slot: i2v only, no uncensored');
+    assert.deepStrictEqual(opts('model_i2v_uncensored').map(o => o[1]), ['(none)', 'wan-2-7-image-to-video', 'wan-2-7-uncensored-image-to-video · uncensored'], 'v2v and t2v models never offered for i2v');
+    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['5s', '10s'], 'durations: union of the chosen models, sorted');
     assert.deepStrictEqual(opts('resolution').map(o => o[0]), ['480p', '720p', '1080p']);
-    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', '5s', '720p', '0.5', '2']);
+    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', 'wan-2-7-image-to-video', '', '5s', '720p', '0.5', '2']);
+    named('platform-video-model_i2v_uncensored').value = 'wan-2-7-uncensored-image-to-video'; named('platform-video-model_i2v_uncensored').fire('change');
+    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['5s', '10s', '15s'], 'i2v slot constraints count too');
     assert.deepStrictEqual([named('platform-video-max_usd_per_job').type, named('platform-video-max_concurrent_per_room').step], ['number', '1']);
     assert.deepStrictEqual(slots.map(s => form().all().some(e => e.tagName === 'LABEL' && e.htmlFor === named('platform-video-' + s).id)), slots.map(() => true), 'every control has a label');
     named('platform-video-model').value = '<img src=x onerror=alert(1)>'; named('platform-video-model').fire('change');
-    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['<b>3s</b>', '5s'], 'durations follow the chosen models and stay text');
+    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['<b>3s</b>', '5s', '15s'], 'durations follow the chosen models and stay text');
     ctx.sEditPlatform(v1); await flush();
 
     // Job list: request scoped to the platform, rows as text, result link only for same-origin /uploads/.
@@ -19312,7 +19321,9 @@ async function run() {
     assert.strictEqual(rows.length, 4);
     assert.deepStrictEqual(rows.map(r => r.attrs['data-job-id']), ['3', '2', '1', '0']);
     assert.deepStrictEqual(rows.map(r => r.children[0].textContent), ['completed', 'completed', 'failed', 'unknown'], 'unknown status is not rendered raw');
-    assert.match(rowText(rows[0]).join(' | '), /longcat-distilled-text-to-video \| uncensored · 5s · 720p · \$0\.09/);
+    assert.match(rowText(rows[0]).join(' | '), /longcat-distilled-text-to-video \| text-to-video · uncensored · 5s · 720p · \$0\.09/);
+    assert.match(rowText(rows[1]).join(' | '), /\| image-to-video · 5s · 720p · \$0\.55/);
+    assert.match(rowText(rows[2]).join(' | '), /<b>m<\/b> \| 5s · 720p · —/, 'unknown kind is not shown');
     const links = rows.map(r => r.all().find(e => e.tagName === 'A'));
     assert.deepStrictEqual([links[0]?.href, links[0]?.rel, links[0]?.textContent, links[1], links[2]], ['/uploads/abc.mp4', 'noopener', 'open video', undefined, undefined], 'off-origin upload_url gets no link');
     assert.ok(rowText(rows[2]).includes('<b>m</b>') && rowText(rows[2]).includes('<img src=x onerror=alert(1)> content violation'), 'model + error as text');
@@ -19348,9 +19359,10 @@ async function run() {
     ctx.sEditPlatform(v1); await flush();
     named('platform-video-max_usd_per_job').value = '1.25';
     named('platform-video-model').value = '';
+    named('platform-video-model_i2v_uncensored').value = 'wan-2-7-uncensored-image-to-video';
     calls.length = 0;
     btn(/^update$/).fire('click'); await flush();
-    assert.deepStrictEqual(videoCalls(), [['/api/ai/platforms/v1', 'PATCH', { video_settings: { ...settings, model: null, max_usd_per_job: 1.25 } }]]);
+    assert.deepStrictEqual(videoCalls(), [['/api/ai/platforms/v1', 'PATCH', { video_settings: { ...settings, model: null, model_i2v_uncensored: 'wan-2-7-uncensored-image-to-video', max_usd_per_job: 1.25 } }]]);
 
     // Invalid caps stay inline, no PATCH, form open; editing clears the message.
     for (const [slot, val, msg] of [
@@ -19390,7 +19402,7 @@ async function run() {
     platforms = [{ ...v2, cached_video_models: cached, video_settings: settings }];
     discoverLines = JSON.stringify({ type: 'start', total: 1 }) + '\n' + JSON.stringify({ type: 'done', usable: ['m'], tested: 1 }) + '\n';
     btn(/^discover models$/).fire('click'); await flush();
-    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', '5s', '720p', '0.5', '2'], 'server defaults after discover');
+    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', 'wan-2-7-image-to-video', '', '5s', '720p', '0.5', '2'], 'server defaults after discover');
     named('platform-video-max_concurrent_per_room').value = '3';
     btn(/^discover models$/).fire('click'); await flush();
     assert.strictEqual(named('platform-video-max_concurrent_per_room').value, '3', 'unsaved change survives a re-discover');

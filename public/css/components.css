@@ -996,6 +996,7 @@ select.s-server-input:disabled { color: var(--h-ink-mute); border-style: dashed;
   flex: 0 0 150px; font-family: var(--h-serif); font-style: italic; font-size: 12px; color: var(--h-ink-mute); white-space: nowrap;
 }
 .s-plat-img-select { flex: 1 1 200px; min-width: 0; max-width: 100%; cursor: pointer; font-family: ui-monospace, monospace; font-size: 12px; }
+.s-plat-video .s-plat-img-label { flex-basis: 172px; }
 .s-plat-video-num { flex: 0 1 120px; min-width: 0; max-width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .s-plat-video-jobs-title { margin-top: 6px; }
 .s-plat-video-jobs { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; min-width: 0; }
