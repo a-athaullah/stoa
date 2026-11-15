@@ -5951,7 +5951,7 @@ async function runAsyncUnitTests() {
     const fsT = require('fs'), pathT = require('path');
     const { runMigrations } = require('./lib/migrations');
     const { createRoomTasks, taskMcpTools, keyBetween, evenKeys } = require('./lib/room-tasks');
-    const { createRoomTasksRunner, composeTaskMessage, AGENT_UNDECIDED } = require('./lib/room-tasks-runner');
+    const { createRoomTasksRunner, composeTaskMessage, AGENT_UNDECIDED, RESTART_UNRECOVERED } = require('./lib/room-tasks-runner');
     const { createRoomMessages: createRoomMessagesT } = require('./lib/room-messages');
     const { createThreadCompleteDefer: createThreadCompleteDeferT } = require('./lib/thread-complete-defer');
     const tick = () => new Promise(r => setImmediate(r));
@@ -5992,10 +5992,11 @@ async function runAsyncUnitTests() {
       });
       const deps = {
         dispatched: [], aborted: [], online: new Set([2, 3, 4]), busy: new Set(),
-        dispatch: (roomId, text, automation) => {
-          deps.dispatched.push({ roomId, text, automation });
-          return Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, automation_provider, automation_name, task_id, task_seq) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=1), ?, 'complete', 'task', ?, ?, ?)")
-            .run(roomId, roomId, text, automation.name, automation.task_id, automation.task_seq).lastInsertRowid);
+        // threadId: a reply in that thread (a card continuing its kept thread), else a new root.
+        dispatch: (roomId, text, automation, threadId = null) => {
+          deps.dispatched.push({ roomId, text, automation, threadId });
+          return Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, automation_provider, automation_name, task_id, task_seq, thread_id) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=1), ?, 'complete', 'task', ?, ?, ?, ?)")
+            .run(roomId, roomId, text, automation.name, automation.task_id, automation.task_seq, threadId).lastInsertRowid);
         },
       };
       const runner = createRoomTasksRunner({
@@ -6259,11 +6260,11 @@ async function runAsyncUnitTests() {
         w.db.prepare("UPDATE room_tasks SET started_at=datetime('now','-1 day') WHERE id IN (?,?)").run(a.id, c.id);
         w.runner.checkRuns();
         assert.deepStrictEqual([w.tasks.get(10, a.id).body.status, w.tasks.get(10, c.id).body.status], ['running', 'running']);
-        assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 }, 'only the runner card');
-        assert.deepStrictEqual([w.tasks.get(10, a.id).body.status, w.tasks.get(10, b.id).body.status], ['running', 'idle']);
+        assert.deepStrictEqual(w.runner.reap(), { interrupted: 1, runnersOff: 1 }, 'only the runner card is in a restart grace');
+        assert.deepStrictEqual([a, b, c].map(t => w.tasks.get(10, t.id).body.status), ['running', 'running', 'running'], 'a restart ends no run');
         w.deps.aborted.length = 0;
         w.runner.stop(10, H);
-        assert.deepStrictEqual(w.deps.aborted, [], 'no thread to abort');
+        assert.deepStrictEqual(w.deps.aborted, [w.tasks.get(10, b.id).body.thread_id], 'only the runner card has a thread to abort');
         for (const t of [a, c]) {
           const x = w.tasks.get(10, t.id).body;
           assert.deepStrictEqual([x.col, x.status, x.events.at(-1).kind, x.events.at(-1).body], ['backlog', 'idle', 'stopped', 'stopped by user']);
@@ -7004,18 +7005,163 @@ async function runAsyncUnitTests() {
       assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Execute task #1: plain title**\n'), 'no code span when nothing to escape');
     });
 
-    await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
+    // A card's run state as the board shows it: what a restart must not touch.
+    const runState = (w, id) => {
+      const t = w.tasks.get(10, id).body;
+      return { col: t.col, status: t.status, thread_id: t.thread_id, message_id: t.message_id, events: t.events.length };
+    };
+
+    await uta('Tasks runner — restart: running cards keep col/status/thread/message, no event, runners off; quiet + no-reply checks wait out the grace', async () => {
+      const w = world({ restartGraceMs: 60_000 });
+      try {
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        w.reply(a.id, 2, 'half done'); // the turn the restart killed
+        w.db.prepare("UPDATE room_tasks SET started_at=datetime('now','-1 day') WHERE id=?").run(b.id); // past noReplyMs
+        const before = [a, b].map(t => runState(w, t.id));
+        assert.ok(before.every(s => s.col === 'ongoing' && s.status === 'running' && s.thread_id && s.message_id === s.thread_id));
+        assert.deepStrictEqual(w.runner.reap(), { interrupted: 2, runnersOff: 1 });
+        assert.deepStrictEqual([a, b].map(t => runState(w, t.id)), before, 'no column, status, thread or event change');
+        assert.ok(![a, b].some(t => w.tasks.get(10, t.id).body.events.some(e => e.kind === 'stopped')), 'no stopped event');
+        assert.strictEqual(w.tasks.run.settings(10).running, false, 'the runner stays off');
+        // Quiet thread (settleMs 0) and no reply past noReplyMs: inside the grace neither ends the run.
+        for (let i = 0; i < 3; i++) w.runner.checkRuns();
+        assert.deepStrictEqual([a, b].map(t => runState(w, t.id)), before, 'grace: not finished, not failed');
+        // Recovery shows up as activity: a new agent reply ends A's grace, the busy thread ends B's.
+        w.reply(a.id, 2, 'resumed and done');
+        w.deps.busy.add(before[1].thread_id);
+        w.runner.checkRuns();
+        w.deps.busy.clear();
+        w.runner.checkRuns();
+        w.runner.checkRuns();
+        const ta = w.tasks.get(10, a.id).body, tb = w.tasks.get(10, b.id).body;
+        assert.deepStrictEqual([ta.col, ta.status, ta.result_summary], ['finished', 'done', 'resumed and done'], 'normal quiet check after recovery');
+        assert.deepStrictEqual([tb.col, tb.status, tb.fail_reason], ['backlog', 'failed', 'no reply from the agent'], 'normal no-reply check after recovery');
+        assert.deepStrictEqual(w.runner.reap(), { interrupted: 0, runnersOff: 0 });
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — restart grace in agent mode: no AGENT_UNDECIDED inside it; no activity until it ends → Backlog with RESTART_UNRECOVERED, thread kept', async () => {
+      const w = world({ maxMs: 0, restartGraceMs: 80 });
+      try {
+        w.tasks.updateSettings(10, H, { completion_mode: 'agent', concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        w.reply(a.id, 2, 'working'); w.reply(b.id, 2, 'working');
+        const before = runState(w, a.id);
+        w.runner.reap();
+        for (let i = 0; i < 3; i++) w.runner.checkRuns();
+        assert.deepStrictEqual([a, b].map(t => w.tasks.get(10, t.id).body.status), ['running', 'running'], 'maxMs 0 but no AGENT_UNDECIDED in the grace');
+        w.reply(b.id, 2, 'resumed'); // B recovered: back on the normal clock
+        w.runner.checkRuns();
+        await sleepT(100);
+        w.runner.checkRuns();
+        await tick();
+        const ta = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([ta.col, ta.status, ta.thread_id, ta.message_id], ['backlog', 'idle', before.thread_id, before.message_id]);
+        const ev = ta.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.body, ev.actor_kind, ev.meta.reason], ['stopped', RESTART_UNRECOVERED, 'system', RESTART_UNRECOVERED]);
+        assert.ok(!/server restart'?$/.test(ev.body) && ev.body !== 'server restart');
+        const tb = w.tasks.get(10, b.id).body;
+        assert.deepStrictEqual([tb.col, tb.status, tb.await_reason], ['awaiting', 'blocked', AGENT_UNDECIDED], 'recovered card: maxMs applies again');
+        assert.deepStrictEqual(w.deps.dispatched.length, 2, 'the runner is off: A is not started again');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — returnToBacklog: validated reason, event names it, thread kept, 409 when not running', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A');
+        assert.strictEqual(w.runner.returnToBacklog(10, a.id, 'x').status, 409, 'idle card');
+        w.runner.play(10, H);
+        await tick();
+        const before = runState(w, a.id);
+        for (const bad of [undefined, null, '', '   ', 42, { r: 1 }, 'x'.repeat(1001)]) {
+          const r = w.runner.returnToBacklog(10, a.id, bad);
+          assert.strictEqual(r.status, 400, JSON.stringify(bad));
+          assert.match(r.body.error, /reason required \(1-1000 characters\)/);
+        }
+        assert.deepStrictEqual(runState(w, a.id), before, 'a rejected call changes nothing');
+        assert.strictEqual(w.runner.returnToBacklog(11, a.id, 'recovery failed').status, 409, 'card of another room');
+        w.sent.length = 0;
+        const r = w.runner.returnToBacklog(10, a.id, '  recovery failed: 3 attempts  ');
+        assert.strictEqual(r.status, 200);
+        assert.deepStrictEqual([r.body.col, r.body.status, r.body.thread_id, r.body.message_id], ['backlog', 'idle', before.thread_id, before.message_id]);
+        const ev = w.tasks.get(10, a.id).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.body, ev.meta], ['stopped', 'recovery failed: 3 attempts', { from_col: 'ongoing', to_col: 'backlog', reason: 'recovery failed: 3 attempts' }]);
+        assert.ok(w.sent.some(m => m.type === 'task_upsert' || m.type === 'task_settings'), 'board pushed');
+        assert.strictEqual(w.runner.returnToBacklog(10, a.id, 'again').status, 409, 'no longer running');
+        assert.strictEqual(w.runner.returnToBacklog(10, a.id, 'x'.repeat(1000)).status, 409, '1000 characters is a valid reason');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks thread — ongoing → backlog → ongoing keeps thread_id/message_id (runner + claim); the new run replies in it and counts only its own replies', async () => {
       const w = world();
       try {
         const a = mk(w, 'A');
         w.runner.play(10, H);
         await tick();
-        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
-        assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 });
-        const t = w.tasks.get(10, a.id).body;
-        assert.deepStrictEqual([t.col, t.status, t.events.at(-1).kind, t.events.at(-1).body, t.events.at(-1).actor_kind], ['backlog', 'idle', 'stopped', 'server restart', 'system']);
-        assert.strictEqual(w.tasks.run.settings(10).running, false);
-        assert.deepStrictEqual(w.runner.reap(), { returned: 0, runnersOff: 0 });
+        const first = runState(w, a.id);
+        w.reply(a.id, 2, 'old reply of the stopped run');
+        w.runner.stop(10, H);
+        assert.deepStrictEqual([w.tasks.get(10, a.id).body.thread_id, w.tasks.get(10, a.id).body.message_id], [first.thread_id, first.message_id], 'Stop keeps the thread');
+        // Runner starts it again: the task message is a reply in the same thread, nothing re-attached.
+        w.runner.play(10, H);
+        await tick();
+        const again = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([again.status, again.thread_id, again.message_id], ['running', first.thread_id, first.message_id]);
+        const d = w.deps.dispatched.at(-1);
+        assert.strictEqual(d.threadId, first.thread_id);
+        assert.strictEqual(w.db.prepare('SELECT thread_id FROM messages WHERE id=(SELECT MAX(id) FROM messages WHERE task_id=?)').get(a.id).thread_id, first.thread_id);
+        // The earlier run's reply is not this run's: quiet checks do not finish it from there.
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'not finished from the old reply');
+        w.reply(a.id, 2, 'new reply');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.deepStrictEqual([w.tasks.get(10, a.id).body.status, w.tasks.get(10, a.id).body.result_summary], ['done', 'new reply']);
+        // Agent claim and release keep it too.
+        const b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        const tb = runState(w, b.id);
+        w.runner.stop(10, H);
+        let r = w.tasks.move(10, AG, b.id, { col: 'ongoing' });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        assert.deepStrictEqual([r.body.status, r.body.claimed_by_actor_id, r.body.thread_id, r.body.message_id], ['running', 2, tb.thread_id, tb.message_id], 'claim keeps the thread');
+        r = w.tasks.move(10, AG, b.id, { col: 'backlog' });
+        assert.deepStrictEqual([r.body.col, r.body.thread_id, r.body.message_id], ['backlog', tb.thread_id, tb.message_id], 'release keeps the thread');
+        // A thread whose root is gone: the next run opens a new one.
+        w.db.prepare('DELETE FROM messages WHERE thread_id=?').run(tb.thread_id);
+        w.db.prepare('DELETE FROM messages WHERE id=?').run(tb.thread_id);
+        w.runner.play(10, H);
+        await tick();
+        const fresh = w.tasks.get(10, b.id).body;
+        assert.strictEqual(w.deps.dispatched.at(-1).threadId, null);
+        assert.ok(fresh.thread_id && fresh.thread_id !== tb.thread_id && fresh.message_id === fresh.thread_id, 'new thread attached');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks thread — retry after failed starts a new thread; the failed run keeps its thread until then', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
+        const first = runState(w, a.id);
+        w.reply(a.id, 2, 'boom', 'error');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        const failed = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([failed.status, failed.thread_id], ['failed', first.thread_id], 'the failed card still links its thread');
+        const r = w.tasks.retry(10, H, a.id);
+        assert.deepStrictEqual([r.body.status, r.body.thread_id, r.body.message_id], ['idle', null, null]);
+        w.runner.play(10, H);
+        await tick();
+        const again = w.tasks.get(10, a.id).body;
+        assert.strictEqual(w.deps.dispatched.at(-1).threadId, null);
+        assert.ok(again.thread_id && again.thread_id !== first.thread_id, 'a new thread');
       } finally { w.close(); }
     });
 
@@ -10954,6 +11100,22 @@ async function run() {
       await completeRun(agA.ws, roomId, m);
       await new Promise(r => setTimeout(r, 800));
       assert.strictEqual(card(a.id).status, 'idle');
+      // Started again, the card continues in its kept thread: the task message and the agent's run are in it.
+      const threadA = back.thread_id;
+      assert.ok(threadA && back.message_id === threadA, 'Stop keeps the thread');
+      const trig2 = waitForWsMessage(agA.ws, x => x.type === 'agent_trigger' && x.room_id === roomId && x.message_id !== m.message_id, 8000);
+      assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 200);
+      const m2 = await trig2;
+      try {
+        const again = card(a.id);
+        assert.deepStrictEqual([again.status, again.thread_id, again.message_id], ['running', threadA, threadA]);
+        const taskMsg = tDb.prepare('SELECT id, thread_id FROM messages WHERE task_id=? ORDER BY id DESC LIMIT 1').get(a.id);
+        assert.ok(taskMsg.id > threadA && taskMsg.thread_id === threadA, 'task message is a reply in the kept thread');
+        assert.strictEqual(tDb.prepare('SELECT thread_id FROM messages WHERE id=?').get(m2.message_id).thread_id, threadA, 'the run is in that thread');
+      } finally {
+        await req('POST', `${base()}/runner/stop`);
+        await completeRun(agA.ws, roomId, m2);
+      }
       for (const id of [a.id, b.id]) await req('DELETE', `${base()}/${id}`);
     });
 
