@@ -24105,6 +24105,33 @@ async function run() {
       assert.strictEqual(errRow.model_source, 'sub_agent_platform');
       assert.strictEqual(gotTrigger, false, 'no agent_trigger for a run that cannot start');
 
+      // Platform deleted after saving: the run says the pinned platform is gone (id in brackets), not a bare "not found".
+      await setPlatforms([saPlat, offPlat]);
+      const beforeGone = db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages').get().m;
+      const rGone = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, { sub_agent_id: saId, task: 'pinned platform deleted' },
+        { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+      assert.strictEqual(rGone.status, 200);
+      let goneRow;
+      for (let i = 0; i < 40 && !goneRow; i++) {
+        await new Promise(res => setTimeout(res, 50));
+        goneRow = db.prepare("SELECT content FROM messages WHERE id>? AND sub_agent_id=? AND state='complete'").get(beforeGone, saId);
+      }
+      assert.ok(goneRow, 'error message written');
+      assert.ok(goneRow.content.includes('Sub-agent "sap-ok"')
+        && goneRow.content.includes('AI platform yang dipin untuk model ini sudah dihapus (id "test-sa-oc")')
+        && !goneRow.content.includes('not found'), goneRow.content);
+
+      // Harness switched to codex while the platform pin stays: the 400 names the pin as the cause and nothing changes.
+      await setPlatforms([saPlat, offPlat, ocPlat]);
+      const toCodex = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex' });
+      assert.strictEqual(toCodex.status, 400, JSON.stringify(toCodex.body));
+      assert.match(toCodex.body.error, /model "oc-model" is from an AI platform, which only the claude harness can run; to switch to codex also send a codex model or model: null/);
+      assert.deepStrictEqual(db.prepare('SELECT model, harness, model_platform_id FROM sub_agents WHERE id=?').get(saId),
+        { model: 'oc-model', harness: null, model_platform_id: 'test-sa-oc' });
+      const codexTier = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex', model: null });
+      assert.deepStrictEqual([codexTier.status, codexTier.body.model, codexTier.body.model_platform_id], [200, null, null]);
+      assert.strictEqual((await req('PATCH', `/api/sub-agents/${saId}`, { harness: null })).status, 200);
+
       // Back to a Claude model: the id is cleared.
       const back = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'claude-opus-5-5' });
       assert.deepStrictEqual([back.status, back.body.model_platform_id], [200, null]);
