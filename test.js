@@ -19208,6 +19208,197 @@ async function run() {
     assert.deepStrictEqual(imageCalls().map(c => c[2].image_models.generate), ['<img src=x onerror=alert(1)>'], 'only differs from the refreshed stored value');
   });
 
+  await test('platform form — venice video: model slots from cached_video_models (t2v only, standard hides uncensored), constraint options, numeric caps validated, saves only on change, job list + video_job_update as text', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; this.className = ''; this.readOnly = false; this.disabled = false; this.isConnected = true; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value ?? '' : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; this._html = v; }
+      get innerHTML() { return this._html || ''; }
+      insertAdjacentHTML(_, h) { this._html = (this._html || '') + h; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      focus() { this.focused = true; }
+      scrollIntoView(o) { this.scrolled = o; }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    const getCalls = [];
+    let patchReply = { ok: true, status: 200, body: { ok: true } };
+    let platforms = [];
+    let jobsReply = [];
+    let discoverLines = '';
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      location: { origin: 'http://stoa.test' }, URL,
+      showToast() {}, svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async url => { getCalls.push(url); if (/\/video-jobs/.test(url)) { if (jobsReply instanceof Error) throw jobsReply; return jobsReply; } return platforms; },
+      TextDecoder, setTimeout: () => {},
+      fetch: async (url, opts) => {
+        const body = opts.body ? JSON.parse(opts.body) : null;
+        calls.push([url, opts.method, body]);
+        if (url.endsWith('/discover-models')) {
+          let sent = false;
+          return { ok: true, body: { getReader: () => ({ read: async () => (sent ? { done: true } : (sent = true, { done: false, value: Buffer.from(discoverLines) })) }) } };
+        }
+        if (body && 'video_settings' in body) return { ok: patchReply.ok, status: patchReply.status, json: async () => patchReply.body };
+        return { ok: true, json: async () => ({ id: 'v1' }) };
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const btn = re => form().all().find(e => e.tagName === 'BUTTON' && re.test(e.textContent));
+    const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r)); };
+    const section = () => form().all().find(e => e.className === 's-plat-img s-plat-video');
+    const opts = slot => named('platform-video-' + slot).children.map(o => [o.value, o.textContent]);
+    const alertEl = () => section().all().find(e => e.attrs.role === 'alert');
+    const videoCalls = () => calls.filter(c => c[2] && 'video_settings' in c[2]);
+    const jobRows = () => section().all().filter(e => e.className === 's-plat-video-job');
+    const rowText = r => r.all().map(e => e.textContent).filter(Boolean);
+    const jobsHint = () => section().all().find(e => e.className === 's-plat-video-jobs').children.map(e => e.textContent);
+    const slots = ['model', 'model_uncensored', 'duration', 'resolution', 'max_usd_per_job', 'max_concurrent_per_room'];
+
+    // Other vendors hide the section; a new Venice platform shows the hint and does not ask for jobs.
+    ctx.sShowPlatformForm();
+    assert.strictEqual(section().style.display, 'none', 'custom platform: no video section');
+    named('platform-type').value = 'venice'; named('platform-type').fire('change'); await flush();
+    assert.strictEqual(section().style.display, '');
+    assert.ok(section().all().some(e => /Run "discover models" first/.test(e.textContent)));
+    assert.strictEqual(named('platform-video-model'), undefined);
+    assert.deepStrictEqual(getCalls.filter(u => /video-jobs/.test(u)), [], 'unsaved platform: no job request');
+
+    const cached = [
+      { model: 'wan-2-7-text-to-video', kind: 'text-to-video', uncensored: false, constraints: { durations: ['10s', '5s'], resolutions: ['1080p', '720p'] } },
+      { model: 'longcat-distilled-text-to-video', kind: 'text-to-video', uncensored: true, constraints: { durations: ['5s'], resolutions: ['480p', '720p'] } },
+      { model: 'wan-2-7-image-to-video', kind: 'image-to-video', uncensored: false, constraints: { durations: ['5s'], resolutions: ['720p'] } },
+      { model: '<img src=x onerror=alert(1)>', kind: 'text-to-video', uncensored: false, constraints: { durations: ['<b>3s</b>'], resolutions: [] } },
+    ];
+    const settings = { model: 'wan-2-7-text-to-video', model_uncensored: 'longcat-distilled-text-to-video', duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 };
+    const v1 = { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null,
+      cached_image_models: [], image_models: null, cached_video_models: cached, video_settings: settings };
+    jobsReply = [
+      { id: 3, room_id: 7, status: 'completed', model: 'longcat-distilled-text-to-video', mode: 'uncensored', duration: '5s', resolution: '720p', quote_usd: 0.09, error: null, created_at: '2026-11-15 04:00:00', finished_at: '2026-11-15 04:01:00', upload_url: '/uploads/abc.mp4' },
+      { id: 2, room_id: 7, status: 'completed', model: 'wan-2-7-text-to-video', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: 0.55, error: null, created_at: '2026-11-15 03:00:00', finished_at: null, upload_url: 'https://evil.example/x.mp4' },
+      { id: 1, room_id: 7, status: 'failed', model: '<b>m</b>', mode: 'standard', duration: '5s', resolution: '720p', quote_usd: null, error: '<img src=x onerror=alert(1)> content violation', created_at: '2026-11-15 02:00:00', finished_at: null, upload_url: null },
+      { id: 0, status: '<i>odd</i>', model: null },
+    ];
+    ctx.sEditPlatform(v1); await flush();
+    assert.deepStrictEqual(opts('model'), [['', '(none)'], ['wan-2-7-text-to-video', 'wan-2-7-text-to-video'], ['<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>']], 'standard slot: text-to-video only, no uncensored; names are text');
+    assert.deepStrictEqual(opts('model_uncensored').map(o => o[1]), ['(none)', 'wan-2-7-text-to-video', 'longcat-distilled-text-to-video · uncensored', '<img src=x onerror=alert(1)>']);
+    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['5s', '10s'], 'durations: union of both chosen models, sorted');
+    assert.deepStrictEqual(opts('resolution').map(o => o[0]), ['480p', '720p', '1080p']);
+    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', '5s', '720p', '0.5', '2']);
+    assert.deepStrictEqual([named('platform-video-max_usd_per_job').type, named('platform-video-max_concurrent_per_room').step], ['number', '1']);
+    assert.deepStrictEqual(slots.map(s => form().all().some(e => e.tagName === 'LABEL' && e.htmlFor === named('platform-video-' + s).id)), slots.map(() => true), 'every control has a label');
+    named('platform-video-model').value = '<img src=x onerror=alert(1)>'; named('platform-video-model').fire('change');
+    assert.deepStrictEqual(opts('duration').map(o => o[0]), ['<b>3s</b>', '5s'], 'durations follow the chosen models and stay text');
+    ctx.sEditPlatform(v1); await flush();
+
+    // Job list: request scoped to the platform, rows as text, result link only for same-origin /uploads/.
+    assert.deepStrictEqual(getCalls.filter(u => /video-jobs/.test(u)).at(-1), '/api/ai/platforms/v1/video-jobs?limit=20');
+    const rows = jobRows();
+    assert.strictEqual(rows.length, 4);
+    assert.deepStrictEqual(rows.map(r => r.attrs['data-job-id']), ['3', '2', '1', '0']);
+    assert.deepStrictEqual(rows.map(r => r.children[0].textContent), ['completed', 'completed', 'failed', 'unknown'], 'unknown status is not rendered raw');
+    assert.match(rowText(rows[0]).join(' | '), /longcat-distilled-text-to-video \| uncensored · 5s · 720p · \$0\.09/);
+    const links = rows.map(r => r.all().find(e => e.tagName === 'A'));
+    assert.deepStrictEqual([links[0]?.href, links[0]?.rel, links[0]?.textContent, links[1], links[2]], ['/uploads/abc.mp4', 'noopener', 'open video', undefined, undefined], 'off-origin upload_url gets no link');
+    assert.ok(rowText(rows[2]).includes('<b>m</b>') && rowText(rows[2]).includes('<img src=x onerror=alert(1)> content violation'), 'model + error as text');
+    assert.match(rowText(rows[2]).join(' '), /—/, 'missing quote shows a dash');
+    assert.ok(!section().all().some(e => e._html), 'no innerHTML content in the section');
+
+    // Live updates: same id updates in place, new id goes on top, other platform and closed form are ignored.
+    ctx.sVideoJobUpdate({ type: 'video_job_update', platform_id: 'v1', job: { id: 1, status: 'timeout', error: 'timed out' } });
+    assert.deepStrictEqual([jobRows().length, jobRows()[2].children[0].textContent, rowText(jobRows()[2]).at(-1)], [4, 'timeout', 'timed out']);
+    ctx.sVideoJobUpdate({ type: 'video_job_update', platform_id: 'v1', job: { id: 9, status: 'queued', model: 'wan-2-7-text-to-video', quote_usd: 0.55 } });
+    assert.deepStrictEqual(jobRows().map(r => r.attrs['data-job-id']), ['9', '3', '2', '1', '0']);
+    ctx.sVideoJobUpdate({ type: 'video_job_update', platform_id: 'other', job: { id: 10, status: 'queued' } });
+    ctx.sVideoJobUpdate({ type: 'video_job_update', platform_id: 'v1' });
+    assert.strictEqual(jobRows().length, 5, 'other platform / missing job ignored');
+    section().isConnected = false;
+    ctx.sVideoJobUpdate({ type: 'video_job_update', platform_id: 'v1', job: { id: 11, status: 'queued' } });
+    section().isConnected = true;
+    assert.strictEqual(jobRows().length, 5, 'closed form ignores updates');
+    jobsReply = new Error('500');
+    ctx.sEditPlatform(v1); await flush();
+    assert.deepStrictEqual(jobsHint(), ['Could not load video jobs.']);
+    jobsReply = [];
+    ctx.sEditPlatform(v1); await flush();
+    assert.deepStrictEqual(jobsHint(), ['No video jobs yet.']);
+
+    // Unchanged: update sends no video_settings.
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(videoCalls(), [], 'nothing changed: no video_settings PATCH');
+    assert.ok(calls.length >= 1);
+
+    // Changed: full object, numbers as numbers, empty model = null.
+    ctx.sEditPlatform(v1); await flush();
+    named('platform-video-max_usd_per_job').value = '1.25';
+    named('platform-video-model').value = '';
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(videoCalls(), [['/api/ai/platforms/v1', 'PATCH', { video_settings: { ...settings, model: null, max_usd_per_job: 1.25 } }]]);
+
+    // Invalid caps stay inline, no PATCH, form open; editing clears the message.
+    for (const [slot, val, msg] of [
+      ['max_usd_per_job', '', 'Max USD per job must be a number of 0 or more'],
+      ['max_usd_per_job', '-1', 'Max USD per job must be a number of 0 or more'],
+      ['max_concurrent_per_room', '1.5', 'Max jobs per room must be a whole number of at least 1'],
+      ['max_concurrent_per_room', '0', 'Max jobs per room must be a whole number of at least 1'],
+    ]) {
+      ctx.sEditPlatform(v1); await flush();
+      named('platform-video-' + slot).value = val;
+      calls.length = 0;
+      btn(/^update$/).fire('click'); await flush();
+      assert.deepStrictEqual([videoCalls().length, alertEl().textContent, alertEl().style.display, !!alertEl().scrolled, !!form()], [0, msg, 'block', true, true], `${slot}=${val}`);
+      named('platform-video-' + slot).fire('input');
+      assert.strictEqual(alertEl().style.display, 'none');
+    }
+
+    // Server 400 inline as text; 500 without message gets the generic text.
+    ctx.sEditPlatform(v1); await flush();
+    named('platform-video-duration').value = '10s';
+    patchReply = { ok: false, status: 400, body: { error: 'video_settings.model_uncensored: "<b>x</b>" is not a video model' } };
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual([alertEl().textContent, !!form()], ['video_settings.model_uncensored: "<b>x</b>" is not a video model', true]);
+    patchReply = { ok: false, status: 500, body: {} };
+    btn(/^update$/).fire('click'); await flush();
+    assert.strictEqual(alertEl().textContent, 'Failed to save video settings');
+    patchReply = { ok: true, status: 200, body: { ok: true } };
+
+    // A stored model missing from the last discovery stays visible.
+    ctx.sEditPlatform({ ...v1, video_settings: { ...settings, model: 'gone-t2v' } }); await flush();
+    assert.deepStrictEqual([named('platform-video-model').value, opts('model').at(-1)], ['gone-t2v', ['gone-t2v', 'gone-t2v (not available)']]);
+
+    // Discover rebuilds from the fresh platform and keeps unsaved edits.
+    const v2 = { ...v1, id: 'v2', cached_video_models: [], video_settings: null };
+    ctx.sEditPlatform(v2); await flush();
+    assert.strictEqual(named('platform-video-model'), undefined);
+    platforms = [{ ...v2, cached_video_models: cached, video_settings: settings }];
+    discoverLines = JSON.stringify({ type: 'start', total: 1 }) + '\n' + JSON.stringify({ type: 'done', usable: ['m'], tested: 1 }) + '\n';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.deepStrictEqual(slots.map(s => named('platform-video-' + s).value), ['wan-2-7-text-to-video', 'longcat-distilled-text-to-video', '5s', '720p', '0.5', '2'], 'server defaults after discover');
+    named('platform-video-max_concurrent_per_room').value = '3';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.strictEqual(named('platform-video-max_concurrent_per_room').value, '3', 'unsaved change survives a re-discover');
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(videoCalls().map(c => c[2].video_settings.max_concurrent_per_room), [3]);
+  });
+
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
     const vm = require('vm');
     const fs = require('fs');
