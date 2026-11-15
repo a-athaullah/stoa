@@ -8841,6 +8841,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         tools_supported: modelToolsSupported === false ? false : undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
         thread_id: threadId || undefined,
+        // Card that owns this thread, for the agent's work journal (lib/work-journal.js). A card's first run
+        // triggers before the runner attaches the new thread to it (T.attach after dispatch resolves), so a
+        // running, still unattached card is also found through the task_id stamped on the thread root.
+        task_id: threadId ? db.prepare(`SELECT id FROM room_tasks WHERE room_id=? AND (thread_id=?
+          OR (thread_id IS NULL AND status='running' AND id=(SELECT task_id FROM messages WHERE id=? AND room_id=?)))
+          ORDER BY id DESC LIMIT 1`).get(roomId, threadId, threadId, roomId)?.id ?? undefined : undefined,
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
         mcp_token: mcpToken,
