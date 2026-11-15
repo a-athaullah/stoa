@@ -13,6 +13,8 @@ var require_thinking_sanitizer = __commonJS({
   "lib/thinking-sanitizer.js"(exports2, module2) {
     "use strict";
     var THINKING_TYPES = /* @__PURE__ */ new Set(["thinking", "redacted_thinking"]);
+    var STOA_REASONING_PREFIX = "stoa-oa1.";
+    var anthropicSigned = (b) => typeof b.signature === "string" && b.signature !== "" && !b.signature.startsWith(STOA_REASONING_PREFIX);
     var THINKING_MARKER_RE2 = /^\s*(?:\[thinking\]\s*)+/;
     function stripLeadingThinkingMarker2(text) {
       return typeof text === "string" ? text.replace(THINKING_MARKER_RE2, "") : text;
@@ -26,7 +28,7 @@ var require_thinking_sanitizer = __commonJS({
       if (!b || typeof b !== "object") return false;
       if (THINKING_TYPES.has(b.type)) {
         if (stripAll) return true;
-        if (b.type === "thinking" && !b.signature) return true;
+        if (b.type === "thinking" && !anthropicSigned(b)) return true;
         if (b.type === "redacted_thinking" && !b.data) return true;
         if (b.cache_control) return true;
         return false;
@@ -37,7 +39,7 @@ var require_thinking_sanitizer = __commonJS({
     function replaceThinkingBlock2(b, { stripAll = false } = {}) {
       if (THINKING_TYPES.has(b.type)) {
         if (stripAll) return null;
-        const unsigned = b.type === "thinking" && !b.signature || b.type === "redacted_thinking" && !b.data;
+        const unsigned = b.type === "thinking" && !anthropicSigned(b) || b.type === "redacted_thinking" && !b.data;
         if (unsigned) return null;
         if (b.cache_control) {
           const { cache_control, ...rest } = b;
@@ -50,6 +52,7 @@ var require_thinking_sanitizer = __commonJS({
     }
     module2.exports = {
       THINKING_TYPES,
+      STOA_REASONING_PREFIX,
       THINKING_MARKER_RE: THINKING_MARKER_RE2,
       stripLeadingThinkingMarker: stripLeadingThinkingMarker2,
       isThinkingSignatureError: isThinkingSignatureError2,
@@ -220,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.5.2";
+var CLIENT_VERSION = "0.5.3";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -3007,4 +3010,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };
