@@ -1543,6 +1543,28 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 
 **图像模型插槽** — 在 Venice 平台上点击 **discover models** 后，平台表单（仅限所有者）会显示四个 **Image models** 插槽：`generate`、`generate_uncensored`、`edit`、`edit_uncensored`。值从发现默认值自动填充。标准插槽（`generate`、`edit`）拒绝带有 uncensored 标志的模型。如果插槽为空或其模型在最近一次发现中不再出现，工具将提示所有者在 **Settings > Platforms** 中配置模型。
 
+**Venice 视频工具** — 当 Agent 在 Venice 模型上运行时，`stoa__video_generate` 会自动启用。该工具接收文本提示并立即返回 `job_id` 和报价 — 视频生成在后台异步运行。完成的 mp4 以附件形式发布到会话线程中，Agent 在视频就绪时被唤醒。
+
+| 运行模型类型 | 视频模型插槽 | 种类 |
+|---|---|---|
+| Venice，uncensored 标志 | `model_uncensored` / `model_i2v_uncensored` | 文本转视频 / 图像转视频 |
+| Venice，标准 | `model` / `model_i2v` | 文本转视频 / 图像转视频 |
+| 其他平台 | 工具不可见 | — |
+
+**图像转视频** — 传入 `image`（会话房间消息中已存在的附件 `/uploads/…` URL）可从参考图像生成视频。使用 `stoa__messages_read` 或 `stoa__thread_read` 列出消息；每条消息包含 `file_urls` 字段，其中有工具接受的路径。
+
+**子 Agent** 只有在自身运行解析到同一个 Venice 平台时才能使用视频工具。使用不同模型的子 Agent 不会获得视频工具。
+
+**视频模型插槽** — 在 Venice 平台上点击 **discover models** 后，平台表单（仅限所有者）会显示四个 **Video models** 插槽：`model`（文本转视频，标准）、`model_uncensored`（文本转视频，无审查）、`model_i2v`（图像转视频，标准）、`model_i2v_uncensored`（图像转视频，无审查）。值从发现默认值自动填充。标准插槽拒绝无审查模型。
+
+**视频设置**（仅限所有者） — `duration` 和 `resolution` 同时作为 Agent 可请求值的默认值和上限。每个任务在入队前先进行报价；超过 `max_usd_per_job` 的任务在产生费用前被拒绝。`max_concurrent_per_room` 限制每个房间同时活跃的视频任务数（默认 2，最多 10）。
+
+**最近视频任务** — 平台卡片显示最新任务（最新在前），包含实时状态（`queued` → `processing` → `completed`）、模型、报价，完成后显示打开 mp4 的链接。状态更新通过 WebSocket 实时送达，无需刷新页面。
+
+**可能的错误** — `422` 参数无效（提示词过长、模型不支持该 duration 或 resolution、模型未列出该 aspect ratio）；`402` 达到 Venice 计费限额（在 venice.ai 提高密钥每日限额或充值）；`413` 输入图像过大或不满足模型最小尺寸要求；`404` 轮询时任务不存在；`timeout` 任务在 45 分钟内未完成。失败的任务在最近任务列表中显示错误信息。
+
+**建议** — 使用 **Inference Only** API 密钥，并为密钥设置每计费周期支出上限，防止 Agent 超出预算。
+
 **支持的供应商** — 任何提供 Anthropic Messages 或 OpenAI Chat Completions 端点的供应商均可使用：
 - **Ollama Cloud** — 选择"Ollama Cloud"类型（内置代理，支持密钥轮换，40+ 模型，最高 480B）
 - **Venice.ai** — 选择"Venice.ai"类型（`https://api.venice.ai/api/v1`，OpenAI Chat，50+ 开放权重模型（含无审查变体））

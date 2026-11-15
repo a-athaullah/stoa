@@ -405,6 +405,7 @@ function sShowPlatformForm(existing) {
           .catch(() => showToast('Failed to save model selection', { error: true }));
       }
       if (vendor === 'venice' && !(await imageModels.save(platformId))) return;
+      if (vendor === 'venice' && !(await videoSettings.save(platformId))) return;
       sLoadPlatformsTab();
       fetchPlatformModels();
     } catch { showToast('Failed to save platform', { error: true }); }
@@ -511,7 +512,7 @@ function sShowPlatformForm(existing) {
       let tail = null;
       try { tail = buf.trim() ? JSON.parse(buf) : null; } catch {}
       if (tail?.status === 'error') throw new Error(tail.message || 'discovery failed');
-      if (vendor === 'venice') await imageModels.refresh(id);
+      if (vendor === 'venice') { await imageModels.refresh(id); await videoSettings.refresh(id); }
       fetchPlatformModels();
     } catch (e) {
       progressLabel.textContent = 'discovery failed';
@@ -562,7 +563,19 @@ function sShowPlatformForm(existing) {
   typeSel.addEventListener('change', applyImageVisibility);
   applyImageVisibility();
 
-  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, veniceHint, keysRow, extraRow, progressWrap, modelSection, imageSection, btnRow);
+  const videoSection = document.createElement('div');
+  videoSection.className = 's-plat-img s-plat-video';
+  const videoSettings = sVideoSettingsSection(videoSection, existing);
+  let videoJobsLoaded = false;
+  const applyVideoVisibility = () => {
+    const show = typeSel.value === 'venice';
+    videoSection.style.display = show ? '' : 'none';
+    if (show && existing?.id && !videoJobsLoaded) { videoJobsLoaded = true; videoSettings.loadJobs(); }
+  };
+  typeSel.addEventListener('change', applyVideoVisibility);
+  applyVideoVisibility();
+
+  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, veniceHint, keysRow, extraRow, progressWrap, modelSection, imageSection, videoSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);
@@ -688,6 +701,333 @@ function sImageModelsSection(container, platform) {
       if (!fresh) return;
       if (platform) { platform.cached_image_models = fresh.cached_image_models; platform.image_models = fresh.image_models; }
       render(fresh.cached_image_models, fresh.image_models, keep);
+    },
+  };
+}
+
+const S_VIDEO_JOB_STATUSES = new Set(['queued', 'processing', 'completed', 'failed', 'timeout']);
+const S_VIDEO_KIND_LABELS = { t2v: 'text-to-video', i2v: 'image-to-video' };
+const S_VIDEO_SLOTS = [
+  ['model', 'text-to-video', 't2v', false],
+  ['model_uncensored', 'text-to-video (uncensored)', 't2v', true],
+  ['model_i2v', 'image-to-video', 'i2v', false],
+  ['model_i2v_uncensored', 'image-to-video (uncensored)', 'i2v', true],
+];
+// Same caps as USD_PER_JOB_MAX / CONCURRENT_MAX in lib/venice-video.js; the server re-checks on save.
+const S_VIDEO_USD_MAX = 50;
+const S_VIDEO_CONCURRENT_MAX = 10;
+let sVideoJobListener = null;
+
+// Owner-only `video_job_update` from the global socket; only the open Venice form listens.
+function sVideoJobUpdate(msg) {
+  if (sVideoJobListener) sVideoJobListener(msg);
+}
+
+function sVideoNum(v) {
+  return typeof v === 'number' && isFinite(v) ? v : null;
+}
+
+function sVideoUsd(n) {
+  return n === null ? '—' : '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+// Only same-origin /uploads/ results become links; anything else from the payload is ignored.
+function sVideoResultHref(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const u = new URL(raw, location.origin);
+    return u.origin === location.origin && u.pathname.startsWith('/uploads/') ? u.pathname : null;
+  } catch { return null; }
+}
+
+// Video settings for a Venice platform: default text-to-video and image-to-video model per mode (standard
+// slots never offer uncensored models), default duration/resolution, the per-job price cap and per-room concurrency cap,
+// plus the recent job list (live via video_job_update). The server re-validates everything on save.
+function sVideoSettingsSection(container, platform) {
+  let stored = {};
+  let fields = null;
+  let errEl = null;
+  let jobsWrap = null;
+  let jobs = [];
+  let jobsSeq = 0;
+  const platformId = () => platform?.id ?? null;
+
+  const strOrEmpty = v => (typeof v === 'string' ? v : '');
+  const numText = v => (sVideoNum(v) === null ? '' : String(v));
+
+  function addRow(labelText, control, slot) {
+    const row = document.createElement('div');
+    row.className = 's-plat-img-row';
+    const lbl = document.createElement('label');
+    lbl.className = 's-plat-img-label';
+    lbl.htmlFor = 's-plat-video-' + slot;
+    lbl.textContent = labelText;
+    control.id = 's-plat-video-' + slot;
+    control.name = 'platform-video-' + slot;
+    control.addEventListener('input', () => setError(''));
+    control.addEventListener('change', () => setError(''));
+    row.append(lbl, control);
+    container.appendChild(row);
+  }
+
+  function makeSelect() {
+    const sel = document.createElement('select');
+    sel.className = 's-server-input s-plat-img-select';
+    return sel;
+  }
+
+  function fillSelect(sel, options, current, noneLabel) {
+    sel.innerHTML = '';
+    const add = (value, text) => {
+      const opt = document.createElement('option');
+      opt.value = value; opt.textContent = text;
+      sel.appendChild(opt);
+    };
+    if (noneLabel) add('', noneLabel);
+    for (const [value, text] of options) add(value, text);
+    if (current && !options.some(([v]) => v === current)) add(current, current + ' (not available)');
+    sel.value = current || '';
+  }
+
+  function makeNumber(min, max, step) {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = 's-server-input s-plat-video-num';
+    inp.min = String(min);
+    inp.max = String(max);
+    inp.step = step;
+    inp.inputMode = step === '1' ? 'numeric' : 'decimal';
+    return inp;
+  }
+
+  function render(cached, saved, keep) {
+    stored = saved && typeof saved === 'object' ? saved : {};
+    fields = null;
+    errEl = null;
+    container.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 's-plat-img-title';
+    title.textContent = 'video';
+    container.appendChild(title);
+
+    const models = Array.isArray(cached)
+      ? cached.filter(m => m && typeof m.model === 'string' && (m.kind === 't2v' || m.kind === 'i2v'))
+      : [];
+    if (!models.length) {
+      const hint = document.createElement('div');
+      hint.className = 's-plat-hint';
+      hint.textContent = 'No video models yet. Run "discover models" first, then pick the models agents use for video.';
+      container.appendChild(hint);
+    } else {
+      const pick = key => (keep && key in keep ? keep[key] : stored[key]);
+      const slotSels = {};
+      for (const [slot, , kind, allowUncensored] of S_VIDEO_SLOTS) {
+        const sel = makeSelect();
+        const offered = models.filter(m => m.kind === kind && (allowUncensored || m.uncensored !== true));
+        fillSelect(sel, offered.map(m => [m.model, allowUncensored && m.uncensored === true ? m.model + ' · uncensored' : m.model]), strOrEmpty(pick(slot)), '(none)');
+        slotSels[slot] = sel;
+      }
+      const durSel = makeSelect();
+      const resSel = makeSelect();
+      const usdInp = makeNumber(0.01, S_VIDEO_USD_MAX, '0.01');
+      const concInp = makeNumber(1, S_VIDEO_CONCURRENT_MAX, '1');
+      usdInp.value = numText(pick('max_usd_per_job'));
+      concInp.value = numText(pick('max_concurrent_per_room'));
+      fields = { slotSels, durSel, resSel, usdInp, concInp };
+
+      // Duration/resolution are the default and the cap agents may ask for; options follow the chosen models.
+      const constraintOptions = key => {
+        const chosen = Object.values(slotSels).map(sel => models.find(m => m.model === sel.value)).filter(Boolean);
+        const seen = new Set();
+        for (const m of chosen) {
+          const list = m.constraints && Array.isArray(m.constraints[key]) ? m.constraints[key] : [];
+          for (const v of list) if (typeof v === 'string' && v) seen.add(v);
+        }
+        return [...seen].sort((a, b) => (parseFloat(a) - parseFloat(b)) || a.localeCompare(b)).map(v => [v, v]);
+      };
+      const refreshConstraints = () => {
+        fillSelect(durSel, constraintOptions('durations'), durSel.value || strOrEmpty(pick('duration')), null);
+        fillSelect(resSel, constraintOptions('resolutions'), resSel.value || strOrEmpty(pick('resolution')), null);
+      };
+      refreshConstraints();
+      for (const [slot, label] of S_VIDEO_SLOTS) {
+        slotSels[slot].addEventListener('change', refreshConstraints);
+        addRow(label, slotSels[slot], slot);
+      }
+      addRow('duration', durSel, 'duration');
+      addRow('resolution', resSel, 'resolution');
+      addRow('max USD per job', usdInp, 'max_usd_per_job');
+      addRow('max jobs per room', concInp, 'max_concurrent_per_room');
+
+      errEl = document.createElement('div');
+      errEl.className = 's-plat-hint s-plat-error';
+      errEl.setAttribute('role', 'alert');
+      errEl.style.display = 'none';
+      container.appendChild(errEl);
+    }
+
+    const jobsTitle = document.createElement('div');
+    jobsTitle.className = 's-plat-img-title s-plat-video-jobs-title';
+    jobsTitle.textContent = 'recent video jobs';
+    jobsWrap = document.createElement('div');
+    jobsWrap.className = 's-plat-video-jobs';
+    jobsWrap.setAttribute('aria-live', 'polite');
+    container.append(jobsTitle, jobsWrap);
+    renderJobs();
+  }
+
+  function setError(msg) {
+    if (!errEl) return;
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+    if (msg) errEl.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  function values() {
+    if (!fields) return null;
+    const { slotSels, durSel, resSel, usdInp, concInp } = fields;
+    return {
+      ...Object.fromEntries(S_VIDEO_SLOTS.map(([slot]) => [slot, slotSels[slot].value || null])),
+      duration: durSel.value || null,
+      resolution: resSel.value || null,
+      max_usd_per_job: usdInp.value.trim() === '' ? null : Number(usdInp.value),
+      max_concurrent_per_room: concInp.value.trim() === '' ? null : Number(concInp.value),
+    };
+  }
+
+  function dirtyKeys() {
+    const v = values();
+    if (!v) return {};
+    return Object.fromEntries(Object.entries(v).filter(([k, val]) => val !== (stored[k] ?? null)));
+  }
+
+  function jobRow(job) {
+    const row = document.createElement('div');
+    row.className = 's-plat-video-job';
+    row.setAttribute('data-job-id', String(job.id));
+
+    const status = S_VIDEO_JOB_STATUSES.has(job.status) ? job.status : 'unknown';
+    const pill = document.createElement('span');
+    pill.className = 's-plat-tag s-plat-video-status';
+    pill.setAttribute('data-status', status);
+    pill.textContent = status;
+
+    const model = document.createElement('span');
+    model.className = 's-plat-video-model';
+    model.textContent = typeof job.model === 'string' && job.model ? job.model : '—';
+    model.title = model.textContent;
+
+    const meta = document.createElement('span');
+    meta.className = 's-plat-video-meta';
+    const parts = [];
+    if (Object.hasOwn(S_VIDEO_KIND_LABELS, job.kind ?? '')) parts.push(S_VIDEO_KIND_LABELS[job.kind]);
+    if (job.mode === 'uncensored') parts.push('uncensored');
+    for (const k of ['duration', 'resolution']) if (typeof job[k] === 'string' && job[k]) parts.push(job[k]);
+    parts.push(sVideoUsd(sVideoNum(job.quote_usd)));
+    const when = sParseServerTime(job.created_at);
+    if (when) parts.push(when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    meta.textContent = parts.join(' · ');
+
+    row.append(pill, model, meta);
+
+    const href = status === 'completed' ? sVideoResultHref(job.upload_url) : null;
+    if (href) {
+      const link = document.createElement('a');
+      link.className = 's-plat-link-btn s-plat-video-open';
+      link.href = href;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'open video';
+      row.appendChild(link);
+    }
+    if (typeof job.error === 'string' && job.error) {
+      const err = document.createElement('div');
+      err.className = 's-plat-hint s-plat-error s-plat-video-error';
+      err.textContent = job.error;
+      row.appendChild(err);
+    }
+    return row;
+  }
+
+  function renderJobs(note) {
+    if (!jobsWrap) return;
+    jobsWrap.innerHTML = '';
+    if (note || !jobs.length) {
+      const hint = document.createElement('div');
+      hint.className = 's-plat-hint';
+      hint.textContent = note || 'No video jobs yet.';
+      jobsWrap.appendChild(hint);
+      return;
+    }
+    for (const job of jobs) jobsWrap.appendChild(jobRow(job));
+  }
+
+  async function loadJobs() {
+    const id = platformId();
+    if (!id) { renderJobs('Save the platform first.'); return; }
+    const seq = ++jobsSeq;
+    renderJobs('Loading…');
+    try {
+      const list = await fjson(`/api/ai/platforms/${encodeURIComponent(id)}/video-jobs?limit=20`);
+      if (seq !== jobsSeq) return;
+      jobs = Array.isArray(list) ? list.filter(j => j && j.id != null) : [];
+      renderJobs();
+    } catch {
+      if (seq === jobsSeq) renderJobs('Could not load video jobs.');
+    }
+  }
+
+  function onJobUpdate(msg) {
+    const job = msg && typeof msg.job === 'object' ? msg.job : null;
+    if (!job || job.id == null || !container.isConnected) return;
+    if (msg.platform_id != null && msg.platform_id !== platformId()) return;
+    jobsSeq++;
+    const idx = jobs.findIndex(j => j.id === job.id);
+    if (idx === -1) jobs = [job, ...jobs].slice(0, 20);
+    else jobs[idx] = { ...jobs[idx], ...job };
+    renderJobs();
+  }
+
+  render(platform?.cached_video_models, platform?.video_settings, null);
+  sVideoJobListener = onJobUpdate;
+
+  return {
+    loadJobs,
+    async save(id) {
+      if (!Object.keys(dirtyKeys()).length) return true;
+      const video_settings = values();
+      const usd = video_settings.max_usd_per_job;
+      if (usd === null || !isFinite(usd) || usd <= 0 || usd > S_VIDEO_USD_MAX) {
+        setError(`Max USD per job must be a number above 0 and at most ${S_VIDEO_USD_MAX}`);
+        return false;
+      }
+      const conc = video_settings.max_concurrent_per_room;
+      if (!Number.isInteger(conc) || conc < 1 || conc > S_VIDEO_CONCURRENT_MAX) {
+        setError(`Max jobs per room must be a whole number from 1 to ${S_VIDEO_CONCURRENT_MAX}`);
+        return false;
+      }
+      try {
+        const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_settings }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          setError(err.error || 'Failed to save video settings');
+          return false;
+        }
+        stored = video_settings;
+        return true;
+      } catch { setError('Failed to save video settings'); return false; }
+    },
+    async refresh(id) {
+      const keep = dirtyKeys();
+      let fresh;
+      try { fresh = (await fjson('/api/ai/platforms')).find(p => p.id === id); } catch { return; }
+      if (!fresh) return;
+      if (platform) { platform.cached_video_models = fresh.cached_video_models; platform.video_settings = fresh.video_settings; }
+      else platform = fresh;
+      render(fresh.cached_video_models, fresh.video_settings, keep);
     },
   };
 }

@@ -1543,6 +1543,28 @@ API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 �
 
 **이미지 모델 슬롯** — Venice 플랫폼에서 **discover models**를 클릭하면 플랫폼 폼(오너 전용)에 네 개의 **Image models** 슬롯이 표시됩니다: `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. 탐색 기본값으로 자동 채워집니다. 표준 슬롯(`generate`, `edit`)은 uncensored 플래그가 있는 모델을 거부합니다. 슬롯이 비어 있거나 최근 탐색에서 모델이 없으면, 툴은 오너에게 **Settings > Platforms**에서 모델을 설정하도록 안내합니다.
 
+**Venice 비디오 툴** — 에이전트 실행이 Venice 모델에서 이루어지면 `stoa__video_generate`가 자동으로 활성화됩니다. 툴은 텍스트 프롬프트를 받아 즉시 `job_id`와 견적 가격을 반환합니다 — 비디오 생성은 백그라운드에서 비동기로 실행됩니다. 완성된 mp4는 세션 스레드에 첨부 파일로 게시되고 에이전트는 준비되면 깨어납니다.
+
+| 실행 모델 유형 | 비디오 모델 슬롯 | 종류 |
+|---|---|---|
+| Venice, uncensored 플래그 | `model_uncensored` / `model_i2v_uncensored` | 텍스트-비디오 / 이미지-비디오 |
+| Venice, 표준 | `model` / `model_i2v` | 텍스트-비디오 / 이미지-비디오 |
+| 기타 플랫폼 | 툴 비표시 | — |
+
+**이미지-비디오** — 세션 룸의 메시지에 이미 첨부된 이미지의 `/uploads/…` URL을 `image` 파라미터로 전달하면 참조 이미지에서 비디오를 생성할 수 있습니다. `stoa__messages_read` 또는 `stoa__thread_read`로 메시지를 조회하면 각 메시지에 툴이 허용하는 경로가 담긴 `file_urls` 필드가 포함됩니다.
+
+**서브에이전트**는 자신의 실행이 동일한 Venice 플랫폼으로 해석되는 경우에만 비디오 툴을 받습니다. 다른 모델을 사용하는 서브에이전트는 비디오 툴을 받지 못합니다.
+
+**비디오 모델 슬롯** — Venice 플랫폼에서 **discover models**를 클릭하면 플랫폼 폼(오너 전용)에 네 개의 **Video models** 슬롯이 표시됩니다: `model` (텍스트-비디오, 표준), `model_uncensored` (텍스트-비디오, 무검열), `model_i2v` (이미지-비디오, 표준), `model_i2v_uncensored` (이미지-비디오, 무검열). 탐색 기본값으로 자동 채워집니다. 표준 슬롯은 무검열 모델을 거부합니다.
+
+**비디오 설정** (오너 전용) — `duration`과 `resolution`은 에이전트가 요청할 수 있는 값의 기본값이자 상한값입니다. 각 작업은 큐에 들어가기 전에 견적 가격이 산출되며, `max_usd_per_job`을 초과하는 작업은 비용 발생 전에 거부됩니다. `max_concurrent_per_room`은 룸당 동시 활성 비디오 작업 수를 제한합니다 (기본값 2, 최대 10).
+
+**최근 비디오 작업** — 플랫폼 카드에는 최신 작업(최신순)이 실시간 상태(`queued` → `processing` → `completed`), 모델, 견적 가격과 함께 표시되며, 완료 시 mp4를 열 수 있는 링크가 나타납니다. 상태 업데이트는 페이지 리로드 없이 WebSocket으로 도착합니다.
+
+**발생 가능한 오류** — `422` 잘못된 파라미터 (프롬프트 길이 초과, 모델이 duration 또는 resolution을 지원하지 않음, 모델에 등록되지 않은 aspect ratio); `402` Venice 청구 한도 도달 (venice.ai에서 키의 일일 한도 증가 또는 크레딧 추가); `413` 입력 이미지가 너무 크거나 모델의 최소 크기 요건 미충족; `404` 폴링 중 작업 없음; `timeout` 45분 이내에 작업 미완료. 실패한 작업은 최근 작업 목록에 오류 메시지를 표시합니다.
+
+**권장 사항** — **Inference Only** API 키를 사용하고 키에 에포크당 지출 한도를 설정하여 에이전트가 예산을 초과하지 않도록 하세요.
+
 **지원 제공자** — Anthropic Messages 또는 OpenAI Chat Completions 엔드포인트를 제공하는 모든 제공자를 사용할 수 있습니다:
 - **Ollama Cloud** — "Ollama Cloud" 타입 선택 (내장 프록시, 키 로테이션, 40+ 모델, 최대 480B)
 - **Venice.ai** — "Venice.ai" 타입 선택 (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ 오픈 웨이트 모델(비검열 모델 포함))

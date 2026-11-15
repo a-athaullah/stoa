@@ -389,6 +389,25 @@ CREATE TABLE mcp_tokens (
   run_platform_id TEXT, run_model TEXT
 );
 
+-- Venice video jobs (lib/venice-video.js, migration 20261115-venice-video-jobs). Venice cannot list
+-- past jobs, so queue_id + the one-time download_url (pre-signed, cleared when the job ends, never
+-- returned) live here; the server poller resumes queued/processing rows after a restart.
+CREATE TABLE video_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform_id TEXT NOT NULL, room_id INTEGER NOT NULL, thread_id INTEGER, actor_id INTEGER NOT NULL, sub_agent_id INTEGER,
+  status TEXT NOT NULL,            -- queued|processing|completed|failed|timeout
+  kind TEXT NOT NULL,              -- t2v|i2v
+  mode TEXT NOT NULL,              -- standard|uncensored (from the run's chat model)
+  model TEXT NOT NULL, duration TEXT, resolution TEXT, aspect_ratio TEXT, quote_usd REAL,
+  queue_id TEXT, download_url TEXT,
+  key_ref TEXT,                    -- sha256(api key)[0:16] of the key that queued it (job belongs to that account), never the key
+  poll_failures INTEGER, next_poll_at INTEGER, deadline_at INTEGER,   -- epoch ms
+  error TEXT, upload_url TEXT, message_id INTEGER,
+  wake_pending INTEGER,            -- 1 = agent still to be woken with the result (waits while it is offline)
+  created_at TEXT, finished_at TEXT
+);
+-- No FKs: a job whose room/platform is gone is failed by the poller. Finished rows pruned after 30 days.
+
 -- Call audit log
 CREATE TABLE mcp_calls (
   id INTEGER PRIMARY KEY,

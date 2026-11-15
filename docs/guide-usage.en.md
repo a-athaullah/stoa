@@ -1547,6 +1547,28 @@ For `stoa__image_edit`, source images must already be attached to messages in th
 
 **Image model slots** — After clicking **discover models** on a Venice platform, four **Image models** slots appear in the platform form (owner only): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Values are prefilled from discovery defaults. Standard slots (`generate`, `edit`) reject models flagged as uncensored. If a slot is empty or its model no longer appears after the most recent discovery, the tool returns a message asking the owner to set a model in **Settings > Platforms**.
 
+**Venice video tool** — When an agent's run is on a Venice model, `stoa__video_generate` becomes available automatically. The tool accepts a text prompt and returns immediately with a `job_id` and quoted price — video generation runs asynchronously in the background. The finished mp4 is posted as an attachment in the session thread and the agent is woken when it is ready.
+
+| Run model type | Video model slot | Kind |
+|---|---|---|
+| Venice, uncensored flag | `model_uncensored` / `model_i2v_uncensored` | text-to-video / image-to-video |
+| Venice, standard | `model` / `model_i2v` | text-to-video / image-to-video |
+| Any other platform | Tool not visible | — |
+
+**Image-to-video** — Pass `image` (a `/uploads/…` URL from a message already in the session's room) to generate video from a reference image. Use `stoa__messages_read` or `stoa__thread_read` to list messages; each message includes a `file_urls` field with the paths the tool accepts.
+
+**Sub-agents** only receive the video tool if their own run resolves to the same Venice platform. A sub-agent whose tier uses a different model does not get the video tool.
+
+**Video model slots** — After clicking **discover models** on a Venice platform, four **Video models** slots appear in the platform form (owner only): `model` (text-to-video, standard), `model_uncensored` (text-to-video, uncensored), `model_i2v` (image-to-video, standard), `model_i2v_uncensored` (image-to-video, uncensored). Values are prefilled from discovery defaults. Standard slots reject uncensored models.
+
+**Video settings** (owner only) — `duration` and `resolution` are both the default and the ceiling for what an agent may request. Each job is priced with a quote before queuing; jobs above `max_usd_per_job` are refused before any charge is incurred. `max_concurrent_per_room` limits simultaneous active video jobs per room (default 2, max 10).
+
+**Recent video jobs** — The platform card shows the most recent jobs (newest first) with live status (`queued` → `processing` → `completed`), model, quoted price, and a link to open the mp4 when complete. Status updates arrive via WebSocket without reloading.
+
+**Possible errors** — `422` invalid parameters (prompt too long, duration or resolution not supported by the model, aspect ratio not listed by the model); `402` Venice billing limit reached (raise the key's daily limit or add credits at venice.ai); `413` input image too large or does not meet the model's minimum size requirements; `404` job lost during polling; `timeout` job did not complete within 45 minutes. Failed jobs show the error message in the recent jobs list.
+
+**Recommendation** — Use an **Inference Only** API key and set a per-epoch spend limit on the key so an agent cannot exceed your budget.
+
 **Supported providers** — any provider that exposes an Anthropic Messages or OpenAI Chat Completions endpoint works:
 - **Ollama Cloud** — select the "Ollama Cloud" type (built-in proxy with key rotation, 40+ models up to 480B)
 - **Venice.ai** — select the "Venice.ai" type (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ open-weight models including uncensored variants)

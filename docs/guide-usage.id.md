@@ -1548,6 +1548,28 @@ Untuk `stoa__image_edit`, gambar sumber harus sudah ada sebagai attachment di ro
 
 **Slot model gambar** — Setelah klik **discover models** pada platform Venice, empat slot **Image models** muncul di form platform (owner saja): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Nilai diisi otomatis dari default discovery. Slot standar (`generate`, `edit`) menolak model yang ditandai uncensored. Jika slot kosong atau model tidak ditemukan lagi saat discovery terakhir, tool akan meminta owner untuk mengatur model di **Settings > Platforms**.
 
+**Tool video Venice** — Saat run agent menggunakan model Venice, `stoa__video_generate` tersedia otomatis. Tool menerima prompt teks dan langsung mengembalikan `job_id` beserta harga quote — pembuatan video berjalan asinkron di latar belakang. File mp4 yang selesai diposting sebagai lampiran di thread sesi dan agent dibangunkan saat siap.
+
+| Tipe model run | Slot model video | Jenis |
+|---|---|---|
+| Venice, flag uncensored | `model_uncensored` / `model_i2v_uncensored` | teks-ke-video / gambar-ke-video |
+| Venice, standar | `model` / `model_i2v` | teks-ke-video / gambar-ke-video |
+| Platform lain | Tool tidak terlihat | — |
+
+**Image-to-video** — Tambahkan `image` (URL `/uploads/…` dari pesan di room sesi yang sama) untuk membuat video dari gambar referensi. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan; setiap pesan menyertakan field `file_urls` berisi path yang diterima tool.
+
+**Sub-agent** hanya mendapat tool video jika run mereka sendiri menggunakan platform Venice yang sama. Sub-agent yang menggunakan model berbeda tidak mendapat tool video.
+
+**Slot model video** — Setelah klik **discover models** pada platform Venice, empat slot **Video models** muncul di form platform (owner saja): `model` (teks-ke-video, standar), `model_uncensored` (teks-ke-video, uncensored), `model_i2v` (gambar-ke-video, standar), `model_i2v_uncensored` (gambar-ke-video, uncensored). Nilai diisi otomatis dari default discovery. Slot standar menolak model uncensored.
+
+**Pengaturan video** (owner saja) — `duration` dan `resolution` berlaku sekaligus sebagai default dan batas atas permintaan agent. Setiap job diberi harga quote sebelum masuk antrian; job yang melebihi `max_usd_per_job` ditolak sebelum ada tagihan. `max_concurrent_per_room` membatasi jumlah job video aktif bersamaan per room (default 2, maksimal 10).
+
+**Daftar job video terbaru** — Kartu platform menampilkan job terbaru (terbaru lebih atas) dengan status live (`queued` → `processing` → `completed`), model, harga quote, dan tautan membuka mp4 saat selesai. Update status datang via WebSocket tanpa reload.
+
+**Error yang mungkin terjadi** — `422` parameter tidak valid (prompt terlalu panjang, durasi atau resolusi tidak didukung model, aspect ratio tidak ada dalam daftar model); `402` batas billing Venice tercapai (naikkan daily limit key atau tambah kredit di venice.ai); `413` gambar input terlalu besar atau tidak memenuhi persyaratan ukuran minimum model; `404` job hilang saat polling; `timeout` job tidak selesai dalam 45 menit. Job yang gagal menampilkan pesan error di daftar job terbaru.
+
+**Rekomendasi** — Gunakan API key **Inference Only** dan atur batas belanja per epoch pada key tersebut agar agent tidak melebihi anggaran.
+
 **Provider yang didukung** — provider mana pun yang mengekspos endpoint Anthropic Messages atau OpenAI Chat Completions bisa digunakan:
 - **Ollama Cloud** — pilih tipe "Ollama Cloud" (proxy bawaan dengan rotasi key, 40+ model hingga 480B)
 - **Venice.ai** — pilih tipe "Venice.ai" (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ model open-weight termasuk varian uncensored)
