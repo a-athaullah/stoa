@@ -404,6 +404,7 @@ function sShowPlatformForm(existing) {
         }).then(r => { if (!r.ok) showToast('Failed to save model selection', { error: true }); })
           .catch(() => showToast('Failed to save model selection', { error: true }));
       }
+      if (vendor === 'venice' && !(await imageModels.save(platformId))) return;
       sLoadPlatformsTab();
       fetchPlatformModels();
     } catch { showToast('Failed to save platform', { error: true }); }
@@ -510,6 +511,7 @@ function sShowPlatformForm(existing) {
       let tail = null;
       try { tail = buf.trim() ? JSON.parse(buf) : null; } catch {}
       if (tail?.status === 'error') throw new Error(tail.message || 'discovery failed');
+      if (vendor === 'venice') await imageModels.refresh(id);
       fetchPlatformModels();
     } catch (e) {
       progressLabel.textContent = 'discovery failed';
@@ -553,7 +555,14 @@ function sShowPlatformForm(existing) {
     sRenderModelChecklist(modelSection, existing.cached_models, existing.enabled_models ?? null);
   }
 
-  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, veniceHint, keysRow, extraRow, progressWrap, modelSection, btnRow);
+  const imageSection = document.createElement('div');
+  imageSection.className = 's-plat-img';
+  const imageModels = sImageModelsSection(imageSection, existing);
+  const applyImageVisibility = () => { imageSection.style.display = typeSel.value === 'venice' ? '' : 'none'; };
+  typeSel.addEventListener('change', applyImageVisibility);
+  applyImageVisibility();
+
+  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, veniceHint, keysRow, extraRow, progressWrap, modelSection, imageSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);
@@ -575,6 +584,112 @@ function sEditPlatform(platform) {
     prev.remove();
   }
   sShowPlatformForm(platform);
+}
+
+const S_IMAGE_SLOTS = [
+  ['generate', 'generate', 'generate', false],
+  ['generate_uncensored', 'generate (uncensored)', 'generate', true],
+  ['edit', 'edit', 'edit', false],
+  ['edit_uncensored', 'edit (uncensored)', 'edit', true],
+];
+
+// Image model slots for a Venice platform. Options come from cached_image_models (filled by discover);
+// standard slots never offer uncensored models. The server re-validates every slot on save.
+function sImageModelsSection(container, platform) {
+  let stored = {};
+  let selects = {};
+  let errEl = null;
+
+  function render(cached, saved, keep) {
+    stored = saved && typeof saved === 'object' ? saved : {};
+    selects = {};
+    container.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 's-plat-img-title';
+    title.textContent = 'image models';
+    container.appendChild(title);
+    const models = Array.isArray(cached) ? cached.filter(m => m && typeof m.model === 'string') : [];
+    if (!models.length) {
+      const hint = document.createElement('div');
+      hint.className = 's-plat-hint';
+      hint.textContent = 'No image models yet. Run "discover models" first, then pick the models agents use for image tools.';
+      container.appendChild(hint);
+      errEl = null;
+      return;
+    }
+    for (const [slot, label, kind, allowUncensored] of S_IMAGE_SLOTS) {
+      const row = document.createElement('div');
+      row.className = 's-plat-img-row';
+      const lbl = document.createElement('label');
+      lbl.className = 's-plat-img-label';
+      lbl.htmlFor = 's-plat-img-' + slot;
+      lbl.textContent = label;
+      const sel = document.createElement('select');
+      sel.className = 's-server-input s-plat-img-select';
+      sel.id = 's-plat-img-' + slot;
+      sel.name = 'platform-image-' + slot;
+      const addOpt = (value, text) => {
+        const opt = document.createElement('option');
+        opt.value = value; opt.textContent = text;
+        sel.appendChild(opt);
+      };
+      addOpt('', '(none)');
+      const offered = models.filter(m => m.kind === kind && (allowUncensored || m.uncensored !== true));
+      for (const m of offered) addOpt(m.model, allowUncensored && m.uncensored === true ? m.model + ' · uncensored' : m.model);
+      const current = keep && slot in keep ? keep[slot] : (typeof stored[slot] === 'string' ? stored[slot] : '');
+      if (current && !offered.some(m => m.model === current)) addOpt(current, current + ' (not available)');
+      sel.value = current || '';
+      sel.addEventListener('change', () => setError(''));
+      row.append(lbl, sel);
+      container.appendChild(row);
+      selects[slot] = sel;
+    }
+    errEl = document.createElement('div');
+    errEl.className = 's-plat-hint s-plat-error';
+    errEl.setAttribute('role', 'alert');
+    errEl.style.display = 'none';
+    container.appendChild(errEl);
+  }
+
+  function setError(msg) {
+    if (!errEl) return;
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+    if (msg) errEl.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  const values = () => Object.fromEntries(Object.entries(selects).map(([slot, sel]) => [slot, sel.value || null]));
+  const dirtySlots = () => Object.fromEntries(Object.entries(values()).filter(([slot, v]) => v !== (stored[slot] || null)));
+
+  render(platform?.cached_image_models, platform?.image_models, null);
+
+  return {
+    async save(id) {
+      if (!Object.keys(dirtySlots()).length) return true;
+      const image_models = values();
+      try {
+        const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_models }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          setError(err.error || 'Failed to save image models');
+          return false;
+        }
+        stored = image_models;
+        return true;
+      } catch { setError('Failed to save image models'); return false; }
+    },
+    async refresh(id) {
+      const keep = dirtySlots();
+      let fresh;
+      try { fresh = (await fjson('/api/ai/platforms')).find(p => p.id === id); } catch { return; }
+      if (!fresh) return;
+      if (platform) { platform.cached_image_models = fresh.cached_image_models; platform.image_models = fresh.image_models; }
+      render(fresh.cached_image_models, fresh.image_models, keep);
+    },
+  };
 }
 
 function sRenderModelChecklist(container, cachedModels, enabledModels) {

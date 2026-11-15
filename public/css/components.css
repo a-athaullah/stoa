@@ -987,6 +987,15 @@ select.s-server-input:disabled { color: var(--h-ink-mute); border-style: dashed;
   font-family: var(--h-sans); font-size: 10px; line-height: 1; letter-spacing: .02em; white-space: nowrap;
   padding: 3px 6px; border-radius: 999px; border: 1px solid var(--h-hairline); color: var(--h-ink-mute);
 }
+.s-plat-img {
+  border-top: 1px solid var(--h-hair-soft); padding: 10px 0 4px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.s-plat-img-title { font-family: var(--h-serif); font-style: italic; font-size: 12.5px; color: var(--h-ink-mute); }
+.s-plat-img-row { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; min-width: 0; }
+.s-plat-img-label {
+  flex: 0 0 150px; font-family: var(--h-serif); font-style: italic; font-size: 12px; color: var(--h-ink-mute); white-space: nowrap;
+}
+.s-plat-img-select { flex: 1 1 200px; min-width: 0; max-width: 100%; cursor: pointer; font-family: ui-monospace, monospace; font-size: 12px; }
 
 /* usage stats panel */
 .usage-stat-card {

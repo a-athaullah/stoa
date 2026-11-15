@@ -18919,6 +18919,135 @@ async function run() {
     assert.deepStrictEqual(rows.map(tagsOf), [['uncensored'], ['reasoning'], []]);
     assert.strictEqual(rows[1].children[1].textContent, 'qwen3-<i>', 'model name stays text');
   });
+  await test('platform form — venice image models: slots from cached_image_models, standard slots hide uncensored, saves only on change, 400 inline, discover refreshes', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; this.className = ''; this.readOnly = false; this.disabled = false; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; this._html = v; }
+      get innerHTML() { return this._html || ''; }
+      insertAdjacentHTML(_, h) { this._html = (this._html || '') + h; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      focus() { this.focused = true; }
+      scrollIntoView(o) { this.scrolled = o; }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    let patchReply = { ok: true, status: 200, body: { ok: true } };
+    let platforms = [];
+    let discoverLines = '';
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      showToast() {}, svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async () => platforms,
+      TextDecoder, setTimeout: () => {},
+      fetch: async (url, opts) => {
+        const body = opts.body ? JSON.parse(opts.body) : null;
+        calls.push([url, opts.method, body]);
+        if (url.endsWith('/discover-models')) {
+          let sent = false;
+          return { ok: true, body: { getReader: () => ({ read: async () => (sent ? { done: true } : (sent = true, { done: false, value: Buffer.from(discoverLines) })) }) } };
+        }
+        if (body && 'image_models' in body) return { ok: patchReply.ok, status: patchReply.status, json: async () => patchReply.body };
+        return { ok: true, json: async () => ({ id: 'v1' }) };
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const btn = re => form().all().find(e => e.tagName === 'BUTTON' && re.test(e.textContent));
+    const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r)); };
+    const section = () => form().all().find(e => e.className === 's-plat-img');
+    const opts = slot => named('platform-image-' + slot).children.map(o => [o.value, o.textContent]);
+    const alertEl = () => section().all().find(e => e.attrs.role === 'alert');
+    const imageCalls = () => calls.filter(c => c[2] && 'image_models' in c[2]);
+
+    // New / undiscovered Venice platform: only the hint, no selects; other vendors hide the section.
+    ctx.sShowPlatformForm();
+    assert.strictEqual(section().style.display, 'none', 'custom platform: no image section');
+    named('platform-type').value = 'venice'; named('platform-type').fire('change');
+    assert.strictEqual(section().style.display, '');
+    assert.ok(section().all().some(e => /Run "discover models" first/.test(e.textContent)));
+    assert.strictEqual(named('platform-image-generate'), undefined);
+
+    const cached = [
+      { model: 'flux-2', kind: 'generate', uncensored: false, traits: ['default'] },
+      { model: 'lustify-sdxl', kind: 'generate', uncensored: true, traits: ['most_uncensored'] },
+      { model: '<img src=x onerror=alert(1)>', kind: 'generate', uncensored: false, traits: [] },
+      { model: 'firered-image-edit', kind: 'edit', uncensored: false, traits: [] },
+      { model: 'qwen-edit-uncensored', kind: 'edit', uncensored: true, traits: [] },
+    ];
+    const v1 = { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null,
+      cached_image_models: cached, image_models: { generate: 'flux-2', generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: null } };
+    ctx.sEditPlatform(v1);
+    assert.deepStrictEqual(opts('generate'), [['', '(none)'], ['flux-2', 'flux-2'], ['<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>']], 'standard generate slot hides uncensored models; names are text');
+    assert.deepStrictEqual(opts('generate_uncensored').map(o => o[1]), ['(none)', 'flux-2', 'lustify-sdxl · uncensored', '<img src=x onerror=alert(1)>']);
+    assert.deepStrictEqual(opts('edit'), [['', '(none)'], ['firered-image-edit', 'firered-image-edit']]);
+    assert.deepStrictEqual(opts('edit_uncensored').map(o => o[0]), ['', 'firered-image-edit', 'qwen-edit-uncensored']);
+    assert.deepStrictEqual(['generate', 'generate_uncensored', 'edit', 'edit_uncensored'].map(s => named('platform-image-' + s).value), ['flux-2', 'lustify-sdxl', 'firered-image-edit', '']);
+    assert.ok(!section().all().some(e => e._html), 'no innerHTML content in the section');
+
+    // Unchanged slots: update sends no image_models.
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls(), [], 'nothing changed: no image_models PATCH');
+    assert.ok(calls.length >= 1);
+
+    // Changed slot: full object sent to the platform PATCH; empty select = null.
+    ctx.sEditPlatform(v1);
+    named('platform-image-edit_uncensored').value = 'qwen-edit-uncensored';
+    named('platform-image-generate').value = '';
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls(), [['/api/ai/platforms/v1', 'PATCH', { image_models: { generate: null, generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' } }]]);
+
+    // Server 400 stays inline in the section, the form stays open, and changing a slot clears it.
+    platforms = [];
+    ctx.sEditPlatform(v1);
+    named('platform-image-generate').value = '<img src=x onerror=alert(1)>';
+    patchReply = { ok: false, status: 400, body: { error: 'image_models.generate: model "<b>x</b>" is uncensored' } };
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.strictEqual(imageCalls().length, 1);
+    assert.deepStrictEqual([alertEl().textContent, alertEl().style.display, !!alertEl().scrolled, !!form()], ['image_models.generate: model "<b>x</b>" is uncensored', 'block', true, true], '400 shown inline as text, form kept');
+    named('platform-image-generate').fire('change');
+    assert.strictEqual(alertEl().style.display, 'none');
+    patchReply = { ok: false, status: 500, body: {} };
+    btn(/^update$/).fire('click'); await flush();
+    assert.strictEqual(alertEl().textContent, 'Failed to save image models');
+    patchReply = { ok: true, status: 200, body: { ok: true } };
+
+    // A stored model missing from the last discovery stays visible instead of silently switching.
+    ctx.sEditPlatform({ ...v1, image_models: { ...v1.image_models, edit: 'gone-edit' } });
+    assert.deepStrictEqual([named('platform-image-edit').value, opts('edit').at(-1)], ['gone-edit', ['gone-edit', 'gone-edit (not available)']]);
+
+    // Discover: the section is rebuilt from the fresh platform, keeping slots the owner changed but has not saved.
+    const v2 = { ...v1, id: 'v2', cached_image_models: [], image_models: null };
+    ctx.sEditPlatform(v2);
+    assert.strictEqual(named('platform-image-generate'), undefined);
+    platforms = [{ ...v2, cached_image_models: cached, image_models: { generate: 'flux-2', generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' } }];
+    discoverLines = JSON.stringify({ type: 'start', total: 1 }) + '\n' + JSON.stringify({ type: 'done', usable: ['m'], tested: 1 }) + '\n';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.deepStrictEqual(['generate', 'generate_uncensored', 'edit', 'edit_uncensored'].map(s => named('platform-image-' + s).value), ['flux-2', 'lustify-sdxl', 'firered-image-edit', 'qwen-edit-uncensored'], 'server defaults after discover');
+    named('platform-image-generate').value = '<img src=x onerror=alert(1)>';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.strictEqual(named('platform-image-generate').value, '<img src=x onerror=alert(1)>', 'unsaved change survives a re-discover');
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls().map(c => c[2].image_models.generate), ['<img src=x onerror=alert(1)>'], 'only differs from the refreshed stored value');
+  });
 
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
     const vm = require('vm');
