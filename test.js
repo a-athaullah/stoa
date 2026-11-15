@@ -7043,31 +7043,77 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks runner — restart grace in agent mode: no AGENT_UNDECIDED inside it; no activity until it ends → Backlog with RESTART_UNRECOVERED, thread kept', async () => {
+    await uta('Tasks runner — restart grace ends by mode: quiet → Backlog with RESTART_UNRECOVERED, thread kept; agent → stays running, then AGENT_UNDECIDED after maxMs', async () => {
       const w = world({ maxMs: 0, restartGraceMs: 80 });
       try {
+        // Room 10 'agent', room 11 'quiet' (default), both with a card cut off by the restart.
         w.tasks.updateSettings(10, H, { completion_mode: 'agent', concurrency: 2 });
-        const a = mk(w, 'A'), b = mk(w, 'B');
-        w.runner.play(10, H);
+        const a = mk(w, 'A'), b = mk(w, 'B'), q = mk(w, 'Q', {}, 11);
+        w.runner.play(10, H); w.runner.play(11, H);
         await tick();
-        w.reply(a.id, 2, 'working'); w.reply(b.id, 2, 'working');
-        const before = runState(w, a.id);
+        w.reply(a.id, 2, 'working'); w.reply(b.id, 2, 'working'); w.reply(q.id, 4, 'half done');
+        const beforeA = runState(w, a.id);
+        const qThread = w.tasks.get(11, q.id).body.thread_id;
         w.runner.reap();
         for (let i = 0; i < 3; i++) w.runner.checkRuns();
         assert.deepStrictEqual([a, b].map(t => w.tasks.get(10, t.id).body.status), ['running', 'running'], 'maxMs 0 but no AGENT_UNDECIDED in the grace');
+        assert.strictEqual(w.tasks.get(11, q.id).body.status, 'running', 'quiet: not finished from the cut-off reply in the grace');
         w.reply(b.id, 2, 'resumed'); // B recovered: back on the normal clock
         w.runner.checkRuns();
         await sleepT(100);
-        w.runner.checkRuns();
+        w.runner.checkRuns(); // grace over: A starts its maxMs clock now, Q goes back to Backlog
         await tick();
-        const ta = w.tasks.get(10, a.id).body;
-        assert.deepStrictEqual([ta.col, ta.status, ta.thread_id, ta.message_id], ['backlog', 'idle', before.thread_id, before.message_id]);
-        const ev = ta.events.at(-1);
+        assert.deepStrictEqual(runState(w, a.id), beforeA, 'agent mode: A stays running in its thread, no event');
+        const tq = w.tasks.get(11, q.id).body;
+        assert.deepStrictEqual([tq.col, tq.status, tq.thread_id], ['backlog', 'idle', qThread]);
+        const ev = tq.events.at(-1);
         assert.deepStrictEqual([ev.kind, ev.body, ev.actor_kind, ev.meta.reason], ['stopped', RESTART_UNRECOVERED, 'system', RESTART_UNRECOVERED]);
-        assert.ok(!/server restart'?$/.test(ev.body) && ev.body !== 'server restart');
         const tb = w.tasks.get(10, b.id).body;
         assert.deepStrictEqual([tb.col, tb.status, tb.await_reason], ['awaiting', 'blocked', AGENT_UNDECIDED], 'recovered card: maxMs applies again');
-        assert.deepStrictEqual(w.deps.dispatched.length, 2, 'the runner is off: A is not started again');
+        w.runner.checkRuns(); // maxMs (0) of quiet counted from the end of the grace
+        const ta = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([ta.col, ta.status, ta.await_reason, ta.thread_id], ['awaiting', 'blocked', AGENT_UNDECIDED, beforeA.thread_id]);
+        assert.ok(!ta.events.some(e => e.kind === 'stopped'), 'agent mode: never sent back to Backlog');
+        assert.deepStrictEqual(w.deps.dispatched.length, 3, 'the runners are off: nothing is started again');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — restart while the agent keeps running elsewhere: the replayed result of the interrupted reply (same id) ends the grace; a card that left Ongoing drops its grace', async () => {
+      const w = world({ restartGraceMs: 60_000 });
+      try {
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        // A's turn was in flight when the server died: the startup cleanup stamped it interrupted
+        // (lib/orphan-runs.js) before reap() ran.
+        const ta0 = w.tasks.get(10, a.id).body;
+        const run = Number(w.db.prepare(`INSERT INTO messages (room_id, participant_id, content, state, thread_id, result_meta)
+          VALUES (10, (SELECT id FROM room_participants WHERE room_id=10 AND actor_id=2), '(interrupted — server restart)', 'error', ?, '{"exit_reason":"interrupted"}')`)
+          .run(ta0.thread_id).lastInsertRowid);
+        w.runner.reap();
+        for (let i = 0; i < 3; i++) w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'the interrupted stamp is not a result');
+        // The agent reconnects and replays agent_complete for that same row between two polls (server.js
+        // drops the interrupted mark): no new id and the thread never seen busy, yet it is activity.
+        w.db.prepare("UPDATE messages SET state='complete', content='all done', result_meta=NULL WHERE id=?").run(run);
+        w.runner.checkRuns(); // grace over → quiet clock starts
+        w.runner.checkRuns(); // settleMs 0 → finished from the real result
+        const ta = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([ta.col, ta.status, ta.result_summary], ['finished', 'done', 'all done']);
+        // B leaves Ongoing during its grace (the agent blocks it, the owner moves it back to Backlog); started
+        // again later, its new run must not inherit the old grace (no reply yet → same mark as at reap()).
+        w.tasks.updateSettings(10, H, { completion_mode: 'agent' }); // the assigned agent may block a card it has not replied in
+        { const r = w.tasks.block(10, AG, b.id, { reason: 'need a key' }); assert.strictEqual(r.status, 200, JSON.stringify(r.body)); }
+        assert.strictEqual(w.tasks.move(10, H, b.id, { col: 'backlog' }).status, 200);
+        w.runner.checkRuns();
+        w.runner.play(10, H);
+        await tick();
+        assert.strictEqual(w.tasks.get(10, b.id).body.status, 'running');
+        w.db.prepare("UPDATE room_tasks SET started_at=datetime('now','-1 day') WHERE id=?").run(b.id); // past noReplyMs
+        w.runner.checkRuns();
+        const tb = w.tasks.get(10, b.id).body;
+        assert.deepStrictEqual([tb.status, tb.fail_reason], ['failed', 'no reply from the agent'], 'normal checks: no leftover grace');
       } finally { w.close(); }
     });
 
