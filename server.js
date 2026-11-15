@@ -1784,6 +1784,7 @@ if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE
 const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
 const openaiTranslator = require('./lib/openai-translator');
 const venice = require('./lib/venice');
+const { veniceImageTools, parseVeniceImageModels, mergeImageModels, defaultImageModels } = require('./lib/venice-images');
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 
@@ -1893,6 +1894,15 @@ const mcpGateway = createMcpGateway({
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
     ...taskMcpTools(roomTasks),
+    // Venice image tools follow the session's run model (lib/venice-images.js); mcpGateway is only read once a session asks.
+    ...veniceImageTools({
+      db, platforms: () => getParsedSetting('ai_platforms') ?? [], platformKeys: getPlatKeys,
+      runContext: (ident) => mcpGateway.runContext(ident), uploadsDir: UPLOADS_DIR, baseUrl: venice.VENICE_BASE_URL,
+      postImage: (ident, attachment, content) => roomMessages.send(ident.roomId, ident.actorId, {
+        content, thread_id: ident.threadId ?? null, attachments: [attachment],
+        ...(ident.subAgentId != null ? { sub_agent_id: ident.subAgentId } : {}),
+      }),
+    }),
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, slackHistory,
       connectionAllowed: (ident, connId) => agentScopeAllowed(ident.actorId, { scope: 'connection', id: connId }, ident.subAgentId ?? null),
@@ -3837,6 +3847,7 @@ const server = http.createServer(async (req, res) => {
       api_key: undefined,
       api_format: p.api_format || 'anthropic',
       extra_body: p.extra_body ?? null,
+      ...(venice.isVenice(p) ? { image_models: p.image_models ?? null, cached_image_models: p.cached_image_models ?? [] } : {}),
     }));
     return json(res, safe);
   }
@@ -3915,7 +3926,15 @@ const server = http.createServer(async (req, res) => {
       }
       platforms[idx].enabled_models = enabledModels;
     }
+    if (body.image_models !== undefined) {
+      if (!toVenice) return json(res, { error: 'image_models is only for Venice platforms' }, 400);
+      const merged = mergeImageModels(platforms[idx].image_models, body.image_models, platforms[idx].cached_image_models);
+      if (merged.error) return json(res, { error: merged.error }, 400);
+      platforms[idx].image_models = merged.value;
+    }
     setSetting('ai_platforms', JSON.stringify(platforms));
+    // enabled / vendor / models decide whether sessions on this platform have the image tools.
+    mcpGateway.toolsChanged();
     return json(res, platforms[idx]);
   }
 
@@ -3925,6 +3944,7 @@ const server = http.createServer(async (req, res) => {
     const filtered = platforms.filter(p => p.id !== platformId);
     if (filtered.length === platforms.length) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     setSetting('ai_platforms', JSON.stringify(filtered));
+    mcpGateway.toolsChanged();
     return json(res, { ok: true });
   }
 
@@ -4007,6 +4027,17 @@ const server = http.createServer(async (req, res) => {
     } finally { clearTimeout(timer); }
   }
 
+  // Venice image models after a discovery; each image_models slot keeps a still-valid choice, else its default. → image_models
+  function saveImageModels(platformId, list) {
+    const freshPlatforms = JSON.parse(getSetting('ai_platforms') || '[]');
+    const plat = freshPlatforms.find(p => p.id === platformId);
+    if (!plat) return null;
+    plat.cached_image_models = list;
+    plat.image_models = defaultImageModels(plat.image_models, list);
+    setSetting('ai_platforms', JSON.stringify(freshPlatforms));
+    return plat.image_models;
+  }
+
   // Re-read after the network wait (like saveCachedModels) so edits made meanwhile are not overwritten.
   function saveBalances(platformId, balances, checkedAt) {
     const freshPlatforms = JSON.parse(getSetting('ai_platforms') || '[]');
@@ -4048,10 +4079,23 @@ const server = http.createServer(async (req, res) => {
         res.write(JSON.stringify({ type: 'error', message: e.name === 'AbortError' ? 'Venice model list timed out' : (e.message || 'Discovery failed') }) + '\n');
         return res.end();
       }
+      // Image models are best-effort: a failure keeps the previous image list and is reported, the text list still saves.
+      let images = null;
+      let imageError = null;
+      try {
+        const [gen, edit, traits] = await Promise.all([veniceGet('/models?type=image'), veniceGet('/models?type=inpaint'), veniceGet('/models/traits?type=image')]);
+        if (gen.status !== 200 || edit.status !== 200) throw new Error(`Venice image model list failed (HTTP ${gen.status !== 200 ? gen.status : edit.status})`);
+        images = parseVeniceImageModels(gen.data, edit.data, traits.status === 200 ? traits.data : null);
+      } catch (e) { imageError = e.name === 'AbortError' ? 'Venice image model list timed out' : (e.message || 'Image model discovery failed'); }
       if (res.destroyed) return res.end();
       res.write(JSON.stringify({ type: 'start', total: list.total }) + '\n');
       saveCachedModels(platformId, list.usable);
-      res.write(JSON.stringify({ type: 'done', tested: list.total, usable: list.usable }) + '\n');
+      const imageModels = images ? saveImageModels(platformId, images) : null;
+      mcpGateway.toolsChanged();
+      res.write(JSON.stringify({
+        type: 'done', tested: list.total, usable: list.usable,
+        ...(images ? { image_models: imageModels, cached_image_models: images } : { image_error: imageError }),
+      }) + '\n');
       return res.end();
     }
     if (plat.vendor === 'ollama') {
@@ -8334,7 +8378,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const roomModel = roomRow2?.model || null;
   const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
 
-  let modelBaseUrl, modelApiKeys, modelToolsSupported;
+  let modelBaseUrl, modelApiKeys, modelToolsSupported, runPlatform;
   if (effectiveHarness === 'claude' && roomRow2?.model_config) {
     try {
       const cfg = JSON.parse(roomRow2.model_config);
@@ -8343,6 +8387,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         if (platforms) {
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
+            runPlatform = plat;
             if (isProxyPlatform(plat)) {
               // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
               modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
@@ -8399,6 +8444,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // tool-less model or when issuing fails) and a harness that mounts the gateway. Otherwise the curl
   // instructions below stay exactly as they were.
   const mcpToken = mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported });
+  // After every override above: only a run whose final platform is Venice gets image tools; any other run clears the scope's record.
+  try {
+    mcpGateway.setRunContext({ actorId: ai.actor_id, roomId, threadId: threadId || null, subAgentId: subAgent?.id || null },
+      modelBaseUrl && venice.isVenice(runPlatform) ? { platformId: runPlatform.id, model: effectiveModel } : null);
+  } catch (e) { console.error('[mcp] run context update failed:', e.message); }
   const stoaTools = !!mcpToken && MCP_HARNESSES.includes(effectiveHarness);
   const sessionTarget = threadId ? `the thread this session runs in (thread ${threadId})` : 'the room\'s main feed';
 

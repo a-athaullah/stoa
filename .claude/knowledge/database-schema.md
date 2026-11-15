@@ -383,7 +383,10 @@ CREATE TABLE mcp_access (
 CREATE TABLE mcp_tokens (
   token_hash TEXT PRIMARY KEY,
   actor_id INTEGER NOT NULL, room_id INTEGER, thread_id INTEGER, sub_agent_id INTEGER,
-  created_at TEXT, revoked_at TEXT
+  created_at TEXT, revoked_at TEXT,
+  -- Set at each trigger for the token's scope: platform + chat model when the run is on a Venice
+  -- platform, NULL otherwise (gateway setRunContext). Venice image tools exist only while set and valid.
+  run_platform_id TEXT, run_model TEXT
 );
 
 -- Call audit log

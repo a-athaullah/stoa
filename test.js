@@ -2643,6 +2643,109 @@ function runUnitTests() {
     assert.match(ven.billingMessage('{"error":"Insufficient USD or Diem balance to complete request."}'), /account balance is insufficient/);
     assert.match(ven.billingMessage(''), /account balance is insufficient/);
   });
+
+  // Venice image tools (lib/venice-images.js): discovery, the owner's image_models slots, the mode rule, sizing, sniffing.
+  const vim = require('./lib/venice-images');
+  const vimSpec = (constraints, extra = {}) => ({ constraints, traits: [], offline: false, ...extra });
+  const VIM_IMAGE = { data: [
+    { id: 'zturbo', model_spec: vimSpec({ promptCharacterLimit: 7500, widthHeightDivisor: 8 }, { traits: ['default', 'fastest'] }) },
+    { id: 'lusty', model_spec: vimSpec({ promptCharacterLimit: 1500, widthHeightDivisor: 8 }, { uncensored: true }) },
+    { id: 'qwen3', model_spec: vimSpec({ promptCharacterLimit: 10000, aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'], defaultAspectRatio: '1:1', defaultResolution: '1K', widthHeightDivisor: 1 }, { uncensored: true }) },
+    { id: 'gone', model_spec: vimSpec({}, { offline: true }) },
+    { id: 'x:y', model_spec: vimSpec({}) },
+    null,
+  ] };
+  const VIM_EDIT = { data: [
+    { id: 'firered-image-edit', model_spec: vimSpec({ promptCharacterLimit: 1500, aspectRatios: ['auto', '1:1'], combineImages: true }) },
+    { id: 'qwen-edit-uncensored', model_spec: vimSpec({ promptCharacterLimit: 1500, aspectRatios: ['auto'], combineImages: true, maxInputImages: 2 }, { uncensored: true }) },
+    { id: 'solo-edit', model_spec: vimSpec({ aspectRatios: ['auto'], combineImages: false, maxInputImages: 6 }) },
+  ] };
+  const VIM_TRAITS = { data: { default: 'zturbo', most_uncensored: 'lusty', highest_quality: 'qwen3' } };
+  ut('venice-images parseVeniceImageModels — generate + edit kinds, constraints, traits merged, offline / ":" dropped, max_input_images rules', () => {
+    const list = vim.parseVeniceImageModels(VIM_IMAGE, VIM_EDIT, VIM_TRAITS);
+    assert.deepStrictEqual(list.map(e => [e.model, e.kind, e.uncensored]), [
+      ['zturbo', 'generate', false], ['lusty', 'generate', true], ['qwen3', 'generate', true],
+      ['firered-image-edit', 'edit', false], ['qwen-edit-uncensored', 'edit', true], ['solo-edit', 'edit', false],
+    ]);
+    const by = Object.fromEntries(list.map(e => [e.model, e]));
+    assert.deepStrictEqual(by.zturbo, { model: 'zturbo', kind: 'generate', uncensored: false, prompt_limit: 7500, constraints: { width_height_divisor: 8 }, traits: ['default', 'fastest'] });
+    assert.deepStrictEqual(by.qwen3.constraints, { aspect_ratios: ['1:1', '16:9'], resolutions: ['1K', '2K'], width_height_divisor: 1, default_aspect_ratio: '1:1', default_resolution: '1K' });
+    assert.deepStrictEqual(by.lusty.traits, ['most_uncensored'], 'trait from /models/traits');
+    assert.deepStrictEqual(by.qwen3.traits, ['highest_quality']);
+    assert.strictEqual(by['firered-image-edit'].constraints.max_input_images, 3, 'absent maxInputImages = 3');
+    assert.strictEqual(by['qwen-edit-uncensored'].constraints.max_input_images, 2);
+    assert.strictEqual(by['solo-edit'].constraints.max_input_images, 1, 'combineImages:false = single image only');
+    assert.strictEqual(by['solo-edit'].prompt_limit, null);
+    assert.deepStrictEqual(vim.parseVeniceImageModels(null, undefined, null), []);
+  });
+  ut('venice-images mergeImageModels / defaultImageModels — standard slots refuse uncensored, kinds checked, defaults from traits', () => {
+    const cached = vim.parseVeniceImageModels(VIM_IMAGE, VIM_EDIT, VIM_TRAITS);
+    const empty = { generate: null, generate_uncensored: null, edit: null, edit_uncensored: null };
+    assert.deepStrictEqual(vim.defaultImageModels(null, cached), { generate: 'zturbo', generate_uncensored: 'lusty', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' });
+    assert.deepStrictEqual(vim.defaultImageModels({ generate: 'gone-now', generate_uncensored: 'qwen3', edit: 'qwen-edit-uncensored' }, cached),
+      { generate: 'zturbo', generate_uncensored: 'qwen3', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' }, 'valid choice kept, invalid one reset');
+    assert.deepStrictEqual(vim.defaultImageModels(null, [{ model: 'u', kind: 'generate', uncensored: true, traits: ['default'] }]),
+      { ...empty, generate: null }, 'a default trait on an uncensored model never fills the standard slot');
+    let r = vim.mergeImageModels(null, { generate: 'qwen3' }, cached);
+    assert.match(r.error, /uncensored model; pick it for generate_uncensored/);
+    r = vim.mergeImageModels(null, { edit: 'qwen-edit-uncensored' }, cached);
+    assert.match(r.error, /uncensored/);
+    assert.match(vim.mergeImageModels(null, { generate: 'firered-image-edit' }, cached).error, /not a discovered generate model/, 'kind must match');
+    assert.match(vim.mergeImageModels(null, { generate: 'zturbo:enable_web_search=on' }, cached).error, /':' are not allowed/);
+    assert.match(vim.mergeImageModels(null, { safe_mode: false }, cached).error, /unknown slot\(s\) safe_mode/);
+    assert.match(vim.mergeImageModels(null, [], cached).error, /object or null/);
+    assert.match(vim.mergeImageModels(null, { generate: 5 }, cached).error, /model name or null/);
+    r = vim.mergeImageModels({ generate: 'zturbo', edit: 'firered-image-edit' }, { generate_uncensored: 'zturbo', edit: null }, cached);
+    assert.deepStrictEqual(r.value, { generate: 'zturbo', generate_uncensored: 'zturbo', edit: null, edit_uncensored: null }, 'uncensored slot takes any model of its kind; missing keys kept; null clears');
+    assert.deepStrictEqual(vim.mergeImageModels({ generate: 'zturbo' }, null, cached).value, empty);
+  });
+  ut('venice-images imageMode — Venice + enabled + a model the proxy would send; uncensored only from cached_models flag', () => {
+    const plat = { id: 'v', vendor: 'venice', enabled: true, cached_models: [{ model: 'plain', uncensored: false }, { model: 'unc', uncensored: true }, { model: 'odd', uncensored: 'true' }] };
+    assert.strictEqual(vim.imageMode(plat, 'unc'), 'uncensored');
+    assert.strictEqual(vim.imageMode(plat, 'plain'), 'standard');
+    assert.strictEqual(vim.imageMode(plat, 'odd'), 'standard', 'only uncensored === true counts');
+    assert.strictEqual(vim.imageMode(plat, 'claude-haiku-5-5'), null, 'model not on the platform');
+    assert.strictEqual(vim.imageMode({ ...plat, enabled: false }, 'unc'), null);
+    assert.strictEqual(vim.imageMode({ ...plat, vendor: 'generic' }, 'unc'), null);
+    assert.strictEqual(vim.imageMode({ ...plat, enabled_models: ['plain'] }, 'unc'), null, 'not enabled = proxy would not send it');
+    assert.strictEqual(vim.imageMode(null, 'unc'), null);
+    assert.strictEqual(vim.imageMode(plat, ''), null);
+  });
+  ut('venice-images sizeFields — pixel models get width/height on the divisor, aspect models aspect_ratio (+resolution), unsupported values listed', () => {
+    const cached = vim.parseVeniceImageModels(VIM_IMAGE, VIM_EDIT, VIM_TRAITS);
+    const by = Object.fromEntries(cached.map(e => [e.model, e]));
+    assert.deepStrictEqual(vim.sizeFields(by.zturbo, { aspect_ratio: '16:9' }), { fields: { width: 1024, height: 576 } });
+    assert.deepStrictEqual(vim.sizeFields(by.zturbo, { aspect_ratio: '9:16' }), { fields: { width: 576, height: 1024 } });
+    assert.deepStrictEqual(vim.sizeFields(by.zturbo, { aspect_ratio: '4:3' }), { fields: { width: 1024, height: 768 } });
+    assert.deepStrictEqual(vim.sizeFields({ model: 'd16', constraints: { width_height_divisor: 16 } }, { aspect_ratio: '3:2' }), { fields: { width: 1024, height: 688 } }, '682.67 rounds to the nearest multiple of 16');
+    assert.deepStrictEqual(vim.sizeFields(by.zturbo, {}), { fields: {} }, 'no size → model default');
+    assert.match(vim.sizeFields(by.zturbo, { aspect_ratio: '9:1' }).error, /between 1:4 and 4:1/);
+    assert.match(vim.sizeFields(by.zturbo, { aspect_ratio: 'wide' }).error, /look like "16:9"/);
+    assert.match(vim.sizeFields(by.zturbo, { resolution: '2K' }).error, /has no resolution option/);
+    assert.deepStrictEqual(vim.sizeFields(by.qwen3, { aspect_ratio: '16:9', resolution: '2K' }), { fields: { resolution: '2K', aspect_ratio: '16:9' } }, 'never width/height for an aspect model');
+    assert.match(vim.sizeFields(by.qwen3, { aspect_ratio: '21:9' }).error, /does not support aspect_ratio "21:9"; supported: 1:1, 16:9/);
+    assert.match(vim.sizeFields(by.qwen3, { resolution: '4K' }).error, /supported: 1K, 2K/);
+    assert.match(vim.sizeFields({ model: 'pix-edit', constraints: { width_height_divisor: 8 } }, { aspect_ratio: '1:1' }, { pixels: false }).error, /takes no aspect_ratio/, 'edit never sends width/height');
+  });
+  ut('venice-images sniffImage / uploadNameOf — png, jpeg, webp sizes; anything else null; only plain /uploads names', () => {
+    const png = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(png);
+    png.write('IHDR', 12, 'ascii'); png.writeUInt32BE(640, 16); png.writeUInt32BE(480, 20);
+    assert.deepStrictEqual(vim.sniffImage(png), { type: 'png', mime: 'image/png', width: 640, height: 480 });
+    const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x2c, 0x01, 0x90, 0x03, 0, 0, 0, 0, 0, 0]);
+    assert.deepStrictEqual(vim.sniffImage(jpg), { type: 'jpeg', mime: 'image/jpeg', width: 400, height: 300 });
+    const webp = Buffer.alloc(30);
+    webp.write('RIFF', 0, 'ascii'); webp.write('WEBP', 8, 'ascii'); webp.write('VP8X', 12, 'ascii');
+    webp.writeUIntLE(1023, 24, 3); webp.writeUIntLE(767, 27, 3);
+    assert.deepStrictEqual(vim.sniffImage(webp), { type: 'webp', mime: 'image/webp', width: 1024, height: 768 });
+    assert.strictEqual(vim.sniffImage(Buffer.from('GIF89a................')), null);
+    assert.strictEqual(vim.sniffImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>')), null);
+    assert.strictEqual(vim.uploadNameOf('/uploads/a-b_c.png'), 'a-b_c.png');
+    assert.strictEqual(vim.uploadNameOf('http://100.1.2.3:3001/uploads/a.png?sig=1'), 'a.png');
+    for (const bad of ['/uploads/../db/stoa.db', '/uploads/..%2fx', '/uploads/a/b.png', '/etc/passwd', 'a.png', '/uploads/', '/uploads/..', 5]) {
+      assert.strictEqual(vim.uploadNameOf(bad), null, String(bad));
+    }
+  });
   ut('openai estimateTokens — ~4 chars/token over system, text, tool I/O, tools; image counted', () => {
     assert.strictEqual(oat.estimateTokens({ system: 'x'.repeat(40), messages: [{ role: 'user', content: 'y'.repeat(40) }] }), 20);
     const base = oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'text', text: 'abcd' }] }] });
@@ -7177,6 +7280,23 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
   });
 }
 
+// A real (solid grey) PNG of w x h, e.g. what the mock Venice returns and edit inputs.
+function makeTestPng(w, h) {
+  const zlib = require('zlib');
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td) >>> 0);
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0;
+  const raw = Buffer.alloc((w + 1) * h, 0x80);
+  for (let y = 0; y < h; y++) raw[y * (w + 1)] = 0;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const VENICE_MOCK_PNG = makeTestPng(512, 384);
+
 // Mock Venice on the loopback port run-tests.js hands the server (STOA_TEST_VENICE_PORT): venice
 // platforms are pinned to it there. seen gets { method, path, auth, body } per request.
 async function startVeniceMock(seen) {
@@ -7197,6 +7317,38 @@ async function startVeniceMock(seen) {
           { id: 'venice-notools', model_spec: spec({ supportsFunctionCalling: false }, { uncensored: true }) },
           { id: 'e2ee-venice-x', model_spec: spec({}) },
         ] });
+      }
+      // Image models: a pixel model per mode (divisor 8), an aspect + resolution model, two edit models.
+      const ispec = (constraints, extra = {}) => ({ constraints, offline: false, traits: [], ...extra });
+      if (rq.method === 'GET' && rq.url === '/api/v1/models?type=image') {
+        return reply(rs, 200, { object: 'list', type: 'image', data: [
+          { id: 'mock-zturbo', type: 'image', model_spec: ispec({ promptCharacterLimit: 7500, widthHeightDivisor: 8 }) },
+          { id: 'mock-lusty', type: 'image', model_spec: ispec({ promptCharacterLimit: 40, widthHeightDivisor: 8 }, { uncensored: true }) },
+          { id: 'mock-qwen3', type: 'image', model_spec: ispec({ promptCharacterLimit: 10000, aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'], widthHeightDivisor: 1 }) },
+          { id: 'mock-offline', type: 'image', model_spec: ispec({ widthHeightDivisor: 8 }, { offline: true }) },
+        ] });
+      }
+      if (rq.method === 'GET' && rq.url === '/api/v1/models?type=inpaint') {
+        return reply(rs, 200, { object: 'list', type: 'inpaint', data: [
+          { id: 'firered-image-edit', type: 'inpaint', model_spec: ispec({ promptCharacterLimit: 1500, aspectRatios: ['auto', '1:1'], combineImages: true }) },
+          { id: 'qwen-edit-uncensored', type: 'inpaint', model_spec: ispec({ promptCharacterLimit: 1500, aspectRatios: ['auto', '1:1'], combineImages: true, maxInputImages: 2 }, { uncensored: true }) },
+        ] });
+      }
+      if (rq.method === 'GET' && rq.url === '/api/v1/models/traits?type=image') {
+        return reply(rs, 200, { object: 'list', type: 'image', data: { default: 'mock-zturbo', fastest: 'mock-zturbo', most_uncensored: 'mock-lusty' } });
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/image/generate') {
+        const p = body?.prompt;
+        if (p === 'refuse-me') return reply(rs, 422, { error: 'Your prompt violates the content policy of the model provider', suggested_prompt: 'a calm harbour at dusk', recommended_model: 'mock-zturbo', retryable: true });
+        if (p === 'usd-limit') return reply(rs, 402, { error: 'API key USD spend limit exceeded. Your account may still have USD balance, but this API key has reached its configured USD spending limit.' });
+        if (p === 'broke') return reply(rs, 402, { error: 'Insufficient USD or Diem balance to complete request. Visit https://venice.ai/settings/api to add credits.' });
+        if (p === 'slow-down') { rs.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '7' }); return rs.end(JSON.stringify({ error: 'Rate limit exceeded' })); }
+        rs.writeHead(200, { 'Content-Type': 'application/json', 'x-venice-is-blurred': 'false', 'x-venice-is-content-violation': 'false', 'x-venice-is-adult-model-content-violation': p === 'adult' ? 'true' : 'false' });
+        return rs.end(JSON.stringify({ id: 'generate-image-1', images: [VENICE_MOCK_PNG.toString('base64')], timing: {} }));
+      }
+      if (rq.method === 'POST' && (rq.url === '/api/v1/image/edit' || rq.url === '/api/v1/image/multi-edit')) {
+        rs.writeHead(200, { 'Content-Type': 'image/png', 'x-venice-is-blurred': 'true' });
+        return rs.end(VENICE_MOCK_PNG);
       }
       if (rq.method === 'GET' && rq.url === '/api/v1/api_keys/rate_limits') {
         if (rq.headers.authorization === 'Bearer v-good') return reply(rs, 200, { data: { accessPermitted: true, apiTier: { id: 'paid', isCharged: true }, balances: { USD: 12.34, DIEM: 0.5 }, keyExpiration: null, nextEpochBegins: '2026-11-16T00:00:00.000Z', rateLimits: [] } });
@@ -15570,7 +15722,14 @@ async function run() {
         { model: 'venice-unc-reason', tools: true, vision: false, reasoning: true, uncensored: true, context: 131072, local: false },
       ]);
       assert.deepStrictEqual(stored(v.body.id).cached_models, done.usable);
-      assert.deepStrictEqual(seen.map(x => [x.method, x.path]), [['GET', '/api/v1/models?type=text']], 'no per-model chat probe (each would be billed)');
+      assert.deepStrictEqual(seen.map(x => [x.method, x.path]).sort(), [['GET', '/api/v1/models/traits?type=image'], ['GET', '/api/v1/models?type=image'], ['GET', '/api/v1/models?type=inpaint'], ['GET', '/api/v1/models?type=text']],
+        'only the public model lists, no per-model chat probe (each would be billed)');
+      assert.deepStrictEqual(done.image_models, { generate: 'mock-zturbo', generate_uncensored: 'mock-lusty', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' }, 'defaults from /models/traits and the documented edit models');
+      assert.deepStrictEqual(stored(v.body.id).cached_image_models.map(e => [e.model, e.kind, e.uncensored]), [
+        ['mock-zturbo', 'generate', false], ['mock-lusty', 'generate', true], ['mock-qwen3', 'generate', false],
+        ['firered-image-edit', 'edit', false], ['qwen-edit-uncensored', 'edit', true],
+      ], 'offline model dropped');
+      assert.deepStrictEqual(stored(v.body.id).image_models, done.image_models);
 
       const sfx = await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: ['venice-plain', 'venice-plain:enable_web_search=on'] });
       assert.strictEqual(sfx.status, 400);
@@ -18918,6 +19077,135 @@ async function run() {
     const tagsOf = r => r.all().filter(e => e.className === 's-plat-tag').map(e => e.textContent);
     assert.deepStrictEqual(rows.map(tagsOf), [['uncensored'], ['reasoning'], []]);
     assert.strictEqual(rows[1].children[1].textContent, 'qwen3-<i>', 'model name stays text');
+  });
+  await test('platform form — venice image models: slots from cached_image_models, standard slots hide uncensored, saves only on change, 400 inline, discover refreshes', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; this.className = ''; this.readOnly = false; this.disabled = false; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; this._html = v; }
+      get innerHTML() { return this._html || ''; }
+      insertAdjacentHTML(_, h) { this._html = (this._html || '') + h; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      focus() { this.focused = true; }
+      scrollIntoView(o) { this.scrolled = o; }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    let patchReply = { ok: true, status: 200, body: { ok: true } };
+    let platforms = [];
+    let discoverLines = '';
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      showToast() {}, svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async () => platforms,
+      TextDecoder, setTimeout: () => {},
+      fetch: async (url, opts) => {
+        const body = opts.body ? JSON.parse(opts.body) : null;
+        calls.push([url, opts.method, body]);
+        if (url.endsWith('/discover-models')) {
+          let sent = false;
+          return { ok: true, body: { getReader: () => ({ read: async () => (sent ? { done: true } : (sent = true, { done: false, value: Buffer.from(discoverLines) })) }) } };
+        }
+        if (body && 'image_models' in body) return { ok: patchReply.ok, status: patchReply.status, json: async () => patchReply.body };
+        return { ok: true, json: async () => ({ id: 'v1' }) };
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const btn = re => form().all().find(e => e.tagName === 'BUTTON' && re.test(e.textContent));
+    const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r)); };
+    const section = () => form().all().find(e => e.className === 's-plat-img');
+    const opts = slot => named('platform-image-' + slot).children.map(o => [o.value, o.textContent]);
+    const alertEl = () => section().all().find(e => e.attrs.role === 'alert');
+    const imageCalls = () => calls.filter(c => c[2] && 'image_models' in c[2]);
+
+    // New / undiscovered Venice platform: only the hint, no selects; other vendors hide the section.
+    ctx.sShowPlatformForm();
+    assert.strictEqual(section().style.display, 'none', 'custom platform: no image section');
+    named('platform-type').value = 'venice'; named('platform-type').fire('change');
+    assert.strictEqual(section().style.display, '');
+    assert.ok(section().all().some(e => /Run "discover models" first/.test(e.textContent)));
+    assert.strictEqual(named('platform-image-generate'), undefined);
+
+    const cached = [
+      { model: 'flux-2', kind: 'generate', uncensored: false, traits: ['default'] },
+      { model: 'lustify-sdxl', kind: 'generate', uncensored: true, traits: ['most_uncensored'] },
+      { model: '<img src=x onerror=alert(1)>', kind: 'generate', uncensored: false, traits: [] },
+      { model: 'firered-image-edit', kind: 'edit', uncensored: false, traits: [] },
+      { model: 'qwen-edit-uncensored', kind: 'edit', uncensored: true, traits: [] },
+    ];
+    const v1 = { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null,
+      cached_image_models: cached, image_models: { generate: 'flux-2', generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: null } };
+    ctx.sEditPlatform(v1);
+    assert.deepStrictEqual(opts('generate'), [['', '(none)'], ['flux-2', 'flux-2'], ['<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>']], 'standard generate slot hides uncensored models; names are text');
+    assert.deepStrictEqual(opts('generate_uncensored').map(o => o[1]), ['(none)', 'flux-2', 'lustify-sdxl · uncensored', '<img src=x onerror=alert(1)>']);
+    assert.deepStrictEqual(opts('edit'), [['', '(none)'], ['firered-image-edit', 'firered-image-edit']]);
+    assert.deepStrictEqual(opts('edit_uncensored').map(o => o[0]), ['', 'firered-image-edit', 'qwen-edit-uncensored']);
+    assert.deepStrictEqual(['generate', 'generate_uncensored', 'edit', 'edit_uncensored'].map(s => named('platform-image-' + s).value), ['flux-2', 'lustify-sdxl', 'firered-image-edit', '']);
+    assert.ok(!section().all().some(e => e._html), 'no innerHTML content in the section');
+
+    // Unchanged slots: update sends no image_models.
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls(), [], 'nothing changed: no image_models PATCH');
+    assert.ok(calls.length >= 1);
+
+    // Changed slot: full object sent to the platform PATCH; empty select = null.
+    ctx.sEditPlatform(v1);
+    named('platform-image-edit_uncensored').value = 'qwen-edit-uncensored';
+    named('platform-image-generate').value = '';
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls(), [['/api/ai/platforms/v1', 'PATCH', { image_models: { generate: null, generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' } }]]);
+
+    // Server 400 stays inline in the section, the form stays open, and changing a slot clears it.
+    platforms = [];
+    ctx.sEditPlatform(v1);
+    named('platform-image-generate').value = '<img src=x onerror=alert(1)>';
+    patchReply = { ok: false, status: 400, body: { error: 'image_models.generate: model "<b>x</b>" is uncensored' } };
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.strictEqual(imageCalls().length, 1);
+    assert.deepStrictEqual([alertEl().textContent, alertEl().style.display, !!alertEl().scrolled, !!form()], ['image_models.generate: model "<b>x</b>" is uncensored', 'block', true, true], '400 shown inline as text, form kept');
+    named('platform-image-generate').fire('change');
+    assert.strictEqual(alertEl().style.display, 'none');
+    patchReply = { ok: false, status: 500, body: {} };
+    btn(/^update$/).fire('click'); await flush();
+    assert.strictEqual(alertEl().textContent, 'Failed to save image models');
+    patchReply = { ok: true, status: 200, body: { ok: true } };
+
+    // A stored model missing from the last discovery stays visible instead of silently switching.
+    ctx.sEditPlatform({ ...v1, image_models: { ...v1.image_models, edit: 'gone-edit' } });
+    assert.deepStrictEqual([named('platform-image-edit').value, opts('edit').at(-1)], ['gone-edit', ['gone-edit', 'gone-edit (not available)']]);
+
+    // Discover: the section is rebuilt from the fresh platform, keeping slots the owner changed but has not saved.
+    const v2 = { ...v1, id: 'v2', cached_image_models: [], image_models: null };
+    ctx.sEditPlatform(v2);
+    assert.strictEqual(named('platform-image-generate'), undefined);
+    platforms = [{ ...v2, cached_image_models: cached, image_models: { generate: 'flux-2', generate_uncensored: 'lustify-sdxl', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' } }];
+    discoverLines = JSON.stringify({ type: 'start', total: 1 }) + '\n' + JSON.stringify({ type: 'done', usable: ['m'], tested: 1 }) + '\n';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.deepStrictEqual(['generate', 'generate_uncensored', 'edit', 'edit_uncensored'].map(s => named('platform-image-' + s).value), ['flux-2', 'lustify-sdxl', 'firered-image-edit', 'qwen-edit-uncensored'], 'server defaults after discover');
+    named('platform-image-generate').value = '<img src=x onerror=alert(1)>';
+    btn(/^discover models$/).fire('click'); await flush();
+    assert.strictEqual(named('platform-image-generate').value, '<img src=x onerror=alert(1)>', 'unsaved change survives a re-discover');
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(imageCalls().map(c => c[2].image_models.generate), ['<img src=x onerror=alert(1)>'], 'only differs from the refreshed stored value');
   });
 
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
@@ -27744,6 +28032,241 @@ async function run() {
       roomC = null;
       agC.ws.close();
     });
+
+    // ── Venice image tools (lib/venice-images.js): real triggers decide the run model, real /mcp calls,
+    // mock Venice on STOA_TEST_VENICE_PORT. The agent never picks the image model or safe_mode.
+    {
+      const fs = require('fs');
+      const vSeen = [];
+      let vMock = null, vPlat = null, vTok = null, vThread = null, genUrl = null, editUrl = null;
+      const vUploads = process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads');
+      const IMG_TOOLS = ['stoa__image_edit', 'stoa__image_generate'];
+      const setRoomModel = (roomId, model, platformId, tiers = null) => mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?')
+        .run(model, platformId ? JSON.stringify({ platform_id: platformId }) : null, tiers ? JSON.stringify(tiers) : null, roomId);
+      const imgTools = async (token) => (await listAll(token)).map(t => t.name).filter(n => IMG_TOOLS.includes(n)).sort();
+      const imageCalls = () => vSeen.filter(x => x.method === 'POST' && x.path.startsWith('/api/v1/image/'));
+      const callImg = async (token, name, args) => {
+        const r = await callText(token, name, args);
+        let body = null;
+        try { body = JSON.parse(r.text); } catch { /* denied calls answer in plain text */ }
+        return { ...r, body };
+      };
+      const runCtx = (token) => mDb.prepare('SELECT run_platform_id, run_model FROM mcp_tokens WHERE token_hash=?').get(require('./lib/mcp-gateway').hashToken(token));
+      // An upload attached to a message of roomId, posted by the agent through the REST route.
+      const attach = async (ag, roomId, buf, ext) => {
+        const file = `vimg-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+        fs.writeFileSync(path.join(vUploads, file), buf);
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomId}/message`, { content: 'input', attachments: [{ url: `/uploads/${file}`, name: file, type: 'image' }] },
+          { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }));
+        assert.strictEqual(r.status, 200, r.raw);
+        return `/uploads/${file}`;
+      };
+
+      await test('MCP venice images — owner setup: discover fills image_models; slots validated; agents cannot change them', async () => {
+        vMock = await startVeniceMock(vSeen);
+        const p = await req('POST', '/api/ai/platforms', { name: '__test-ven-img__', vendor: 'venice', api_keys: ['v-good'] });
+        assert.strictEqual(p.status, 200);
+        vPlat = p.body.id;
+        const d = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(vPlat)}/discover-models`, 15000);
+        const done = d.events.find(e => e.type === 'done');
+        assert.deepStrictEqual(done.image_models, { generate: 'mock-zturbo', generate_uncensored: 'mock-lusty', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' });
+        const id = encodeURIComponent(vPlat);
+        const bad = await req('PATCH', `/api/ai/platforms/${id}`, { image_models: { generate: 'mock-lusty' } });
+        assert.deepStrictEqual([bad.status, /uncensored model/.test(bad.body.error)], [400, true], 'standard slot refuses an uncensored model');
+        assert.strictEqual((await req('PATCH', `/api/ai/platforms/${id}`, { image_models: { edit: 'mock-zturbo' } })).status, 400, 'generate model in an edit slot');
+        assert.strictEqual((await req('PATCH', `/api/ai/platforms/${id}`, { image_models: { safe_mode: false } })).status, 400);
+        const agentTry = await asAnon(() => req('PATCH', `/api/ai/platforms/${id}`, { image_models: { generate: 'mock-qwen3' } }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+        assert.strictEqual(agentTry.status, 403, 'owner-only');
+        const ok = await req('PATCH', `/api/ai/platforms/${id}`, { image_models: { generate_uncensored: 'mock-qwen3' } });
+        assert.deepStrictEqual([ok.status, ok.body.image_models.generate_uncensored, ok.body.image_models.generate], [200, 'mock-qwen3', 'mock-zturbo'], 'uncensored slot takes any generate model; others kept');
+        await req('PATCH', `/api/ai/platforms/${id}`, { image_models: { generate_uncensored: 'mock-lusty' } });
+        const g = (await req('GET', '/api/ai/platforms')).body.find(x => x.id === vPlat);
+        assert.deepStrictEqual([g.image_models.generate_uncensored, g.cached_image_models.length, g.api_keys], ['mock-lusty', 5, ['v-good']]);
+      });
+
+      await test('MCP venice images — uncensored Venice run: tools listed, uncensored image model + safe_mode:false, posted in the session thread', async () => {
+        setRoomModel(roomA, 'venice-unc-reason', vPlat);
+        const t = await triggerToken(agA, roomA, 'venice image run');
+        vTok = t.token; vThread = t.threadId;
+        assert.deepStrictEqual(runCtx(vTok), { run_platform_id: vPlat, run_model: 'venice-unc-reason' });
+        assert.deepStrictEqual(await imgTools(vTok), IMG_TOOLS);
+        vSeen.length = 0;
+        const r = await callImg(vTok, 'stoa__image_generate', { prompt: 'a lighthouse', aspect_ratio: '16:9' });
+        assert.strictEqual(r.isError, false, r.text);
+        assert.deepStrictEqual(imageCalls().map(x => [x.path, x.auth, x.body]), [['/api/v1/image/generate', 'Bearer v-good',
+          { model: 'mock-lusty', prompt: 'a lighthouse', variants: 1, safe_mode: false, format: 'webp', width: 1024, height: 576 }]], 'pixel model: width/height on its divisor');
+        assert.deepStrictEqual([r.body.model, r.body.model_mode, r.body.blurred, r.body.content_violation, r.body.adult_model_content_violation, r.body.width, r.body.height],
+          ['mock-lusty', 'uncensored', false, false, false, 512, 384]);
+        assert.match(r.body.url, /^\/uploads\/[A-Za-z0-9._-]+\.png$/);
+        genUrl = r.body.url;
+        assert.ok(fs.readFileSync(path.join(vUploads, genUrl.slice('/uploads/'.length))).equals(VENICE_MOCK_PNG), 'the image Venice sent is the upload');
+        const row = mDb.prepare('SELECT m.room_id, m.thread_id, m.file_url, m.sub_agent_id, rp.actor_id FROM messages m JOIN room_participants rp ON rp.id=m.participant_id WHERE m.id=?').get(r.body.message_id);
+        assert.deepStrictEqual(row, { room_id: roomA, thread_id: vThread, file_url: genUrl, sub_agent_id: null, actor_id: agA.actorId });
+        const read = JSON.parse((await callText(vTok, 'stoa__thread_read', {})).text);
+        assert.deepStrictEqual(read.messages.find(m => m.id === r.body.message_id).file_urls, [genUrl], 'messages show upload URLs for stoa__image_edit');
+        const adult = await callImg(vTok, 'stoa__image_generate', { prompt: 'adult' });
+        assert.strictEqual(adult.body.adult_model_content_violation, true, 'header reported as sent');
+      });
+
+      await test('MCP venice images — agent cannot pick model / safe_mode / variants; prompt limit; sizes checked before any call', async () => {
+        vSeen.length = 0;
+        for (const extra of [{ safe_mode: false }, { model: 'mock-qwen3' }, { variants: 4 }, { width: 1280 }]) {
+          const r = await callImg(vTok, 'stoa__image_generate', { prompt: 'a lighthouse', ...extra });
+          assert.strictEqual(r.isError, true, JSON.stringify(extra));
+          assert.match(r.text, new RegExp(`unsupported argument\\(s\\): ${Object.keys(extra)[0]}`));
+        }
+        const long = await callImg(vTok, 'stoa__image_generate', { prompt: 'x'.repeat(41) });
+        assert.match(long.text, /41 characters; mock-lusty accepts at most 40/);
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'a', resolution: '2K' })).text, /mock-lusty has no resolution option/);
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'a', aspect_ratio: '8:1' })).text, /between 1:4 and 4:1/);
+        assert.strictEqual(imageCalls().length, 0, 'nothing reached Venice');
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { image_models: { generate_uncensored: 'mock-qwen3' } });
+        const ar = await callImg(vTok, 'stoa__image_generate', { prompt: 'a lighthouse', aspect_ratio: '16:9', resolution: '2K' });
+        assert.strictEqual(ar.isError, false, ar.text);
+        assert.deepStrictEqual(imageCalls().at(-1).body, { model: 'mock-qwen3', prompt: 'a lighthouse', variants: 1, safe_mode: false, format: 'webp', resolution: '2K', aspect_ratio: '16:9' }, 'aspect model: never width/height');
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'a', aspect_ratio: '21:9' })).text, /supported: 1:1, 16:9/);
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { image_models: { generate_uncensored: 'mock-lusty' } });
+      });
+
+      await test('MCP venice images — Venice errors reach the agent: 422 as sent (no model switch), 402 kinds, 429 Retry-After', async () => {
+        vSeen.length = 0;
+        const refused = await callImg(vTok, 'stoa__image_generate', { prompt: 'refuse-me' });
+        assert.strictEqual(refused.isError, true);
+        assert.deepStrictEqual([refused.body.status, refused.body.suggested_prompt, refused.body.recommended_model, refused.body.retryable], [422, 'a calm harbour at dusk', 'mock-zturbo', true]);
+        assert.match(refused.body.error, /refused the request \(422\): Your prompt violates/);
+        assert.deepStrictEqual(imageCalls().map(x => x.body.model), ['mock-lusty'], 'recommended_model is not tried automatically');
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'usd-limit' })).body.error, /API_KEY_USD_SPEND_LIMIT_EXCEEDED/);
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'broke' })).body.error, /account balance is insufficient/);
+        const slow = await callImg(vTok, 'stoa__image_generate', { prompt: 'slow-down' });
+        assert.deepStrictEqual([slow.body.status, slow.body.retry_after], [429, '7']);
+        assert.match(slow.body.error, /retry after 7 s/);
+        assert.ok(!JSON.stringify([refused, slow]).includes('v-good'), 'key never echoed');
+      });
+
+      await test('MCP venice images — edit: one image → /image/edit (model), several → /image/multi-edit (modelId), limits from the model', async () => {
+        vSeen.length = 0;
+        const one = await callImg(vTok, 'stoa__image_edit', { prompt: 'make it night', image: genUrl });
+        assert.strictEqual(one.isError, false, one.text);
+        const sent = imageCalls().at(-1);
+        assert.strictEqual(sent.path, '/api/v1/image/edit');
+        assert.deepStrictEqual({ ...sent.body, image: undefined }, { model: 'qwen-edit-uncensored', prompt: 'make it night', safe_mode: false, output_format: 'webp', image: undefined });
+        assert.strictEqual(sent.body.image, fs.readFileSync(path.join(vUploads, genUrl.slice('/uploads/'.length))).toString('base64'), 'the attached upload, base64');
+        assert.deepStrictEqual([one.body.model, one.body.model_mode, one.body.blurred], ['qwen-edit-uncensored', 'uncensored', true], 'binary answer, blur header passed on');
+        editUrl = one.body.url;
+        const many = await callImg(vTok, 'stoa__image_edit', { prompt: 'merge', images: [genUrl, `http://example.invalid${editUrl}`], aspect_ratio: '1:1' });
+        assert.strictEqual(many.isError, false, many.text);
+        const multi = imageCalls().at(-1);
+        assert.strictEqual(multi.path, '/api/v1/image/multi-edit');
+        assert.deepStrictEqual([multi.body.modelId, multi.body.model, multi.body.images.length, multi.body.aspect_ratio, multi.body.safe_mode], ['qwen-edit-uncensored', undefined, 2, '1:1', false]);
+        const before = imageCalls().length;
+        assert.match((await callImg(vTok, 'stoa__image_edit', { prompt: 'merge', images: [genUrl, editUrl, many.body.url] })).text, /combines at most 2 images; got 3/);
+        assert.match((await callImg(vTok, 'stoa__image_edit', { prompt: 'x', image: genUrl, images: [genUrl, editUrl] })).text, /either image \(one\) or images/);
+        assert.match((await callImg(vTok, 'stoa__image_edit', { prompt: 'x' })).text, /either image \(one\) or images/);
+        assert.match((await callImg(vTok, 'stoa__image_edit', { prompt: 'x', image: genUrl, aspect_ratio: '16:9' })).text, /supported: auto, 1:1/);
+        assert.strictEqual(imageCalls().length, before);
+      });
+
+      await test('MCP venice images — edit inputs: only images attached in this room; traversal, other rooms, non-images, tiny images refused', async () => {
+        const before = imageCalls().length;
+        const otherRoom = await attach(agB, roomB, VENICE_MOCK_PNG, 'png');
+        const loose = `vimg-loose-${crypto.randomBytes(4).toString('hex')}.png`;
+        fs.writeFileSync(path.join(vUploads, loose), VENICE_MOCK_PNG);
+        const tiny = await attach(agA, roomA, makeTestPng(100, 100), 'png');
+        const text = await attach(agA, roomA, Buffer.from('not an image at all, just text'), 'png');
+        const cases = [
+          ['/uploads/../db/stoa.db', /use the \/uploads\/<file> URL/],
+          ['/etc/passwd', /use the \/uploads\/<file> URL/],
+          [otherRoom, /not an attachment of a message in this room/],
+          [`/uploads/${loose}`, /not an attachment of a message in this room/],
+          [tiny, /100x100 is too small/],
+          [text, /not a png, jpeg or webp image/],
+        ];
+        for (const [image, re] of cases) {
+          const r = await callImg(vTok, 'stoa__image_edit', { prompt: 'x', image });
+          assert.strictEqual(r.isError, true, image);
+          assert.match(r.text, re, image);
+        }
+        assert.strictEqual(imageCalls().length, before, 'nothing reached Venice');
+        fs.rmSync(path.join(vUploads, loose), { force: true });
+      });
+
+      await test('MCP venice images — standard Venice run in the same session: standard model, safe_mode:true', async () => {
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        const t = await triggerToken(agA, roomA, 'venice plain run', vThread);
+        assert.strictEqual(t.token, vTok, 'same session, same token');
+        assert.deepStrictEqual(runCtx(vTok), { run_platform_id: vPlat, run_model: 'venice-plain' });
+        vSeen.length = 0;
+        const r = await callImg(vTok, 'stoa__image_generate', { prompt: 'a cat' });
+        assert.deepStrictEqual([r.isError, r.body.model, r.body.model_mode], [false, 'mock-zturbo', 'standard']);
+        assert.deepStrictEqual(imageCalls().at(-1).body, { model: 'mock-zturbo', prompt: 'a cat', variants: 1, safe_mode: true, format: 'webp' });
+        const e = await callImg(vTok, 'stoa__image_edit', { prompt: 'x', image: genUrl });
+        assert.deepStrictEqual([e.body.model, imageCalls().at(-1).body.model, imageCalls().at(-1).body.safe_mode], ['firered-image-edit', 'firered-image-edit', true]);
+        // A setting written by an older server is re-checked at call time, not trusted.
+        const raw = JSON.parse(mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get().value);
+        raw.find(x => x.id === vPlat).image_models.generate = 'mock-lusty';
+        mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(raw));
+        await new Promise(res => setTimeout(res, 1100)); // getParsedSetting cache TTL
+        const n = imageCalls().length;
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'a cat' })).text, /image model setting is invalid.*uncensored/);
+        assert.strictEqual(imageCalls().length, n);
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { image_models: { generate: 'mock-zturbo' } });
+      });
+
+      await test('MCP venice images — a non-Venice run clears the session record; disabled platform hides the tools', async () => {
+        setRoomModel(roomA, null, null);
+        await triggerToken(agA, roomA, 'back to claude', vThread);
+        assert.strictEqual(runCtx(vTok).run_platform_id, null);
+        assert.deepStrictEqual(await imgTools(vTok), []);
+        const n = imageCalls().length;
+        const denied = await callImg(vTok, 'stoa__image_generate', { prompt: 'a cat' });
+        assert.deepStrictEqual([denied.isError, /Denied by Stoa: this tool is not available in this session/.test(denied.text)], [true, true]);
+        assert.strictEqual(imageCalls().length, n);
+
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        await triggerToken(agA, roomA, 'venice again', vThread);
+        assert.deepStrictEqual(await imgTools(vTok), IMG_TOOLS);
+        assert.strictEqual((await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { enabled: false })).status, 200);
+        assert.deepStrictEqual(await imgTools(vTok), [], 'owner disabled the platform: gone without a new run');
+        assert.match((await callImg(vTok, 'stoa__image_generate', { prompt: 'a cat' })).text, /not available in this session/);
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { enabled: true });
+        assert.deepStrictEqual(await imgTools(vTok), IMG_TOOLS);
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { enabled_models: ['venice-unc-reason'] });
+        assert.deepStrictEqual(await imgTools(vTok), [], 'run model no longer one the proxy would send');
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { enabled_models: null });
+        assert.strictEqual(imageCalls().length, n);
+      });
+
+      await test('MCP venice images — sub-agents: claude tier model in a Venice room → none; on the room Venice model → own session gets them', async () => {
+        setRoomModel(roomA, 'venice-unc-reason', vPlat);
+        const subRun = async () => {
+          const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
+          const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub.id, task: 'draw something' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+          assert.strictEqual(r.status, 200, r.raw);
+          return st;
+        };
+        let m = await subRun();
+        assert.strictEqual(m.model, 'claude-haiku-4-5', 'quick tier default');
+        assert.strictEqual(runCtx(m.mcp_token).run_platform_id, null);
+        assert.deepStrictEqual(await imgTools(m.mcp_token), []);
+        assert.deepStrictEqual(await imgTools(vTok), IMG_TOOLS, 'the parent session record is its own');
+        await completeSubAgentRun(agA.ws, roomA, m);
+        setRoomModel(roomA, 'venice-plain', vPlat, { quick: ['venice-plain'] });
+        m = await subRun();
+        assert.deepStrictEqual(runCtx(m.mcp_token), { run_platform_id: vPlat, run_model: 'venice-plain' });
+        assert.deepStrictEqual(await imgTools(m.mcp_token), IMG_TOOLS);
+        vSeen.length = 0;
+        const r = await callImg(m.mcp_token, 'stoa__image_generate', { prompt: 'a fox' });
+        assert.deepStrictEqual([r.isError, r.body.model_mode, imageCalls().at(-1).body.safe_mode], [false, 'standard', true]);
+        assert.strictEqual(mDb.prepare('SELECT sub_agent_id FROM messages WHERE id=?').get(r.body.message_id).sub_agent_id, sub.id, 'posted as the sub-agent');
+        await completeSubAgentRun(agA.ws, roomA, m);
+      });
+
+      await test('MCP venice images — teardown', async () => {
+        setRoomModel(roomA, null, null);
+        if (vMock) vMock.close();
+        if (vPlat) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(vPlat)}`);
+      });
+    }
 
     await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
