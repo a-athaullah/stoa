@@ -632,31 +632,79 @@ function saLabelErrorRoute(e, label, actorName) {
   return { toast: e.error || 'failed to save' };
 }
 
-function _saAppendModelOpt(sel, m) {
+function _saAppendModelOpt(sel, m, platformId) {
   const o = document.createElement('option');
   o.value = m.value;
   o.textContent = (m.label || m.value) + (m.listed === false ? MODEL_UNLISTED_SUFFIX : '');
   if (m.listed === false) o.title = MODEL_UNLISTED_HINT;
+  if (platformId) o.dataset.platformId = platformId;
   sel.appendChild(o);
+  return o;
 }
 
-function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
+// Enabled AI platforms (Settings → AI platforms) with their usable models, from the /api/ai/models cache.
+function _saPlatformGroups() {
+  const groups = new Map();
+  for (const m of getAvailableModels()) {
+    if (!m.platform_id || m.platform_id === 'anthropic') continue;
+    if (!groups.has(m.platform_id)) groups.set(m.platform_id, { id: m.platform_id, name: m.platform, models: [] });
+    groups.get(m.platform_id).models.push(m);
+  }
+  return [...groups.values()];
+}
+
+function _saPlatformName(platformId) {
+  return _saPlatformGroups().find(g => g.id === platformId)?.name || null;
+}
+
+// Chip text for a sub-agent's model: a platform pin names the platform so it never reads as a Claude model.
+function _saModelChipText(sa) {
+  if (!sa.model_platform_id) return sa.model;
+  return `${sa.model} · ${_saPlatformName(sa.model_platform_id) || 'platform unavailable'}`;
+}
+
+function _saSelectedModel(modelSel) {
+  const o = modelSel.options[modelSel.selectedIndex];
+  if (!o || !o.value) return { model: null, platformId: null };
+  return { model: o.value, platformId: o.dataset.platformId || null };
+}
+
+function _saPopulateModelSel(modelSel, harness, actor, currentVal, currentPlatformId) {
   modelSel.innerHTML = '';
   const useTierOpt = document.createElement('option');
   useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
   modelSel.appendChild(useTierOpt);
+  let selected = useTierOpt;
+  const pick = (o, platformId) => { if (currentVal && o.value === currentVal && (currentPlatformId || null) === (platformId || null)) selected = o; };
   if (!harness || harness === 'claude') {
     const anthropicModels = withAgentListed(_saAnthropicModels(), actor, 'claude');
-    for (const m of anthropicModels) _saAppendModelOpt(modelSel, m);
-    if (currentVal && !anthropicModels.some(m => m.value === currentVal)) {
-      const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);
+    const platforms = _saPlatformGroups();
+    let claudeParent = modelSel;
+    if (platforms.length) {
+      claudeParent = document.createElement('optgroup');
+      claudeParent.label = 'Claude';
+      modelSel.appendChild(claudeParent);
+    }
+    for (const m of anthropicModels) pick(_saAppendModelOpt(claudeParent, m), null);
+    if (currentVal && !currentPlatformId && !anthropicModels.some(m => m.value === currentVal)) {
+      pick(_saAppendModelOpt(claudeParent, { value: currentVal }), null);
+    }
+    for (const g of platforms) {
+      const og = document.createElement('optgroup');
+      og.label = g.name;
+      for (const m of g.models) pick(_saAppendModelOpt(og, { ...m, label: `${m.label || m.value} · ${g.name}` }, g.id), g.id);
+      modelSel.appendChild(og);
+    }
+    if (currentVal && currentPlatformId && selected === useTierOpt) {
+      const o = _saAppendModelOpt(modelSel, { value: currentVal, label: `${currentVal} · platform unavailable` }, currentPlatformId);
+      o.title = 'This platform is disabled, removed, or no longer offers this model — pick another model';
+      selected = o;
     }
   } else {
     const models = (_agentHarnessModels(actor?.harness_status, harness) || getModelsForHarness(harness) || []);
-    for (const m of models) _saAppendModelOpt(modelSel, m);
+    for (const m of models) pick(_saAppendModelOpt(modelSel, m), null);
   }
-  const valid = Array.from(modelSel.options).map(o => o.value);
-  modelSel.value = valid.includes(currentVal) ? currentVal : '';
+  selected.selected = true;
 }
 
 // Sub-agent seal shade: --sa-sub-* tokens live per scheme in css/base.css.
@@ -1529,7 +1577,7 @@ function buildSubAgentsSection(actor) {
     const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
     const modelSel = document.createElement('select'); modelSel.name = 'subagent-model'; modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
     const parentHarness = actor.adapter || 'claude';
-    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '');
+    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '', existing?.model_platform_id || null);
     const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
     grid.append(labelField, modelField);
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
@@ -1548,7 +1596,8 @@ function buildSubAgentsSection(actor) {
     if (!selectedHarness) inheritOpt.selected = true;
     harnSel.addEventListener('change', () => {
       selectedHarness = harnSel.value || null;
-      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, modelSel.value);
+      const cur = _saSelectedModel(modelSel);
+      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, cur.model || '', cur.platformId);
     });
     const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
@@ -1563,7 +1612,8 @@ function buildSubAgentsSection(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, role: roleInp.value.trim() || null, description: descInp.value.trim() || null, harness: selectedHarness };
+        const picked = _saSelectedModel(modelSel);
+        const body = { label, tier: selectedTier, model: picked.model, model_platform_id: picked.platformId, system_prompt: spInp.value.trim() || null, role: roleInp.value.trim() || null, description: descInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1615,7 +1665,7 @@ function buildSubAgentsSection(actor) {
       const line1 = document.createElement('div'); line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
       const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
       line1.append(lbl, saMakeTierChip(sa.tier, dim));
-      if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
+      if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = _saModelChipText(sa); line1.appendChild(mp); }
       if (sa.harness) { const hp = document.createElement('span'); hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)'; hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness; line1.appendChild(hp); }
       const roleChip = _saMakeRoleChip(sa); if (roleChip) line1.appendChild(roleChip);
       mid.append(line1); const descLine = _saMakeDescLine(sa); if (descLine) mid.appendChild(descLine); row.appendChild(mid);
