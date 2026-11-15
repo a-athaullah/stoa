@@ -1494,10 +1494,10 @@ Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사�
 
 기본 제공 Claude 모델 외에 외부 AI 모델 제공자를 설정합니다. **+ add platform**을 클릭하여 새 제공자를 등록합니다:
 
-- **Type** — **Ollama Cloud** (내장 프록시, URL 불필요) 또는 **Custom Platform** (모든 AI API 제공자)
+- **Type** — **Ollama Cloud** (내장 프록시, URL 불필요), **Venice.ai** (프리셋 벤더, URL 고정), 또는 **Custom Platform** (모든 AI API 제공자)
 - **Name** — 플랫폼 이름 (예: "My OpenRouter")
-- **Base URL** — Custom Platform에 필요 (예: `https://openrouter.ai/api/v1`)
-- **API format** — Custom Platform 전용: **Anthropic Messages (기본값)** 또는 **OpenAI Chat Completions**. 아래 설명 참조.
+- **Base URL** — Custom Platform에 필요 (예: `https://openrouter.ai/api/v1`); Venice.ai는 고정
+- **API format** — Custom Platform 전용: **Anthropic Messages (기본값)** 또는 **OpenAI Chat Completions**. 아래 설명 참조. Venice.ai는 항상 OpenAI Chat 사용.
 - **API Key** — 해당 제공자의 API 키
 
 **API format**은 Stoa가 플랫폼과 통신하는 방식을 결정합니다:
@@ -1513,8 +1513,23 @@ Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사�
 
 API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 반환됩니다 (싱글유저 앱이므로 접근 권한은 본인만 갖습니다).
 
+**Venice.ai** — "Venice.ai" 타입을 선택하면 Venice를 프리셋 벤더로 사용할 수 있습니다. URL(`https://api.venice.ai/api/v1`)과 API 형식(OpenAI Chat)은 자동으로 설정되며 변경할 수 없습니다. `venice.ai/settings/api`에서 **Inference Only** API 키를 사용하고, 에이전트가 잔액을 소진하지 않도록 키에 일일 지출 한도를 설정하세요. 플랫폼 카드에 현재 잔액(USD · DIEM)이 표시됩니다. 플랫폼 카드 또는 편집 폼의 **test key**를 클릭하여 키를 검증하고 표시 잔액을 갱신할 수 있습니다.
+
+**Extra body** (OpenAI Chat 플랫폼, Venice.ai 포함) — 매 `/chat/completions` 요청에 병합되는 JSON 객체(Stoa의 필드보다 먼저 적용). 제공자별 파라미터를 전달하는 데 사용합니다. 제약: JSON 객체여야 하며(배열 불가), ≤ 4 KB, Stoa가 제어하는 필드(`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`)는 설정 불가. Venice.ai 기본값:
+
+```json
+{"venice_parameters":{"include_venice_system_prompt":false,"enable_web_search":"off"}}
+```
+
+이렇게 하면 Venice의 시스템 프롬프트 주입과 요청별 웹 검색 과금이 비활성화됩니다. 필드를 비우면 Venice의 기본 시스템 프롬프트 동작이 복원됩니다.
+
+**Venice 모델 탐색** — 엔드투엔드 암호화 핸드셰이크가 필요한 모델(`e2ee-*` 접두사), function calling 미지원 모델, 또는 오프라인 모델은 숨겨집니다. 탐색된 모델에는 해당하는 경우 기능 레이블이 표시됩니다: **uncensored**, **reasoning**, **vision**.
+
+**Venice 과금 오류** — Venice로부터 받은 402 응답은 다음 세 가지 메시지 중 하나에 해당합니다: *USD 지출 한도 초과* (venice.ai에서 키의 일일 한도 상향), *DIEM 지출 한도 초과* (동일), 또는 *계정 잔액 부족* (venice.ai/settings/api에서 크레딧 추가).
+
 **지원 제공자** — Anthropic Messages 또는 OpenAI Chat Completions 엔드포인트를 제공하는 모든 제공자를 사용할 수 있습니다:
 - **Ollama Cloud** — "Ollama Cloud" 타입 선택 (내장 프록시, 키 로테이션, 40+ 모델, 최대 480B)
+- **Venice.ai** — "Venice.ai" 타입 선택 (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ 오픈 웨이트 모델(비검열 모델 포함))
 - **Local Ollama** — `http://localhost:11434/v1` (무료, 프라이빗, 오프라인 가능 — [Ollama 설정 가이드](doc-ollama) 참조)
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`

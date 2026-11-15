@@ -2558,6 +2558,82 @@ function runUnitTests() {
     assert.deepStrictEqual(oat.mapError(500, '<html>bad gateway</html>').body.error, { type: 'api_error', message: '<html>bad gateway</html>' });
     assert.strictEqual(oat.mapError(418, '').body.error.message, 'upstream HTTP 418');
   });
+  // Venice preset + generic extra_body (lib/venice.js).
+  const ven = require('./lib/venice');
+  ut('venice veniceBaseUrl — pinned to api.venice.ai; loopback mock only with STOA_TEST=1 and a numeric port', () => {
+    assert.strictEqual(ven.veniceBaseUrl({}), 'https://api.venice.ai/api/v1');
+    assert.strictEqual(ven.veniceBaseUrl({ STOA_TEST_VENICE_PORT: '4567' }), 'https://api.venice.ai/api/v1', 'port without STOA_TEST ignored');
+    assert.strictEqual(ven.veniceBaseUrl({ STOA_TEST: '0', STOA_TEST_VENICE_PORT: '4567' }), 'https://api.venice.ai/api/v1');
+    assert.strictEqual(ven.veniceBaseUrl({ STOA_TEST: '1', STOA_TEST_VENICE_PORT: 'evil.example:80' }), 'https://api.venice.ai/api/v1', 'only a port, never a host');
+    assert.strictEqual(ven.veniceBaseUrl({ STOA_TEST: '1', STOA_TEST_VENICE_PORT: '4567' }), 'http://127.0.0.1:4567/api/v1');
+  });
+  ut('venice extraBodyError — object or null only, 4096-byte cap, translator-owned keys refused', () => {
+    assert.strictEqual(ven.extraBodyError(null), null);
+    assert.strictEqual(ven.extraBodyError({ venice_parameters: { enable_web_search: 'off' }, temperature: 0.3 }), null);
+    for (const bad of [[], [1], 'x', 3, true]) assert.match(ven.extraBodyError(bad), /JSON object or null/, JSON.stringify(bad));
+    assert.strictEqual(ven.extraBodyError({ a: 'x'.repeat(4096 - 8) }), null, 'exactly 4096 bytes is allowed');
+    assert.match(ven.extraBodyError({ a: 'x'.repeat(4096 - 7) }), /4097 bytes; the limit is 4096/);
+    assert.match(ven.extraBodyError({ a: 'é'.repeat(2045) }), /4098 bytes/, 'limit counts UTF-8 bytes, not characters');
+    for (const k of ['model', 'messages', 'tools', 'tool_choice', 'stream', 'stream_options']) assert.match(ven.extraBodyError({ [k]: 1 }), new RegExp(`cannot set ${k}`));
+    assert.match(ven.extraBodyError({ model: 'x', stream: false, ok: 1 }), /cannot set model, stream:/);
+  });
+  ut('venice buildChatRequest — no extra_body = same object; merge with translator winning; max_completion_tokens; strip_thinking only for reasoning models', () => {
+    const oa = oat.toOpenAIRequest({ max_tokens: 50, temperature: 0.1, messages: [{ role: 'user', content: 'hi' }] }, 'm1');
+    assert.strictEqual(ven.buildChatRequest({ vendor: 'generic' }, oa), oa, 'untouched for a plain openai_chat platform');
+    assert.strictEqual(ven.buildChatRequest({ vendor: 'generic', extra_body: null }, oa), oa);
+    const gen = ven.buildChatRequest({ vendor: 'generic', extra_body: { temperature: 0.9, top_k: 20, nested: { a: 1 } } }, oa);
+    assert.deepStrictEqual(gen, { top_k: 20, nested: { a: 1 }, model: 'm1', messages: [{ role: 'user', content: 'hi' }], max_tokens: 50, temperature: 0.1 });
+    gen.nested.a = 2;
+    const plat = { vendor: 'venice', extra_body: { nested: { a: 1 } }, cached_models: [{ model: 'm1', reasoning: false }, { model: 'r1', reasoning: true }] };
+    assert.deepStrictEqual(ven.buildChatRequest(plat, oa).nested, { a: 1 }, 'extra_body is copied, not shared');
+    const v = ven.buildChatRequest({ ...plat, extra_body: ven.defaultExtraBody() }, oa);
+    assert.ok(!('max_tokens' in v));
+    assert.strictEqual(v.max_completion_tokens, 50);
+    assert.deepStrictEqual(v.venice_parameters, { include_venice_system_prompt: false, enable_web_search: 'off' }, 'non-reasoning model: no strip flag');
+    assert.ok(!('max_completion_tokens' in ven.buildChatRequest(plat, oat.toOpenAIRequest({ messages: [] }, 'm1'))), 'no max_tokens → none added');
+    const oaR = oat.toOpenAIRequest({ messages: [] }, 'r1');
+    const r = ven.buildChatRequest({ ...plat, extra_body: ven.defaultExtraBody() }, oaR);
+    assert.deepStrictEqual(r.venice_parameters, { include_venice_system_prompt: false, enable_web_search: 'off', strip_thinking_response: true });
+    assert.deepStrictEqual(ven.buildChatRequest({ ...plat, extra_body: null }, oaR).venice_parameters, { strip_thinking_response: true });
+    assert.strictEqual(ven.buildChatRequest({ ...plat, extra_body: { venice_parameters: { strip_thinking_response: false } } }, oaR).venice_parameters.strip_thinking_response, false, 'explicit owner choice kept');
+    const shared = ven.defaultExtraBody();
+    ven.buildChatRequest({ ...plat, extra_body: shared }, oaR);
+    assert.ok(!('strip_thinking_response' in shared.venice_parameters), 'stored extra_body not mutated');
+  });
+  ut('venice veniceModelNames — discovered names only, enabled subset, never a name with ":"', () => {
+    const cached = [{ model: 'a' }, { model: 'b' }, { model: 'c:enable_web_search=on' }, 'd'];
+    assert.deepStrictEqual(ven.veniceModelNames({ cached_models: cached }), ['a', 'b', 'd']);
+    assert.deepStrictEqual(ven.veniceModelNames({ cached_models: cached, enabled_models: ['b', 'x', 'c:enable_web_search=on'] }), ['b']);
+    assert.deepStrictEqual(ven.veniceModelNames({ cached_models: cached, enabled_models: ['x:enable_web_search=on'] }), ['a', 'b', 'd'], 'no valid enabled name → discovered list');
+    assert.deepStrictEqual(ven.veniceModelNames({}), []);
+  });
+  ut('venice parseVeniceModels / parseRateLimits / billingMessage', () => {
+    const spec = (caps, extra = {}) => ({ availableContextTokens: 128000, capabilities: caps, ...extra });
+    const { total, usable } = ven.parseVeniceModels({ data: [
+      { id: 'plain', model_spec: spec({ supportsFunctionCalling: true }) },
+      { id: 'unc', model_spec: spec({ supportsFunctionCalling: true, supportsVision: true, supportsReasoning: true }, { uncensored: true }) },
+      { id: 'notools', model_spec: spec({ supportsFunctionCalling: false }) },
+      { id: 'e2ee-x', model_spec: spec({ supportsFunctionCalling: true }) },
+      { id: 'off', model_spec: spec({ supportsFunctionCalling: true }, { offline: true }) },
+      { id: 'a:b', model_spec: spec({ supportsFunctionCalling: true }) },
+      { id: 'ctx', context_length: 999, model_spec: { capabilities: { supportsFunctionCalling: true } } },
+      null,
+    ] });
+    assert.strictEqual(total, 8);
+    assert.deepStrictEqual(usable, [
+      { model: 'plain', tools: true, vision: false, reasoning: false, uncensored: false, context: 128000, local: false },
+      { model: 'unc', tools: true, vision: true, reasoning: true, uncensored: true, context: 128000, local: false },
+      { model: 'ctx', tools: true, vision: false, reasoning: false, uncensored: false, context: 999, local: false },
+    ]);
+    assert.deepStrictEqual(ven.parseVeniceModels({}), { total: 0, usable: [] });
+    assert.deepStrictEqual(ven.parseRateLimits({ data: { accessPermitted: true, balances: { USD: 12.5, DIEM: 0 } } }), { accessPermitted: true, balances: { usd: 12.5, diem: 0 } });
+    assert.deepStrictEqual(ven.parseRateLimits({ data: { balances: { USD: 'x' } } }), { accessPermitted: false, balances: { usd: null, diem: null } });
+    assert.strictEqual(ven.parseRateLimits({}), null);
+    assert.match(ven.billingMessage('{"error":"API key USD spend limit exceeded. Your account may still have USD balance"}'), /API_KEY_USD_SPEND_LIMIT_EXCEEDED.*spend limit/);
+    assert.match(ven.billingMessage('{"code":"API_KEY_DIEM_SPEND_LIMIT_EXCEEDED"}'), /DIEM spend limit reached/);
+    assert.match(ven.billingMessage('{"error":"Insufficient USD or Diem balance to complete request."}'), /account balance is insufficient/);
+    assert.match(ven.billingMessage(''), /account balance is insufficient/);
+  });
   ut('openai estimateTokens — ~4 chars/token over system, text, tool I/O, tools; image counted', () => {
     assert.strictEqual(oat.estimateTokens({ system: 'x'.repeat(40), messages: [{ role: 'user', content: 'y'.repeat(40) }] }), 20);
     const base = oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'text', text: 'abcd' }] }] });
@@ -6962,6 +7038,46 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
     r.on('error', reject);
     if (body) r.write(body); r.end();
   });
+}
+
+// Mock Venice on the loopback port run-tests.js hands the server (STOA_TEST_VENICE_PORT): venice
+// platforms are pinned to it there. seen gets { method, path, auth, body } per request.
+async function startVeniceMock(seen) {
+  const port = Number(process.env.STOA_TEST_VENICE_PORT);
+  assert.ok(port > 0, 'STOA_TEST_VENICE_PORT not set — run through .claude/tools/run-tests.js');
+  const reply = (rs, status, obj) => { rs.writeHead(status, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify(obj)); };
+  const spec = (caps, extra = {}) => ({ availableContextTokens: 131072, capabilities: { supportsFunctionCalling: true, ...caps }, ...extra });
+  const mock = http.createServer((rq, rs) => {
+    let raw = '';
+    rq.on('data', c => { raw += c; });
+    rq.on('end', () => {
+      const body = raw ? JSON.parse(raw) : null;
+      seen.push({ method: rq.method, path: rq.url, auth: rq.headers.authorization || null, body });
+      if (rq.method === 'GET' && rq.url === '/api/v1/models?type=text') {
+        return reply(rs, 200, { object: 'list', type: 'text', data: [
+          { id: 'venice-plain', model_spec: spec({ supportsVision: true }) },
+          { id: 'venice-unc-reason', model_spec: spec({ supportsReasoning: true }, { uncensored: true }) },
+          { id: 'venice-notools', model_spec: spec({ supportsFunctionCalling: false }, { uncensored: true }) },
+          { id: 'e2ee-venice-x', model_spec: spec({}) },
+        ] });
+      }
+      if (rq.method === 'GET' && rq.url === '/api/v1/api_keys/rate_limits') {
+        if (rq.headers.authorization === 'Bearer v-good') return reply(rs, 200, { data: { accessPermitted: true, apiTier: { id: 'paid', isCharged: true }, balances: { USD: 12.34, DIEM: 0.5 }, keyExpiration: null, nextEpochBegins: '2026-11-16T00:00:00.000Z', rateLimits: [] } });
+        if (rq.headers.authorization === 'Bearer v-capped') return reply(rs, 200, { data: { accessPermitted: false, apiTier: { id: 'paid', isCharged: true }, balances: { USD: 0, DIEM: 0 }, keyExpiration: null, nextEpochBegins: '', rateLimits: [] } });
+        return reply(rs, 401, { error: 'Authentication failed' });
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/chat/completions') {
+        const last = body?.messages?.at(-1)?.content;
+        if (last === 'usd limit') return reply(rs, 402, { error: 'API key USD spend limit exceeded. Your account may still have USD balance, but this API key has reached its configured USD spending limit.' });
+        if (last === 'diem limit') return reply(rs, 402, { error: 'API key DIEM spend limit exceeded. Your account may still have DIEM balance, but this API key has reached its configured DIEM spending limit.' });
+        if (last === 'broke') return reply(rs, 402, { error: 'Insufficient USD or Diem balance to complete request. Visit https://venice.ai/settings/api to add credits.' });
+        return reply(rs, 200, { id: 'v-1', choices: [{ message: { role: 'assistant', content: 'ciao' }, finish_reason: 'stop' }], usage: { prompt_tokens: 4, completion_tokens: 1 } });
+      }
+      reply(rs, 404, { error: 'not found' });
+    });
+  });
+  await new Promise((resolve, reject) => { mock.once('error', reject); mock.listen(port, '127.0.0.1', resolve); });
+  return mock;
 }
 
 async function streamReq(method, path, timeoutMs = 300000) {
@@ -11669,6 +11785,102 @@ async function run() {
       }
     });
 
+    // /v1/messages — vendor venice and extra_body on openai_chat (mock Venice on STOA_TEST_VENICE_PORT).
+    await test('/v1/messages venice — extra_body merged, max_completion_tokens, strip_thinking for reasoning, only discovered models, 402 kinds; plain openai_chat request unchanged', async () => {
+      const seen = [];
+      const mock = await startVeniceMock(seen);
+      const plainSeen = [];
+      const plain = http.createServer((rq, rs) => {
+        let raw = '';
+        rq.on('data', c => { raw += c; });
+        rq.on('end', () => {
+          plainSeen.push(JSON.parse(raw));
+          rs.writeHead(200, { 'Content-Type': 'application/json' });
+          rs.end(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }));
+        });
+      });
+      await new Promise(r => plain.listen(0, '127.0.0.1', r));
+      const plainBase = `http://127.0.0.1:${plain.address().port}/v1`;
+      const VEN = `http://127.0.0.1:${process.env.STOA_TEST_VENICE_PORT}/api/v1`;
+      const vp = { include_venice_system_prompt: false, enable_web_search: 'off' };
+      const cached = [{ model: 'venice-plain', tools: true, reasoning: false }, { model: 'venice-unc-reason', tools: true, reasoning: true, uncensored: true }];
+      const plats = [
+        { id: '__sec-ven', name: 'Venice', vendor: 'venice', api_format: 'openai_chat', enabled: true, base_url: VEN, api_keys: ['v-good'], extra_body: { venice_parameters: vp, temperature: 0.9 }, cached_models: cached },
+        { id: '__sec-ven-empty', name: 'Venice empty', vendor: 'venice', api_format: 'openai_chat', enabled: true, base_url: VEN, api_keys: ['v-good'] },
+        // base_url edited outside the API: the key still only goes to Venice.
+        { id: '__sec-ven-url', name: 'Venice url', vendor: 'venice', api_format: 'openai_chat', enabled: true, base_url: plainBase, api_keys: ['v-good'], cached_models: cached },
+        // Stored before validation existed: a suffixed name must still never reach Venice.
+        { id: '__sec-ven-sfx', name: 'Venice sfx', vendor: 'venice', api_format: 'openai_chat', enabled: true, base_url: VEN, api_keys: ['v-good'], cached_models: ['venice-plain:enable_web_search=on', 'venice-plain'], enabled_models: ['venice-plain:enable_web_search=on'] },
+        { id: '__sec-oai-plain', name: 'Plain', vendor: 'generic', api_format: 'openai_chat', enabled: true, base_url: plainBase, api_keys: ['k'], cached_models: [{ model: 'p1', tools: true }] },
+        { id: '__sec-oai-xb', name: 'Plain XB', vendor: 'generic', api_format: 'openai_chat', enabled: true, base_url: plainBase, api_keys: ['k'], cached_models: [{ model: 'p1', tools: true }], extra_body: { top_k: 7, temperature: 0.9 } },
+      ];
+      const origPlat = secDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      (origPlat ? secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : secDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)")).run(JSON.stringify(plats));
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      const post = (platId, body) => anon(() => req('POST', '/v1/messages', body,
+        { Authorization: `Bearer stoa-proxy:${platId}`, 'x-agent-id': String(secAgent.actorId), 'x-agent-secret': secAgent.secret }), true);
+      const chats = () => seen.filter(x => x.path === '/api/v1/chat/completions');
+      try {
+        const msg = { model: 'venice-plain', max_tokens: 128, temperature: 0.2, system: 'sys', messages: [{ role: 'user', content: 'hello' }] };
+        const r1 = await post('__sec-ven', msg);
+        assert.strictEqual(r1.status, 200, r1.raw);
+        assert.deepStrictEqual(r1.body.content, [{ type: 'text', text: 'ciao' }]);
+        assert.deepStrictEqual(chats().at(-1).body, {
+          venice_parameters: vp, temperature: 0.2, model: 'venice-plain',
+          messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hello' }], max_completion_tokens: 128,
+        }, 'extra_body merged, translator temperature wins, max_tokens renamed');
+        assert.strictEqual(chats().at(-1).auth, 'Bearer v-good');
+
+        await post('__sec-ven', { ...msg, model: 'venice-unc-reason' });
+        assert.deepStrictEqual(chats().at(-1).body.venice_parameters, { ...vp, strip_thinking_response: true });
+        assert.strictEqual(chats().at(-1).body.model, 'venice-unc-reason');
+
+        // Unlisted names (CLI side calls, suffixes) map to a discovered model; never passed through.
+        for (const m of ['claude-haiku-5-5', 'venice-plain:enable_web_search=on', 'venice-notools']) {
+          const r = await post('__sec-ven', { ...msg, model: m });
+          assert.strictEqual(r.status, 200);
+          assert.strictEqual(chats().at(-1).body.model, 'venice-plain', m);
+        }
+        const nPlain = plainSeen.length;
+        assert.strictEqual((await post('__sec-ven-url', msg)).status, 200);
+        assert.strictEqual(plainSeen.length, nPlain, 'tampered base_url not used');
+        assert.strictEqual(chats().at(-1).auth, 'Bearer v-good');
+        const nSfx = chats().length;
+        await post('__sec-ven-sfx', msg);
+        assert.strictEqual(chats().at(-1).body.model, 'venice-plain', 'stored suffixed names are skipped');
+        assert.strictEqual(chats().length, nSfx + 1);
+        const nEmpty = chats().length;
+        const empty = await post('__sec-ven-empty', msg);
+        assert.deepStrictEqual([empty.status, empty.body.error.type], [400, 'invalid_request_error']);
+        assert.match(empty.body.error.message, /discover models/);
+        assert.strictEqual(chats().length, nEmpty, 'nothing sent upstream without a model list');
+
+        const usd = await post('__sec-ven', { ...msg, messages: [{ role: 'user', content: 'usd limit' }] });
+        assert.deepStrictEqual([usd.status, usd.body.error.type], [402, 'billing_error']);
+        assert.match(usd.body.error.message, /API_KEY_USD_SPEND_LIMIT_EXCEEDED/);
+        const diem = await post('__sec-ven', { ...msg, messages: [{ role: 'user', content: 'diem limit' }] });
+        assert.match(diem.body.error.message, /API_KEY_DIEM_SPEND_LIMIT_EXCEEDED/);
+        const broke = await post('__sec-ven', { ...msg, messages: [{ role: 'user', content: 'broke' }] });
+        assert.deepStrictEqual([broke.status, broke.body.error.type], [402, 'billing_error']);
+        assert.match(broke.body.error.message, /account balance is insufficient/);
+        assert.ok(!/spend limit/.test(broke.body.error.message));
+        assert.ok(![usd, diem, broke].some(r => r.raw.includes('v-good')), 'key not echoed');
+
+        // Plain openai_chat: exactly the translator output (max_tokens kept, no venice_parameters); extra_body merges.
+        await post('__sec-oai-plain', { ...msg, model: 'p1' });
+        assert.deepStrictEqual(plainSeen.at(-1), require('./lib/openai-translator').toOpenAIRequest({ ...msg, model: 'p1' }, 'p1'));
+        assert.deepStrictEqual(Object.keys(plainSeen.at(-1)), ['model', 'messages', 'max_tokens', 'temperature']);
+        await post('__sec-oai-xb', { ...msg, model: 'p1' });
+        assert.deepStrictEqual(plainSeen.at(-1), { top_k: 7, temperature: 0.2, model: 'p1', messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hello' }], max_tokens: 128 });
+      } finally {
+        mock.close();
+        plain.close();
+        if (origPlat) secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+        else secDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      }
+    });
+
     // CSRF — Origin checks for cookie-authenticated writes
     await test('CSRF — session POST with foreign/null Origin → 403; same-origin / trusted X-Forwarded-Host → 200', async () => {
       const foreign = await req('POST', '/api/agent/install-token', {}, { Origin: 'https://evil.example' });
@@ -14992,6 +15204,159 @@ async function run() {
     }
   });
 
+  await test('POST/PATCH /api/ai/platforms — extra_body validated on every platform; null clears; GET always returns the field', async () => {
+    const gen = await req('POST', '/api/ai/platforms', { name: '__test-xb-gen__', base_url: 'https://h.example', api_format: 'openai_chat', extra_body: { top_k: 20 } });
+    const anth = await req('POST', '/api/ai/platforms', { name: '__test-xb-anth__', base_url: 'https://a.example' });
+    try {
+      assert.strictEqual(gen.status, 200, JSON.stringify(gen.body));
+      assert.deepStrictEqual(gen.body.extra_body, { top_k: 20 });
+      assert.strictEqual(anth.status, 200);
+      assert.ok(!('extra_body' in anth.body), 'no default extra_body outside venice');
+      const cases = [[[1], /JSON object or null/], ['x', /JSON object or null/], [{ a: 'x'.repeat(4100) }, /bytes; the limit is 4096/], [{ stream: false }, /cannot set stream/], [{ model: 'm:enable_web_search=on' }, /cannot set model/]];
+      for (const [bad, re] of cases) {
+        const r = await req('POST', '/api/ai/platforms', { name: '__test-xb-bad__', api_format: 'openai_chat', extra_body: bad });
+        assert.strictEqual(r.status, 400, JSON.stringify(bad).slice(0, 40));
+        assert.match(r.body.error, re);
+        const pr = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(gen.body.id)}`, { extra_body: bad, name: 'renamed' });
+        assert.strictEqual(pr.status, 400);
+        assert.match(pr.body.error, re);
+      }
+      const list = (await req('GET', '/api/ai/platforms')).body;
+      assert.ok(!list.some(p => p.name === '__test-xb-bad__'), 'rejected POST created nothing');
+      const g = list.find(p => p.id === gen.body.id);
+      assert.deepStrictEqual([g.name, g.extra_body], ['__test-xb-gen__', { top_k: 20 }], 'rejected PATCH changed nothing');
+      assert.strictEqual(list.find(p => p.id === anth.body.id).extra_body, null);
+      const p1 = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(gen.body.id)}`, { extra_body: { temperature: 0.4 } });
+      assert.deepStrictEqual([p1.status, p1.body.extra_body], [200, { temperature: 0.4 }]);
+      const p2 = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(gen.body.id)}`, { extra_body: null });
+      assert.strictEqual(p2.status, 200);
+      assert.ok(!('extra_body' in p2.body));
+      assert.strictEqual((await req('GET', '/api/ai/platforms')).body.find(p => p.id === gen.body.id).extra_body, null);
+    } finally {
+      for (const id of [gen.body?.id, anth.body?.id]) if (id) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+    }
+  });
+
+  await test('POST/PATCH /api/ai/platforms — vendor venice: pinned base_url, openai_chat only, default extra_body, switching in/out', async () => {
+    const VEN = `http://127.0.0.1:${process.env.STOA_TEST_VENICE_PORT}/api/v1`;
+    const ids = [];
+    try {
+      const v = await req('POST', '/api/ai/platforms', { name: '__test-ven-a__', vendor: 'venice', base_url: '', api_keys: ['v-good'] });
+      assert.strictEqual(v.status, 200, JSON.stringify(v.body));
+      ids.push(v.body.id);
+      assert.deepStrictEqual([v.body.base_url, v.body.api_format, v.body.vendor], [VEN, 'openai_chat', 'venice']);
+      assert.deepStrictEqual(v.body.extra_body, { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } });
+      const v2 = await req('POST', '/api/ai/platforms', { name: '__test-ven-b__', vendor: 'venice', base_url: VEN, extra_body: { venice_parameters: { enable_web_search: 'auto' } } });
+      ids.push(v2.body.id);
+      assert.deepStrictEqual(v2.body.extra_body, { venice_parameters: { enable_web_search: 'auto' } }, 'explicit extra_body replaces the default');
+      const v3 = await req('POST', '/api/ai/platforms', { name: '__test-ven-c__', vendor: 'venice', extra_body: null });
+      ids.push(v3.body.id);
+      assert.ok(!('extra_body' in v3.body), 'extra_body:null on create = none');
+      for (const [body, re] of [[{ base_url: 'https://evil.example/v1' }, /always use/], [{ api_format: 'anthropic' }, /api_format openai_chat/], [{ extra_body: [] }, /JSON object/]]) {
+        const r = await req('POST', '/api/ai/platforms', { name: '__test-ven-bad__', vendor: 'venice', ...body });
+        assert.strictEqual(r.status, 400, JSON.stringify(body));
+        assert.match(r.body.error, re);
+      }
+      const idA = encodeURIComponent(v.body.id);
+      const pBad = await req('PATCH', `/api/ai/platforms/${idA}`, { base_url: 'https://evil.example/v1' });
+      assert.deepStrictEqual([pBad.status, /always use/.test(pBad.body.error)], [400, true]);
+      const pFmt = await req('PATCH', `/api/ai/platforms/${idA}`, { api_format: 'anthropic' });
+      assert.strictEqual(pFmt.status, 400);
+      const pOk = await req('PATCH', `/api/ai/platforms/${idA}`, { base_url: '', name: '__test-ven-a2__' });
+      assert.deepStrictEqual([pOk.status, pOk.body.base_url, pOk.body.name], [200, VEN, '__test-ven-a2__'], "'' keeps the pinned URL");
+      // Generic anthropic platform → venice: format, URL and default extra_body follow; leaving keeps its own settings.
+      const g = await req('POST', '/api/ai/platforms', { name: '__test-ven-gen__', base_url: 'https://h.example/v1' });
+      ids.push(g.body.id);
+      const idG = encodeURIComponent(g.body.id);
+      assert.strictEqual((await req('PATCH', `/api/ai/platforms/${idG}`, { vendor: 'venice', api_format: 'anthropic' })).status, 400);
+      assert.strictEqual((await req('PATCH', `/api/ai/platforms/${idG}`, { vendor: 'venice', base_url: 'https://h.example/v1' })).status, 400, 'old URL cannot follow into venice');
+      const sw = await req('PATCH', `/api/ai/platforms/${idG}`, { vendor: 'venice' });
+      assert.strictEqual(sw.status, 200, JSON.stringify(sw.body));
+      assert.deepStrictEqual([sw.body.vendor, sw.body.api_format, sw.body.base_url], ['venice', 'openai_chat', VEN]);
+      assert.deepStrictEqual(sw.body.extra_body, { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } });
+      const out = await req('PATCH', `/api/ai/platforms/${idG}`, { vendor: 'generic', base_url: 'https://other.example/v1' });
+      assert.deepStrictEqual([out.status, out.body.vendor, out.body.api_format, out.body.base_url], [200, 'generic', 'openai_chat', 'https://other.example/v1']);
+      // Ollama + anthropic platforms untouched by the venice rules.
+      const ol = await req('POST', '/api/ai/platforms', { name: '__test-ven-ollama__', vendor: 'ollama' });
+      ids.push(ol.body.id);
+      assert.deepStrictEqual([ol.status, ol.body.base_url, ol.body.api_format, 'extra_body' in ol.body], [200, '', 'anthropic', false]);
+    } finally {
+      for (const id of ids) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+    }
+  });
+
+  await test('venice discover-models + health — /models?type=text filtered (no tools, e2ee-), key test via rate_limits, balances stored, enabled_models only from the list', async () => {
+    const seen = [];
+    const mock = await startVeniceMock(seen);
+    const pdb = require('./db');
+    const stored = (id) => JSON.parse(pdb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get().value).find(p => p.id === id);
+    const ids = [];
+    try {
+      const v = await req('POST', '/api/ai/platforms', { name: '__test-ven-disc__', vendor: 'venice', api_keys: ['v-good'] });
+      ids.push(v.body.id);
+      const id = encodeURIComponent(v.body.id);
+      const earlyEnable = await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: ['venice-plain'] });
+      assert.deepStrictEqual([earlyEnable.status, /discover models/.test(earlyEnable.body.error)], [400, true], 'nothing discovered yet');
+
+      const d = await streamReq('POST', `/api/ai/platforms/${id}/discover-models`, 15000);
+      const done = d.events.find(e => e.type === 'done');
+      assert.ok(done, JSON.stringify(d.events));
+      assert.strictEqual(d.events[0].type, 'start');
+      assert.strictEqual(done.tested, 4);
+      assert.deepStrictEqual(done.usable, [
+        { model: 'venice-plain', tools: true, vision: true, reasoning: false, uncensored: false, context: 131072, local: false },
+        { model: 'venice-unc-reason', tools: true, vision: false, reasoning: true, uncensored: true, context: 131072, local: false },
+      ]);
+      assert.deepStrictEqual(stored(v.body.id).cached_models, done.usable);
+      assert.deepStrictEqual(seen.map(x => [x.method, x.path]), [['GET', '/api/v1/models?type=text']], 'no per-model chat probe (each would be billed)');
+
+      const sfx = await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: ['venice-plain', 'venice-plain:enable_web_search=on'] });
+      assert.strictEqual(sfx.status, 400);
+      assert.match(sfx.body.error, /Unknown Venice model.*enable_web_search/);
+      assert.strictEqual((await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: ['venice-notools'] })).status, 400, 'filtered-out model cannot be enabled');
+      const en = await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: ['venice-unc-reason'] });
+      assert.deepStrictEqual([en.status, en.body.enabled_models], [200, ['venice-unc-reason']]);
+      assert.strictEqual((await req('PATCH', `/api/ai/platforms/${id}`, { enabled_models: null })).status, 200);
+
+      seen.length = 0;
+      const h = await req('POST', `/api/ai/platforms/${id}/health`);
+      assert.strictEqual(h.status, 200);
+      assert.deepStrictEqual([h.body.status, h.body.message, h.body.accessPermitted, h.body.balances], ['ok', 'API key OK', true, { usd: 12.34, diem: 0.5 }]);
+      assert.deepStrictEqual(seen.map(x => [x.method, x.path, x.auth]), [['GET', '/api/v1/api_keys/rate_limits', 'Bearer v-good']], 'key test never uses public /models');
+      const st = stored(v.body.id);
+      assert.deepStrictEqual(st.balances, { usd: 12.34, diem: 0.5 });
+      assert.strictEqual(st.balances_checked_at, h.body.balances_checked_at);
+      assert.ok(Math.abs(Date.parse(st.balances_checked_at) - Date.now()) < 60000);
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      const g = (await req('GET', '/api/ai/platforms')).body.find(p => p.id === v.body.id);
+      assert.deepStrictEqual([g.balances, g.balances_checked_at], [{ usd: 12.34, diem: 0.5 }, st.balances_checked_at]);
+      assert.strictEqual(g.cached_models.length, 2, 'balance save kept the discovered models');
+
+      await req('PATCH', `/api/ai/platforms/${id}`, { api_keys: ['v-good', 'v-wrong-secret'] });
+      const bad = await req('POST', `/api/ai/platforms/${id}/health`);
+      assert.deepStrictEqual([bad.body.status, bad.body.message], ['error', 'API key #2 rejected by Venice']);
+      assert.ok(!JSON.stringify(bad.body).includes('v-wrong-secret'), 'key never echoed');
+      await req('PATCH', `/api/ai/platforms/${id}`, { api_keys: ['v-capped'] });
+      const capped = await req('POST', `/api/ai/platforms/${id}/health`);
+      assert.deepStrictEqual([capped.body.status, capped.body.accessPermitted, capped.body.balances], ['error', false, { usd: 0, diem: 0 }]);
+      assert.match(capped.body.message, /no inference access/);
+      await req('PATCH', `/api/ai/platforms/${id}`, { api_keys: [] });
+      assert.deepStrictEqual((await req('POST', `/api/ai/platforms/${id}/health`)).body, { status: 'error', message: 'No API key configured' });
+    } finally {
+      mock.close();
+      for (const id of ids) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+    }
+    // Venice down → discovery reports an NDJSON error event (what the settings UI reads), nothing stored.
+    const v2 = await req('POST', '/api/ai/platforms', { name: '__test-ven-down__', vendor: 'venice', api_keys: ['v-good'] });
+    try {
+      const d = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(v2.body.id)}/discover-models`, 15000);
+      assert.strictEqual(d.events.at(-1).type, 'error', JSON.stringify(d.events));
+      assert.ok(!stored(v2.body.id).cached_models);
+      const h = await req('POST', `/api/ai/platforms/${encodeURIComponent(v2.body.id)}/health`);
+      assert.deepStrictEqual(h.body, { status: 'error', message: 'Venice unreachable' });
+    } finally { await req('DELETE', `/api/ai/platforms/${encodeURIComponent(v2.body.id)}`); }
+  });
+
   await test('POST /api/ai/platforms/:id/health — returns status field', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
     const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}/health`);
@@ -18137,6 +18502,160 @@ async function run() {
     assert.deepStrictEqual([url, method, body.api_format], ['/api/ai/platforms/p1', 'PATCH', 'openai_chat']);
     ctx.sEditPlatform(platforms[1]);
     assert.strictEqual(named('platform-api-format').value, 'anthropic', 'a platform saved before the field existed edits as anthropic');
+  });
+
+  await test('platform form — venice preset locks url + format, extra body editor validates JSON objects, balance + model tags render as text', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; this.className = ''; this.readOnly = false; this.disabled = false; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; this._html = v; }
+      get innerHTML() { return this._html || ''; }
+      insertAdjacentHTML(_, h) { this._html = (this._html || '') + h; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      focus() { this.focused = true; }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    const toasts = [];
+    let platforms = [];
+    let health = { status: 'ok', message: 'API key OK', accessPermitted: true, balances: { usd: 12.5, diem: 3.25 }, balances_checked_at: '2026-11-15T03:00:00.000Z' };
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      showToast: (m, o) => toasts.push([m, !!o?.error]), svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async () => platforms,
+      fetch: async (url, opts) => {
+        calls.push([url, opts.method, opts.body ? JSON.parse(opts.body) : null]);
+        if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => health };
+        return { ok: true, json: async () => ({ id: 'venice-ai' }) };
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const btn = re => form().all().find(e => e.tagName === 'BUTTON' && re.test(e.textContent));
+    const flush = () => new Promise(r => setImmediate(r));
+    const save = async () => { calls.length = 0; toasts.length = 0; btn(/^(add|update)$/).fire('click'); await flush(); return calls[0]; };
+    const pick = (n, v) => { named(n).value = v; named(n).fire('change'); };
+    const extraRow = () => named('platform-extra-body').parentNode.parentNode;
+
+    // Venice preset: url + format locked, default extra body, name prefilled; switching back restores the custom values.
+    ctx.sShowPlatformForm();
+    assert.strictEqual(extraRow().style.display, 'none', 'anthropic format: no extra body editor');
+    named('platform-base-url').value = 'https://router.example/v1';
+    pick('platform-type', 'venice');
+    assert.deepStrictEqual([named('platform-base-url').value, named('platform-base-url').readOnly, named('platform-api-format').value, named('platform-api-format').disabled, named('platform-name').value],
+      ['https://api.venice.ai/api/v1', true, 'openai_chat', true, 'Venice.ai']);
+    assert.deepStrictEqual(JSON.parse(named('platform-extra-body').value), { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } });
+    assert.strictEqual(extraRow().style.display, 'flex');
+    assert.strictEqual(btn(/^test key$/).style.display, 'none', 'no test key before the platform exists');
+    let [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.vendor, 'base_url' in body, body.api_format, body.extra_body.venice_parameters.include_venice_system_prompt], ['/api/ai/platforms', 'POST', 'venice', false, 'openai_chat', false], 'the server owns the Venice URL: the form never sends one');
+
+    ctx.sShowPlatformForm();
+    named('platform-base-url').value = 'https://router.example/v1';
+    pick('platform-type', 'venice');
+    pick('platform-type', 'custom');
+    assert.deepStrictEqual([named('platform-base-url').value, named('platform-base-url').readOnly, named('platform-api-format').value, named('platform-api-format').disabled, named('platform-name').value, named('platform-extra-body').value],
+      ['https://router.example/v1', false, 'anthropic', false, '', ''], 'leaving the preset restores what was typed and drops the untouched default');
+    assert.strictEqual(btn(/^test key$/).style.display, 'none', 'no test key for other platforms');
+
+    // Extra body: invalid JSON / arrays / scalars stay client-side with an inline error; empty = null; anthropic sends none.
+    named('platform-name').value = 'Router';
+    pick('platform-api-format', 'openai_chat');
+    assert.strictEqual(extraRow().style.display, 'flex', 'openai_chat custom platforms get the editor');
+    for (const [raw, re] of [['{ "a": ', /not valid JSON/], ['[1,2]', /must be a JSON object/], ['"x"', /must be a JSON object/], ['null', /must be a JSON object/]]) {
+      named('platform-extra-body').value = raw;
+      calls.length = 0;
+      btn(/^add$/).fire('click'); await flush();
+      const err = extraRow().all().find(e => e.attrs.role === 'alert');
+      assert.deepStrictEqual([calls.length, err.style.display, re.test(err.textContent), named('platform-extra-body').attrs['aria-invalid'], named('platform-extra-body').focused], [0, 'block', true, 'true', true], `rejected: ${raw}`);
+    }
+    named('platform-extra-body').value = '{ "temperature": 0.2, "venice_parameters": { "x": "<b>" } }';
+    [, , body] = await save();
+    assert.deepStrictEqual(body.extra_body, { temperature: 0.2, venice_parameters: { x: '<b>' } });
+    assert.strictEqual(body.base_url, 'https://router.example/v1', 'other platforms still send their URL');
+    ctx.sShowPlatformForm();
+    named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://r.example';
+    pick('platform-api-format', 'openai_chat');
+    [, , body] = await save();
+    assert.strictEqual(body.extra_body, null, 'empty editor clears the field');
+    ctx.sShowPlatformForm();
+    named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://r.example';
+    named('platform-extra-body').value = 'not json';
+    [, , body] = await save();
+    assert.strictEqual('extra_body' in body, false, 'anthropic platforms never send extra_body (hidden editor is ignored)');
+
+    // Card: venice balance line from the stored health result (local time), test key refreshes it in place.
+    platforms = [
+      { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: { venice_parameters: { enable_web_search: 'off' } }, balances: { usd: 1.5, diem: 0.1234 }, balances_checked_at: '2026-11-15T02:30:00.000Z' },
+      { id: 'v2', name: 'Venice two', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null },
+      { id: 'p1', name: 'Router', vendor: 'generic', base_url: 'https://r.example', api_format: 'openai_chat', api_keys: [], extra_body: null },
+    ];
+    await ctx.sLoadPlatformsTab();
+    const when = new Date('2026-11-15T02:30:00.000Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    assert.strictEqual(byId('s-platform-balance-v1').textContent, `USD 1.50 · DIEM 0.1234 · checked ${when}`);
+    assert.match(byId('s-platform-balance-v2').textContent, /not checked yet/);
+    assert.deepStrictEqual([byId('s-platform-p1').children.length, byId('s-platform-balance-p1')], [3, null], 'other platforms: card unchanged');
+    const cardTest = byId('s-platform-v2').all().find(e => e.tagName === 'BUTTON' && e.textContent === 'test key');
+    calls.length = 0; toasts.length = 0;
+    cardTest.fire('click'); await flush(); await flush();
+    assert.deepStrictEqual(calls.map(c => [c[0], c[1]]), [['/api/ai/platforms/v2/health', 'POST']]);
+    const fmt = iso => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    assert.strictEqual(byId('s-platform-balance-v2').textContent, `USD 12.50 · DIEM 3.25 · checked ${fmt('2026-11-15T03:00:00.000Z')}`, 'checked time comes from the server response');
+    assert.deepStrictEqual(toasts, [['API key OK', false]]);
+    health = { status: 'error', message: 'API key rejected by Venice' };
+    toasts.length = 0;
+    cardTest.fire('click'); await flush(); await flush();
+    assert.deepStrictEqual([toasts, cardTest.disabled], [[['API key rejected by Venice', true]], false], 'a rejected key shows the server text as an error toast');
+    assert.match(byId('s-platform-balance-v2').textContent, /^USD 12\.50/, 'a failed test without balances keeps the last balance');
+    health = { status: 'error', message: 'API key has no inference access (no balance or spend limit reached)', accessPermitted: false, balances: { usd: 0, diem: null }, balances_checked_at: '2026-11-15T04:00:00.000Z' };
+    cardTest.fire('click'); await flush(); await flush();
+    assert.strictEqual(byId('s-platform-balance-v2').textContent, `USD 0.00 · DIEM — · checked ${fmt('2026-11-15T04:00:00.000Z')}`, 'no access: the balance that came back is still shown');
+
+    // Edit form: stored extra body prefilled; test key saves the form first, then tests.
+    ctx.sEditPlatform(platforms[0]);
+    assert.deepStrictEqual([JSON.parse(named('platform-extra-body').value), named('platform-base-url').readOnly], [platforms[0].extra_body, true]);
+    assert.strictEqual(btn(/^test key$/).style.display, '', 'saved venice platform: test key offered');
+    health = { status: 'ok', message: 'API key OK', accessPermitted: true, balances: { usd: 2, diem: 0 }, balances_checked_at: '2026-11-15T05:00:00.000Z' };
+    calls.length = 0;
+    btn(/^test key$/).fire('click'); await flush(); await flush();
+    assert.deepStrictEqual(calls.map(c => [c[0], c[1]]), [['/api/ai/platforms/v1', 'PATCH'], ['/api/ai/platforms/v1/health', 'POST']]);
+    assert.deepStrictEqual([calls[0][2].extra_body, 'base_url' in calls[0][2]], [platforms[0].extra_body, false]);
+
+    // Edit form of a Venice platform stored without extra body shows it empty (no default re-fill) and saving keeps null;
+    // the default only fills when the vendor is switched to Venice in the form.
+    ctx.sEditPlatform(platforms[1]);
+    assert.strictEqual(named('platform-extra-body').value, '', 'stored null extra body stays empty on edit');
+    [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.extra_body], ['/api/ai/platforms/v2', 'PATCH', null], 'update keeps the stored null');
+    ctx.sEditPlatform(platforms[1]);
+    calls.length = 0;
+    btn(/^test key$/).fire('click'); await flush(); await flush();
+    assert.deepStrictEqual([calls[0][0], calls[0][1], calls[0][2].extra_body], ['/api/ai/platforms/v2', 'PATCH', null], 'test key does not save the default either');
+    ctx.sEditPlatform(platforms[2]);
+    pick('platform-type', 'venice');
+    assert.deepStrictEqual(JSON.parse(named('platform-extra-body').value), { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } }, 'switching an existing platform to Venice fills the default');
+
+    // Model list: uncensored / reasoning as text tags; plain entries untouched.
+    const wrap = new El('div');
+    ctx.sRenderModelChecklist(wrap, [{ model: 'venice-uncensored', tools: true, vision: false, reasoning: false, uncensored: true, context: 32768, local: false }, { model: 'qwen3-<i>', tools: true, vision: true, reasoning: true, uncensored: false, context: 131072, local: false }, 'plain-model'], null);
+    const rows = wrap.all().filter(e => e.tagName === 'LABEL');
+    const tagsOf = r => r.all().filter(e => e.className === 's-plat-tag').map(e => e.textContent);
+    assert.deepStrictEqual(rows.map(tagsOf), [['uncensored'], ['reasoning'], []]);
+    assert.strictEqual(rows[1].children[1].textContent, 'qwen3-<i>', 'model name stays text');
   });
 
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {

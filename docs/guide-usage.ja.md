@@ -1494,10 +1494,10 @@ Stoa はアプリの最左端に**縦型サイドバーナビ**を配置して�
 
 組み込みの Claude モデル以外に、外部 AI モデルプロバイダーを設定できます。**+ add platform** をクリックして新しいプロバイダーを登録します：
 
-- **Type** — **Ollama Cloud**（組み込みプロキシ、URL 不要）または **Custom Platform**（任意の AI API プロバイダー）
+- **Type** — **Ollama Cloud**（組み込みプロキシ、URL 不要）、**Venice.ai**（プリセットベンダー、URL 固定）、または **Custom Platform**（任意の AI API プロバイダー）
 - **Name** — プラットフォームのラベル（例：「My OpenRouter」）
-- **Base URL** — Custom Platform に必要（例：`https://openrouter.ai/api/v1`）
-- **API format** — Custom Platform のみ：**Anthropic Messages（デフォルト）** または **OpenAI Chat Completions**。詳細は以下を参照。
+- **Base URL** — Custom Platform に必要（例：`https://openrouter.ai/api/v1`）；Venice.ai では固定
+- **API format** — Custom Platform のみ：**Anthropic Messages（デフォルト）** または **OpenAI Chat Completions**。詳細は以下を参照。Venice.ai は常に OpenAI Chat を使用。
 - **API Key** — そのプロバイダーの API キー
 
 **API format** は Stoa がプラットフォームと通信する方法を決定します：
@@ -1513,8 +1513,23 @@ Stoa はアプリの最左端に**縦型サイドバーナビ**を配置して�
 
 API キーはサーバーに保存され、Settings 編集フォームでのみブラウザに返されます（シングルユーザーアプリのため、アクセスできるのはあなただけです）。
 
+**Venice.ai** — 「Venice.ai」タイプを選択すると、Venice をプリセットベンダーとして使用できます。URL（`https://api.venice.ai/api/v1`）と API フォーマット（OpenAI Chat）は自動で設定され変更できません。`venice.ai/settings/api` で **Inference Only** API キーを取得し、エージェントが残高を使い切らないよう1日の利用上限を設定してください。プラットフォームカードには現在の残高（USD · DIEM）が表示されます。プラットフォームカードまたは編集フォームの **test key** をクリックしてキーを検証し、表示残高を更新できます。
+
+**Extra body**（OpenAI Chat プラットフォーム、Venice.ai を含む） — `/chat/completions` リクエストごとにマージされる JSON オブジェクト（Stoa 自身のフィールドより先に適用）。プロバイダー固有のパラメーターを渡すために使用します。制約：JSON オブジェクト（配列不可）、≤ 4 KB、Stoa が制御するフィールド（`model`、`messages`、`tools`、`tool_choice`、`stream`、`stream_options`）は設定不可。Venice.ai のデフォルト値：
+
+```json
+{"venice_parameters":{"include_venice_system_prompt":false,"enable_web_search":"off"}}
+```
+
+これにより Venice 独自のシステムプロンプト注入とリクエストごとのウェブ検索課金が無効になります。フィールドを空にすると Venice のデフォルトシステムプロンプト動作が復元されます。
+
+**Venice のモデル検出** — 検出時、エンドツーエンド暗号化ハンドシェイクが必要なモデル（`e2ee-*` プレフィックス）、ファンクションコーリング非対応のモデル、またはオフラインのモデルは非表示になります。検出されたモデルには該当する機能ラベルが表示されます：**uncensored**、**reasoning**、**vision**。
+
+**Venice の課金エラー** — Venice からの 402 レスポンスは3種類のいずれかに対応します：*USD 利用上限到達*（venice.ai でキーの1日上限を引き上げ）、*DIEM 利用上限到達*（同様）、または*アカウント残高不足*（venice.ai/settings/api でクレジットを追加）。
+
 **対応プロバイダー** — Anthropic Messages または OpenAI Chat Completions エンドポイントを公開しているプロバイダーであればすべて利用可能：
 - **Ollama Cloud** — 「Ollama Cloud」タイプを選択（組み込みプロキシ、キーローテーション付き、40+ モデル、480B まで）
+- **Venice.ai** — 「Venice.ai」タイプを選択（`https://api.venice.ai/api/v1`、OpenAI Chat、50+ のオープンウェイトモデル（無検閲モデル含む））
 - **ローカル Ollama** — `http://localhost:11434/v1`（無料、プライベート、オフライン対応 — [Ollama セットアップガイド](doc-ollama) を参照）
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`

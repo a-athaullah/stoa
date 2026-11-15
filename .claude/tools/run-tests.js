@@ -198,6 +198,9 @@ function waitUp(port, tries = 50) {
     STOA_UPDATE_REPO_DIR: path.join(tmpUpdateDir, 'live'),
     STOA_UPDATE_STATE_FILE: path.join(tmpUpdateDir, 'update-state.json'),
     STOA_TEST_PROCESS_MANAGER: 'launchd',
+    // Venice platforms are pinned to api.venice.ai; test.js serves a mock Venice on this loopback port
+    // (honoured only with STOA_TEST=1, see lib/venice.js veniceBaseUrl).
+    STOA_TEST_VENICE_PORT: String(await getFreePort()),
     STOA_UPDATE_CHECK_DELAY_MS: String(24 * 3600_000),
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword, STOA_TEST_DB_TOKEN: dbToken };
 

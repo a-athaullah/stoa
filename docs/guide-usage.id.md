@@ -1499,10 +1499,10 @@ Jika server exit saat startup dengan `[db] better-sqlite3 cannot load in this No
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
 
-- **Type** — **Ollama Cloud** (proxy bawaan, tidak perlu URL) atau **Custom Platform** (provider API AI apa pun)
+- **Type** — **Ollama Cloud** (proxy bawaan, tidak perlu URL), **Venice.ai** (preset vendor, URL dikunci), atau **Custom Platform** (provider API AI apa pun)
 - **Name** — label untuk platform (misal "My OpenRouter")
-- **Base URL** — wajib untuk Custom Platform (misal `https://openrouter.ai/api/v1`)
-- **API format** — khusus Custom Platform: **Anthropic Messages (default)** atau **OpenAI Chat Completions**. Lihat penjelasan di bawah.
+- **Base URL** — wajib untuk Custom Platform (misal `https://openrouter.ai/api/v1`); dikunci untuk Venice.ai
+- **API format** — khusus Custom Platform: **Anthropic Messages (default)** atau **OpenAI Chat Completions**. Lihat penjelasan di bawah. Venice.ai selalu memakai OpenAI Chat.
 - **API Key** — API key untuk provider tersebut
 
 **API format** menentukan cara Stoa berkomunikasi dengan platform:
@@ -1518,8 +1518,23 @@ Untuk platform baru, klik **add & discover** untuk menyimpan dan mendeteksi mode
 
 API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
+**Venice.ai** — pilih tipe "Venice.ai" untuk menggunakan Venice sebagai preset vendor. URL (`https://api.venice.ai/api/v1`) dan format API (OpenAI Chat) diatur otomatis dan tidak bisa diubah. Gunakan API key **Inference Only** dari `venice.ai/settings/api`, dan pasang batas belanja harian pada key tersebut agar agent tidak bisa menguras saldo. Kartu platform menampilkan saldo terkini (USD · DIEM). Klik **test key** di kartu platform atau di form edit untuk memverifikasi key dan memperbarui saldo yang ditampilkan.
+
+**Extra body** (platform OpenAI Chat, termasuk Venice.ai) — objek JSON yang di-merge ke setiap request `/chat/completions`, sebelum field milik Stoa. Gunakan untuk mengirim parameter khusus provider. Batasan: harus berupa objek JSON (bukan array), ≤ 4 KB, dan tidak boleh mengandung field yang dikontrol Stoa (`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`). Default Venice.ai:
+
+```json
+{"venice_parameters":{"include_venice_system_prompt":false,"enable_web_search":"off"}}
+```
+
+Ini menonaktifkan injeksi system prompt Venice dan billing web search per-request. Kosongkan field untuk mengembalikan perilaku system prompt default Venice.
+
+**Discovery model Venice** — Discovery menyembunyikan model yang membutuhkan handshake enkripsi end-to-end (awalan `e2ee-*`), tidak mendukung function calling, atau ditandai offline. Model yang ditemukan menampilkan label kapabilitas bila berlaku: **uncensored**, **reasoning**, dan **vision**.
+
+**Error billing Venice** — respons 402 dari Venice dipetakan ke salah satu dari tiga pesan: *Batas belanja USD tercapai* (naikkan batas harian key di venice.ai), *Batas belanja DIEM tercapai* (sama), atau *Saldo akun kosong* (tambahkan kredit di venice.ai/settings/api).
+
 **Provider yang didukung** — provider mana pun yang mengekspos endpoint Anthropic Messages atau OpenAI Chat Completions bisa digunakan:
 - **Ollama Cloud** — pilih tipe "Ollama Cloud" (proxy bawaan dengan rotasi key, 40+ model hingga 480B)
+- **Venice.ai** — pilih tipe "Venice.ai" (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ model open-weight termasuk varian uncensored)
 - **Local Ollama** — `http://localhost:11434/v1` (gratis, privat, bisa offline — lihat [panduan Ollama](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
