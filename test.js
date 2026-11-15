@@ -29024,6 +29024,100 @@ async function run() {
         assert.strictEqual((await req('GET', '/api/ai/platforms/__nope__/video-jobs')).status, 404);
       });
 
+      // Claude Code defers MCP tools behind ToolSearch; non-Claude models rarely call it, so a Venice run's
+      // prompt names the media tools it really lists, and the tools ask to load upfront (_meta alwaysLoad).
+      await test('MCP venice media note — Venice run with tools: prompt names the listed media tools; other runs get no note', async () => {
+        const NOTE = '## Image and video tools';
+        const MEDIA = ['image_generate', 'image_edit', 'video_generate'];
+        const { mcpConfigArgs } = require('./claude-session');
+        const mount = Object.keys(JSON.parse(mcpConfigArgs({ STOA_MCP_TOKEN: 't', STOA_MCP_URL: 'http://h/mcp' })[1]).mcpServers);
+        assert.deepStrictEqual(mount, ['stoa'], 'the CLI mount name the prompt names tools by');
+        const cli = (n) => `mcp__${mount[0]}__stoa__${n}`;
+
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        let t = await triggerToken(agA, roomA, 'media note venice');
+        const tools = await listAll(t.token);
+        assert.deepStrictEqual(tools.filter(x => x._meta?.['anthropic/alwaysLoad'] === true).map(x => x.name).sort(),
+          MEDIA.map(n => `stoa__${n}`).sort(), 'only the media tools load upfront');
+        assert.ok(t.trigger.prompt.includes(NOTE), 'note present');
+        for (const n of MEDIA) assert.ok(t.trigger.prompt.includes(`- \`${cli(n)}\`: `), n);
+        assert.ok(t.trigger.prompt.includes(`query \`select:${MEDIA.map(cli).join(',')}\``), 'ToolSearch select query');
+        assert.match(t.trigger.prompt, /Image inputs of `image_edit` and `video_generate` are only \/uploads\/<file> URLs/);
+        assert.match(t.trigger.prompt, /\[send:\/absolute\/path\]/);
+
+        // Only what this session lists: the owner turned video_generate off, so the note leaves it out.
+        const builtinId = mDb.prepare('SELECT id FROM mcp_servers WHERE builtin=1').get().id;
+        mDb.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, enabled) VALUES (?, 'video_generate', 0)").run(builtinId);
+        try {
+          t = await triggerToken(agA, roomA, 'media note video off', t.threadId);
+          assert.strictEqual((await listAll(t.token)).some(x => x.name === 'stoa__video_generate'), false);
+          assert.ok(t.trigger.prompt.includes(`query \`select:${cli('image_generate')},${cli('image_edit')}\`,`), 'select lists the two image tools only');
+          assert.ok(!t.trigger.prompt.includes(cli('video_generate')), 'hidden tool not named');
+          assert.match(t.trigger.prompt, /Image inputs of `image_edit` are only/);
+        } finally {
+          mDb.prepare("DELETE FROM mcp_tool_overrides WHERE server_id=? AND tool='video_generate'").run(builtinId);
+        }
+
+        // Venice model without tools (cached entry tools:false; discovery itself drops such models): no token, no note.
+        const setCached = (fn, platId = vPlat) => {
+          const raw = JSON.parse(mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get().value);
+          fn(raw.find(x => x.id === platId));
+          mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(raw));
+        };
+        setCached(p => p.cached_models.push({ model: 'venice-notools', tools: false }));
+        try {
+          await new Promise(res => setTimeout(res, 2100)); // getSetting + getParsedSetting caches, 1 s each: stale up to 2 s
+          setRoomModel(roomA, 'venice-notools', vPlat);
+          t = await triggerToken(agA, roomA, 'media note notools');
+          assert.strictEqual(t.trigger.model, 'venice-notools');
+          assert.strictEqual(t.token, undefined, 'tool-less model gets no MCP token');
+          assert.ok(!t.trigger.prompt.includes(NOTE) && !t.trigger.prompt.includes(cli('image_generate')));
+        } finally {
+          setCached(p => { p.cached_models = p.cached_models.filter(m => m.model !== 'venice-notools'); });
+          await new Promise(res => setTimeout(res, 2100));
+        }
+
+        // Anthropic run: tools yes, media note no.
+        setRoomModel(roomA, null, null);
+        t = await triggerToken(agA, roomA, 'media note claude');
+        assert.ok(t.token, 'stoa tools on');
+        assert.ok(!t.trigger.prompt.includes(NOTE));
+
+        // openai_chat platform that is not Venice: tools yes, media note no.
+        const oai = await req('POST', '/api/ai/platforms', { name: '__test-media-oai__', base_url: 'https://h.example', api_format: 'openai_chat' });
+        assert.strictEqual(oai.status, 200, oai.raw);
+        try {
+          setCached(p => { p.cached_models = [{ model: 'oai-model', tools: true }]; }, oai.body.id);
+          await new Promise(res => setTimeout(res, 2100)); // getSetting + getParsedSetting caches, 1 s each: stale up to 2 s
+          setRoomModel(roomA, 'oai-model', oai.body.id);
+          t = await triggerToken(agA, roomA, 'media note openai_chat');
+          assert.strictEqual(t.trigger.model, 'oai-model', 'ran on the openai_chat platform');
+          assert.ok(t.token, 'stoa tools on');
+          assert.ok(!t.trigger.prompt.includes(NOTE));
+        } finally {
+          setRoomModel(roomA, null, null);
+          await req('DELETE', `/api/ai/platforms/${encodeURIComponent(oai.body.id)}`);
+        }
+
+        // Codex sub-agent in a Venice room: the room platform is claude-only, so neither media tools nor note.
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        const sr = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mediacodex', tier: 'quick', harness: 'codex', workdir: '/tmp/stoa-test-media-codex' });
+        assert.strictEqual(sr.status, 201, sr.raw);
+        try {
+          assert.ok((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: sr.body.id })).status < 300);
+          const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sr.body.id, 5000);
+          const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sr.body.id, task: 'draw a lighthouse at dusk' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+          assert.strictEqual(r.status, 200, r.raw);
+          const m = await st;
+          assert.ok(m.mcp_token, 'codex mounts the gateway');
+          assert.ok(!m.prompt.includes(NOTE));
+          assert.strictEqual((await listAll(m.mcp_token)).some(x => MEDIA.includes(x.name.replace(/^stoa__/, ''))), false);
+          await completeSubAgentRun(agA.ws, roomA, m);
+        } finally {
+          await req('DELETE', `/api/sub-agents/${sr.body.id}`);
+        }
+      });
+
       await test('MCP venice video — standard run: quote, queue the standard model, poll, mp4 posted in the thread, agent woken, media cleaned', async () => {
         setRoomModel(roomA, 'venice-plain', vPlat);
         const t = await triggerToken(agA, roomA, 'venice video run');

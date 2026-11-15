@@ -1806,7 +1806,7 @@ const roomAccess = createRoomAccess(db);
 // MCP gateway (plan: stoa-feature/mcp-gateway.md): upstream MCP servers run here, agents reach them via /mcp.
 const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
-const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS, BUILTIN_SLUG, NAME_SEP } = require('./lib/mcp-gateway');
 // One JSON-RPC request to /mcp. stoa__skill_create / skill_update carry up to 5 MB of files, base64 inside JSON.
 const MCP_BODY_MAX = 8 * 1024 * 1024;
 const { createMcpApi } = require('./lib/mcp-api');
@@ -8163,6 +8163,31 @@ function inlineSkillPreamble(refs) {
   return blocks.join('\n') + '\n';
 }
 
+// Claude Code mounts the gateway as MCP server "stoa" (claude-session.js mcpConfigArgs): a built-in is
+// mcp__stoa__stoa__<name> there.
+const cliStoaToolName = (name) => `mcp__stoa__${BUILTIN_SLUG}${NAME_SEP}${name}`;
+const MEDIA_TOOL_USE = {
+  image_generate: 'generate an image',
+  image_edit: 'edit an image, or combine several',
+  video_generate: 'start a video; Stoa posts it and wakes you when it is ready',
+};
+// A Venice run gets the media built-ins (lib/venice-images.js, lib/venice-video.js), but a model that never
+// calls ToolSearch does not find a deferred tool and goes looking for other CLIs or API keys instead.
+// names: the media tools this session's tools/list shows, in venice.MEDIA_TOOLS order.
+function veniceMediaSection(names) {
+  if (!names.length) return '';
+  const full = names.map(cliStoaToolName);
+  const inputs = names.filter(n => n !== 'image_generate').map(n => `\`${n}\``);
+  return [
+    '\n## Image and video tools',
+    'This session has these Stoa media tools (full names in this CLI):',
+    ...names.map((n, i) => `- \`${full[i]}\`: ${MEDIA_TOOL_USE[n]}`),
+    `If a tool's schema is not loaded yet, load it first with ToolSearch, query \`select:${full.join(',')}\`, then call it.`,
+    'Stoa chooses the image and video model and the safe mode. Do not look for another image or video CLI, API key or tool.',
+    inputs.length ? `Image inputs of ${inputs.join(' and ')} are only /uploads/<file> URLs of images attached to messages in this room. To use a local file, upload it first with a \`[send:/absolute/path]\` marker in the content of \`stoa__message_send\`, then take its URL from \`file_urls\` in \`stoa__messages_read\`; or ask the owner to attach the image.` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function promptStrings(lang) {
   const t = {
     en: {
@@ -8562,11 +8587,19 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // instructions below stay exactly as they were.
   const mcpToken = mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported });
   // After every override above: only a run whose final platform is Venice gets image tools; any other run clears the scope's record.
+  const mcpIdent = { actorId: ai.actor_id, roomId, threadId: threadId || null, subAgentId: subAgent?.id || null };
+  const veniceRun = !!modelBaseUrl && venice.isVenice(runPlatform);
   try {
-    mcpGateway.setRunContext({ actorId: ai.actor_id, roomId, threadId: threadId || null, subAgentId: subAgent?.id || null },
-      modelBaseUrl && venice.isVenice(runPlatform) ? { platformId: runPlatform.id, model: effectiveModel } : null);
+    mcpGateway.setRunContext(mcpIdent, veniceRun ? { platformId: runPlatform.id, model: effectiveModel } : null);
   } catch (e) { console.error('[mcp] run context update failed:', e.message); }
   const stoaTools = !!mcpToken && MCP_HARNESSES.includes(effectiveHarness);
+  let veniceMediaLine = '';
+  if (veniceRun && stoaTools) {
+    try {
+      const shown = new Set(mcpGateway.visibleBuiltins(mcpIdent));
+      veniceMediaLine = veniceMediaSection(venice.MEDIA_TOOLS.filter(n => shown.has(n)));
+    } catch (e) { console.error('[mcp] media tool list failed:', e.message); }
+  }
   const sessionTarget = threadId ? `the thread this session runs in (thread ${threadId})` : 'the room\'s main feed';
 
   const proactiveCurlBody = threadId
@@ -8735,6 +8768,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
     orchestrationLine,
     '\n' + L.sendFileInstruction,
+    veniceMediaLine,
     emailThreadSection,
   ].filter(Boolean).join('\n');
 
