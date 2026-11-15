@@ -4734,6 +4734,494 @@ async function runAsyncUnitTests() {
     }
   });
 
+  // ── Work journal (lib/work-journal.js): persistent record of working sessions, task #27 ──
+  console.log('  [Work journal]');
+  const wjMkBase = () => require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'stoa-wj-'));
+  const wjQuiet = () => ({ warns: [], warn(m) { this.warns.push(m); }, log() {}, error() {} });
+  const WJ_KEY = '/tmp/wj-work::4501::t:71988::sub:7';
+  const wjFields = (over = {}) => ({ room_id: 4501, thread_id: 71988, sub_agent_id: 7, message_id: 900, task_id: 179, resume_session_id: 'sid-1', harness: 'claude', state: 'turn_running', cause: 'turn', since: '2026-11-15T22:00:00.000Z', ...over });
+
+  await uta('work journal — upsert writes one 0600 file in a 0700 per-actor dir, schema only (no extra fields), remove deletes it', async () => {
+    const fs = require('fs');
+    const { createWorkJournal, keyStem } = require('./lib/work-journal');
+    const base = wjMkBase();
+    try {
+      const j = createWorkJournal({ baseDir: base, actorId: 12, pid: 4242, log: wjQuiet() });
+      assert.strictEqual(j.upsert(WJ_KEY, { ...wjFields(), prompt: 'secret prompt', token: 'sk-ant-xyz', env: { A: 1 } }), true);
+      const file = path.join(base, 'actor-12', `${keyStem(WJ_KEY)}.json`);
+      assert.strictEqual(j.fileFor(WJ_KEY), file);
+      assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600, 'file 0600');
+      assert.strictEqual(fs.statSync(path.join(base, 'actor-12')).mode & 0o777, 0o700, 'dir 0700');
+      const raw = fs.readFileSync(file, 'utf8');
+      assert.ok(!/secret prompt|sk-ant|"env"|"prompt"|"token"/.test(raw), 'nothing outside the schema is stored');
+      const e = JSON.parse(raw);
+      assert.deepStrictEqual(Object.keys(e).sort(), ['actor_id', 'cause', 'harness', 'message_id', 'pid', 'recovered_at', 'recovery_count', 'resume_session_id', 'room_id', 'session_key', 'since', 'state', 'sub_agent_id', 'task_id', 'thread_id', 'updated_at', 'v'].sort());
+      assert.deepStrictEqual([e.v, e.actor_id, e.session_key, e.room_id, e.thread_id, e.sub_agent_id, e.message_id, e.task_id, e.resume_session_id, e.state, e.cause, e.since, e.pid, e.recovered_at, e.recovery_count],
+        [1, 12, WJ_KEY, 4501, 71988, 7, 900, 179, 'sid-1', 'turn_running', 'turn', '2026-11-15T22:00:00.000Z', 4242, null, 0]);
+      assert.deepStrictEqual(j.list().map(x => x.session_key), [WJ_KEY]);
+      assert.deepStrictEqual(fs.readdirSync(path.join(base, 'actor-12')), [path.basename(file)], 'no tmp file left behind');
+      assert.strictEqual(j.remove(WJ_KEY), true);
+      assert.strictEqual(fs.existsSync(file), false);
+      assert.strictEqual(j.remove(WJ_KEY), false, 'removing a missing entry is a no-op');
+      assert.deepStrictEqual(j.list(), []);
+    } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  });
+
+  await uta('work journal — traversal: the file name is a hash of the key; bad keys and bad ids are refused or dropped; a symlinked dir is not followed', async () => {
+    const fs = require('fs');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    const outside = wjMkBase();
+    try {
+      const log = wjQuiet();
+      const j = createWorkJournal({ baseDir: base, actorId: 3, log });
+      const evil = '../../../../etc/passwd::../../x::t:../../1';
+      assert.strictEqual(j.upsert(evil, wjFields({ room_id: '../1', thread_id: -5, task_id: 1.5, sub_agent_id: '7' })), true);
+      const names = fs.readdirSync(path.join(base, 'actor-3'));
+      assert.strictEqual(names.length, 1);
+      assert.match(names[0], /^[0-9a-f]{32}\.json$/, 'only a hex name ever reaches the file system');
+      const e = j.get(evil);
+      assert.deepStrictEqual([e.session_key, e.room_id, e.thread_id, e.task_id, e.sub_agent_id], [evil, null, null, null, null], 'non-integer ids stored as null');
+      for (const bad of ['', null, 42, 'a\0b', 'x'.repeat(5000)]) {
+        assert.strictEqual(j.upsert(bad, wjFields()), false, `key ${JSON.stringify(String(bad).slice(0, 10))} refused`);
+        assert.strictEqual(j.fileFor(bad), null);
+      }
+      assert.strictEqual(j.upsert(WJ_KEY, wjFields({ state: 'idle' })), false, 'unknown state refused');
+      assert.throws(() => createWorkJournal({ baseDir: 'relative/dir', actorId: 1 }), /absolute/);
+      assert.throws(() => createWorkJournal({ baseDir: base, actorId: '../1' }), /actorId/);
+      // actor dir replaced by a symlink to elsewhere: refused, nothing written outside.
+      const base2 = wjMkBase();
+      fs.symlinkSync(outside, path.join(base2, 'actor-4'));
+      const j2 = createWorkJournal({ baseDir: base2, actorId: 4, log });
+      assert.strictEqual(j2.upsert(WJ_KEY, wjFields()), false);
+      assert.deepStrictEqual(fs.readdirSync(outside), [], 'symlink target untouched');
+      assert.ok(log.warns.some(w => /not a directory/.test(w)), log.warns.join('|'));
+      fs.rmSync(base2, { recursive: true, force: true });
+      // A pre-existing group/world-readable dir is tightened to 0700.
+      const base3 = wjMkBase();
+      fs.mkdirSync(path.join(base3, 'actor-5'), { mode: 0o755 });
+      fs.chmodSync(path.join(base3, 'actor-5'), 0o755);
+      assert.strictEqual(createWorkJournal({ baseDir: base3, actorId: 5, log }).upsert(WJ_KEY, wjFields()), true);
+      assert.strictEqual(fs.statSync(path.join(base3, 'actor-5')).mode & 0o777, 0o700);
+      fs.rmSync(base3, { recursive: true, force: true });
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  await uta('work journal — list() never throws: truncated / non-JSON / wrong schema / renamed / non-file entries are quarantined or skipped; stale tmp removed', async () => {
+    const fs = require('fs');
+    const { createWorkJournal, keyStem } = require('./lib/work-journal');
+    const base = wjMkBase();
+    try {
+      const log = wjQuiet();
+      const j = createWorkJournal({ baseDir: base, actorId: 9, log });
+      assert.deepStrictEqual(j.list(), [], 'missing dir → empty list');
+      j.upsert(WJ_KEY, wjFields());
+      const dir = path.join(base, 'actor-9');
+      const good = fs.readFileSync(j.fileFor(WJ_KEY), 'utf8');
+      const bad = {
+        truncated: good.slice(0, 40),
+        notjson: '\u0000\u0001garbage',
+        wrongver: JSON.stringify({ ...JSON.parse(good), v: 2 }),
+        badstate: JSON.stringify({ ...JSON.parse(good), state: 'sleeping' }),
+        badcount: JSON.stringify({ ...JSON.parse(good), recovery_count: -1 }),
+        array: '[1,2]',
+        renamed: good, // valid content under another key's name
+      };
+      const names = {};
+      for (const [k, v] of Object.entries(bad)) {
+        names[k] = `${keyStem('other-' + k)}.json`;
+        fs.writeFileSync(path.join(dir, names[k]), v, { mode: 0o600 });
+      }
+      fs.mkdirSync(path.join(dir, `${keyStem('a-dir')}.json`));
+      fs.writeFileSync(path.join(dir, `.${keyStem('x')}.123.abcd.tmp`), 'partial');
+      fs.utimesSync(path.join(dir, `.${keyStem('x')}.123.abcd.tmp`), new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3));
+      fs.writeFileSync(path.join(dir, `.${keyStem('y')}.124.abcd.tmp`), 'in flight');
+      fs.writeFileSync(path.join(dir, 'README'), 'unrelated');
+      let listed;
+      assert.doesNotThrow(() => { listed = j.list(); });
+      assert.deepStrictEqual(listed.map(e => e.session_key), [WJ_KEY], 'only the valid entry');
+      const after = fs.readdirSync(dir);
+      for (const [k, n] of Object.entries(names)) {
+        assert.ok(!after.includes(n), `${k} moved away`);
+        assert.ok(after.some(f => f.startsWith(`${n}.corrupt-`)), `${k} quarantined`);
+      }
+      assert.ok(!after.includes(`.${keyStem('x')}.123.abcd.tmp`), 'stale tmp removed');
+      assert.ok(after.includes(`.${keyStem('y')}.124.abcd.tmp`), 'fresh tmp kept (a write may be in flight)');
+      assert.ok(after.includes('README'), 'unrelated files untouched');
+      assert.ok(log.warns.some(w => /quarantined .* invalid JSON/.test(w)), log.warns.join('|'));
+      assert.ok(log.warns.some(w => /does not match session_key/.test(w)));
+      assert.deepStrictEqual(j.list().map(e => e.session_key), [WJ_KEY], 'second pass: corrupt files gone, still no throw');
+      assert.strictEqual(j.get('other-truncated'), null);
+    } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  });
+
+  await uta('work journal — markRecovered stamps + counts; a rewrite of the same key keeps the recovery bookkeeping', async () => {
+    const fs = require('fs');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    try {
+      let t = Date.parse('2026-11-16T01:00:00.000Z');
+      const j = createWorkJournal({ baseDir: base, actorId: 2, now: () => new Date(t), log: wjQuiet() });
+      assert.strictEqual(j.markRecovered(WJ_KEY), null, 'nothing to mark');
+      j.upsert(WJ_KEY, wjFields());
+      t += 1000;
+      const m1 = j.markRecovered(WJ_KEY);
+      assert.deepStrictEqual([m1.recovered_at, m1.recovery_count], ['2026-11-16T01:00:01.000Z', 1]);
+      j.markRecovered(WJ_KEY);
+      j.upsert(WJ_KEY, wjFields({ state: 'background_only', pid: 1 }));
+      const e = j.get(WJ_KEY);
+      assert.deepStrictEqual([e.state, e.recovery_count, e.recovered_at, e.pid], ['background_only', 2, '2026-11-16T01:00:01.000Z', process.pid]);
+      j.remove(WJ_KEY);
+      j.upsert(WJ_KEY, wjFields());
+      assert.strictEqual(j.get(WJ_KEY).recovery_count, 0, 'a new stretch after removal starts at 0');
+    } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  });
+
+  await uta('work journal — unwritable dir: upsert/remove/list return quietly (no throw), one warning per distinct failure', async () => {
+    const fs = require('fs');
+    if (process.getuid?.() === 0) { console.log('    (skipped: root ignores permissions)'); return; }
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    try {
+      fs.chmodSync(base, 0o500);
+      const log = wjQuiet();
+      const j = createWorkJournal({ baseDir: base, actorId: 6, log });
+      assert.strictEqual(j.upsert(WJ_KEY, wjFields()), false);
+      assert.strictEqual(j.upsert(WJ_KEY, wjFields()), false);
+      assert.strictEqual(j.remove(WJ_KEY), false);
+      assert.deepStrictEqual(j.list(), []);
+      assert.strictEqual(log.warns.filter(w => /write failed/.test(w)).length, 1, `deduped: ${log.warns.join('|')}`);
+    } finally { fs.chmodSync(base, 0o700); fs.rmSync(base, { recursive: true, force: true }); }
+  });
+
+  await uta('work journal — SIGKILL during constant rewrites never leaves a missing, partial or invalid entry', async () => {
+    const fs = require('fs');
+    const cp = require('child_process');
+    const base = wjMkBase();
+    try {
+      const script = `
+        const { createWorkJournal } = require(${JSON.stringify(path.join(__dirname, 'lib/work-journal.js'))});
+        const j = createWorkJournal({ baseDir: ${JSON.stringify(base)}, actorId: 8, log: { warn() {} } });
+        const key = ${JSON.stringify(WJ_KEY)};
+        let i = 0;
+        j.upsert(key, { state: 'turn_running', room_id: 1 });
+        process.stdout.write('READY\\n');
+        for (;;) j.upsert(key, { state: (i++ % 2) ? 'background_only' : 'turn_running', room_id: 1 + (i % 1000), message_id: i + 1 });`;
+      for (let round = 0; round < 3; round++) {
+        const child = cp.spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+        await new Promise((resolve, reject) => {
+          child.stdout.on('data', d => { if (String(d).includes('READY')) resolve(); });
+          child.once('exit', c => reject(new Error(`child exited early ${c}`)));
+        });
+        await new Promise(r => setTimeout(r, 30 + round * 37));
+        const exited = new Promise(r => child.once('exit', (c, s) => r(s)));
+        child.kill('SIGKILL');
+        assert.strictEqual(await exited, 'SIGKILL');
+        const { createWorkJournal } = require('./lib/work-journal');
+        const entries = createWorkJournal({ baseDir: base, actorId: 8, log: wjQuiet() }).list();
+        assert.strictEqual(entries.length, 1, `round ${round}: entry survives the kill`);
+        assert.strictEqual(entries[0].session_key, WJ_KEY);
+        assert.ok(entries[0].message_id >= 1 || entries[0].message_id === null);
+        assert.ok(!fs.readdirSync(path.join(base, 'actor-8')).some(f => f.includes('.corrupt-')), 'no corrupt file');
+      }
+    } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  });
+
+  await uta('ClaudeSession: emits activity when background tasks or an autonomous turn change, and when the process dies', async () => {
+    await withFakeClaude(async ({ session, emit, proc }) => {
+      let n = 0;
+      session.on('activity', () => { n++; });
+      emit({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'npm test', session_id: SID });
+      assert.strictEqual(n, 1, 'task_started');
+      emit({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'npm test', session_id: SID });
+      assert.strictEqual(n, 1, 'a repeated start changes nothing');
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: SID });
+      assert.strictEqual(n, 2, 'background_tasks_changed');
+      emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', session_id: SID });
+      assert.strictEqual(n, 3, 'task_notification');
+      emit(evStatus);
+      assert.deepStrictEqual([n, session.isTurnActive()], [4, true], 'autonomous turn start');
+      emit(evText('x'));
+      assert.strictEqual(n, 4, 'tokens are not activity');
+      emit(evResult('x'));
+      assert.deepStrictEqual([n, session.isTurnActive()], [5, false], 'autonomous turn end');
+      proc.emit('close', 1, null);
+      assert.strictEqual(n, 6, 'process exit');
+    });
+  });
+
+  // stoa.js end to end: a fake `claude` CLI (stream-json over stdin/stdout) on PATH behind the real
+  // getSession → ClaudeSession → journal path. Prompts steer it (each control file is consumed): HOLD
+  // waits for <ctl>/release before answering; BG starts a background task that ends when <ctl>/bg-done appears, followed by
+  // an autonomous turn that waits for <ctl>/auto-done.
+  const fakeStreamClaude = () => {
+    const fs = require('fs'), os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-wj-cli-'));
+    const ctl = path.join(dir, 'ctl');
+    fs.mkdirSync(ctl);
+    fs.writeFileSync(path.join(dir, 'claude'), `#!${process.execPath}
+const fs = require('fs'), path = require('path');
+const ctl = process.env.FAKE_CLAUDE_CTL;
+const out = (e) => process.stdout.write(JSON.stringify({ session_id: 'fake-sid-1', ...e }) + '\\n');
+const waitFor = (f, cb) => { const t = setInterval(() => { try { fs.unlinkSync(path.join(ctl, f)); } catch { return; } clearInterval(t); cb(); }, 15); };
+const turn = (text, cb) => { out({ type: 'system', subtype: 'status', status: 'requesting' }); cb(() => { out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } }); out({ type: 'result', subtype: 'success', result: text }); }); };
+let buf = '';
+process.stdin.on('data', d => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop();
+  for (const l of lines) {
+    if (!l.trim()) continue;
+    const m = JSON.parse(l);
+    const text = m.message.content.find(c => c.type === 'text').text;
+    out({ type: 'system', subtype: 'init' });
+    if (text.includes('HOLD')) turn('held reply', done => waitFor('release', done));
+    else if (text.includes('BG')) turn('started tests', done => {
+      out({ type: 'system', subtype: 'task_started', task_id: 'bg1', description: 'npm test' });
+      done();
+      waitFor('bg-done', () => {
+        out({ type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'completed' });
+        turn('tests passed', d2 => waitFor('auto-done', d2));
+      });
+    });
+    else turn('ok', done => done());
+  }
+});
+process.stdin.on('end', () => process.exit(0));
+`, { mode: 0o755 });
+    const prev = { PATH: process.env.PATH, CTL: process.env.FAKE_CLAUDE_CTL };
+    process.env.PATH = `${dir}:${process.env.PATH}`;
+    process.env.FAKE_CLAUDE_CTL = ctl;
+    return {
+      dir,
+      signal: (name) => fs.writeFileSync(path.join(ctl, name), ''),
+      restore: () => {
+        process.env.PATH = prev.PATH;
+        if (prev.CTL === undefined) delete process.env.FAKE_CLAUDE_CTL; else process.env.FAKE_CLAUDE_CTL = prev.CTL;
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  };
+  const withJournalAgent = async (fn) => {
+    const fs = require('fs');
+    const stoa = require('./stoa.js');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const cli = fakeStreamClaude();
+    const base = wjMkBase();
+    const workdir = fs.realpathSync(wjMkBase());
+    const sent = [];
+    const origLog = console.log, origWarn = console.warn, origErr = console.error;
+    const warns = [];
+    console.log = () => {}; console.warn = (...a) => warns.push(a.join(' ')); console.error = () => {};
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => {}, journalDir: base });
+    const actorDir = () => fs.readdirSync(base).find(d => d.startsWith('actor-'));
+    const reader = () => createWorkJournal({ baseDir: base, actorId: Number((actorDir() || 'actor-1').slice(6)), log: wjQuiet() });
+    const entries = () => reader().list();
+    const until = async (pred, what, ms = 8000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) { if (pred()) return; await new Promise(r => setTimeout(r, 20)); }
+      throw new Error(`timed out: ${what}`);
+    };
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await fn({ stoa, cli, sent, entries, until, workdir, base, warns,
+        trigger: (id, prompt, extra = {}) => stoa.handleAgentMessage({ type: 'agent_trigger', room_id: 4501, message_id: id, thread_id: 71988, prompt, workdir, task_id: 179, ...extra }),
+        done: (id) => sent.find(m => m.type === 'agent_complete' && m.message_id === id) });
+    } finally {
+      for (let i = 0; i < 300 && stoa.activeTriggers.size; i++) await new Promise(r => setTimeout(r, 10));
+      for (const [k, s] of [...stoa.sessionPool]) { if (k.startsWith(workdir)) { s.shutdown(); stoa.sessionPool.delete(k); stoa.clearSessionIdleTimer(k); } }
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn; console.error = origErr;
+      cli.restore();
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  };
+
+  await uta('stoa.js work journal — idle: no entry; running turn: entry (run, card, thread); turn ends without background: entry gone', async () => {
+    await withJournalAgent(async ({ cli, sent, entries, until, trigger, done, workdir }) => {
+      assert.deepStrictEqual(entries(), [], 'idle agent: no entry');
+      await trigger(81001, 'HOLD please');
+      await until(() => entries().length === 1, 'entry while the turn runs');
+      const e = entries()[0];
+      assert.deepStrictEqual([e.session_key, e.room_id, e.thread_id, e.sub_agent_id, e.message_id, e.task_id, e.state, e.cause, e.harness, e.pid, e.recovery_count],
+        [`${workdir}::4501::t:71988`, 4501, 71988, null, 81001, 179, 'turn_running', 'turn', 'claude', process.pid, 0]);
+      cli.signal('release');
+      await until(() => done(81001), 'turn completed');
+      assert.strictEqual(done(81001).content, 'held reply');
+      await until(() => entries().length === 0, 'entry removed after the turn');
+      assert.ok(sent.every(m => m.type !== 'agent_error'));
+    });
+  });
+
+  await uta('stoa.js work journal — turn ends with a background task: background_only (resume id from the result) until the task and its autonomous turn end, then gone; session close also clears it', async () => {
+    await withJournalAgent(async ({ stoa, cli, entries, until, trigger, done, workdir }) => {
+      await trigger(81002, 'BG run tests');
+      await until(() => done(81002), 'turn completed');
+      await until(() => entries()[0]?.state === 'background_only', 'background_only after the turn');
+      const bg = entries()[0];
+      assert.deepStrictEqual([bg.cause, bg.resume_session_id, bg.message_id, bg.task_id], ['turn', 'fake-sid-1', 81002, 179]);
+      cli.signal('bg-done');
+      await until(() => entries()[0]?.state === 'turn_running', 'autonomous turn after the task ended');
+      const auto = entries()[0];
+      assert.deepStrictEqual([auto.cause, auto.since], ['turn', bg.since], 'same stretch of work: cause and since kept');
+      cli.signal('auto-done');
+      await until(() => entries().length === 0, 'gone once the turn and the background are done');
+      // A session closed while it still holds a background task (idle hold limit) leaves no entry.
+      const key = `${workdir}::4501::t:71988`;
+      await trigger(81003, 'BG again');
+      await until(() => entries()[0]?.state === 'background_only', 'background_only again');
+      stoa.__setDeps({ SESSION_IDLE_TTL: 0.0005, BACKGROUND_HOLD_MAX_MS: 0 });
+      stoa.startSessionIdleTimer(key);
+      await until(() => !stoa.sessionPool.has(key), 'session closed');
+      assert.deepStrictEqual(entries(), [], 'closed session: entry removed');
+    });
+  });
+
+  await uta('stoa.js work journal — a cancelled turn leaves no entry behind', async () => {
+    await withJournalAgent(async ({ stoa, entries, until, trigger, done }) => {
+      await trigger(81004, 'HOLD then cancel');
+      await until(() => entries().length === 1, 'entry while running');
+      await stoa.handleAgentMessage({ type: 'cancel_generation', room_id: 4501, message_id: 81004 });
+      await until(() => done(81004), 'aborted run completed');
+      assert.strictEqual(done(81004).result_meta.exit_reason, 'stopped');
+      await until(() => entries().length === 0, 'entry removed after cancel');
+    });
+  });
+
+  await uta('stoa.js work journal — a harness without activity events (codex-like): reconcile clears background_only once the session reports none (after the settle window)', async () => {
+    const fs = require('fs');
+    const stoa = require('./stoa.js');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    const workdir = fs.realpathSync(wjMkBase());
+    const key = `${workdir}::4502::t:0`;
+    let bg = true;
+    const sess = { _systemPromptHash: null, _harness: 'codex', flags: [], env: { STOA_ROOM_ID: '4502', STOA_THREAD_ID: '' }, resumeId: null,
+      on() {}, removeListener() {}, shutdown() {}, cancelTask: () => false, hasBackgroundTasks: () => bg,
+      send: async () => ({ content: 'ok', sessionId: 'codex-thread-1' }) };
+    const origLog = console.log; console.log = () => {};
+    stoa.__setDeps({ send: () => {}, doRestart: () => {}, journalDir: base, JOURNAL_BG_SETTLE_MS: 80, getSession: () => { stoa.sessionPool.set(key, sess); return sess; } });
+    const list = () => createWorkJournal({ baseDir: base, actorId: Number(fs.readdirSync(base).find(d => d.startsWith('actor-')).slice(6)), log: wjQuiet() }).list();
+    try {
+      stoa.activeTriggers.clear();
+      await stoa.processTrigger({ type: 'agent_trigger', room_id: 4502, message_id: 81005, prompt: 'x', workdir, harness: 'codex' });
+      const e = list();
+      assert.deepStrictEqual(e.map(x => [x.state, x.harness, x.task_id, x.thread_id, x.resume_session_id]), [['background_only', 'codex', null, null, 'codex-thread-1']]);
+      bg = false;
+      assert.strictEqual(list().length, 1, 'no event: entry still there until reconciled');
+      stoa.reconcileJournal();
+      assert.strictEqual(list().length, 1, 'held for the settle window (the CLI may still report it)');
+      await new Promise(r => setTimeout(r, 200));
+      assert.deepStrictEqual(list(), [], 'removed once the window passed with no new turn');
+    } finally {
+      stoa.sessionPool.delete(key); stoa.clearSessionIdleTimer(key); stoa.activeTriggers.clear(); stoa.__resetDeps();
+      console.log = origLog;
+      fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js work journal — a compaction (/compact turn) is housekeeping: no entry, even when reconciled mid-compaction', async () => {
+    const fs = require('fs');
+    const stoa = require('./stoa.js');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    const origLog = console.log; console.log = () => {};
+    const key = '/tmp/wj-compact::4504::t:0';
+    stoa.__setDeps({ send: () => {}, journalDir: base });
+    try {
+      await withFakeClaude(async ({ session, emit }) => {
+        session._harness = 'claude';
+        stoa.sessionPool.set(key, session);
+        await stoa.handleAgentMessage({ type: 'compact_trigger', workdir: '/tmp/wj-compact', room_id: 4504 });
+        assert.strictEqual(session.isTurnActive(), true, 'compaction turn running');
+        emit({ type: 'system', subtype: 'status', status: 'compacting', session_id: SID });
+        stoa.reconcileJournal();
+        assert.ok(!fs.existsSync(base) || fs.readdirSync(base).every(d => createWorkJournal({ baseDir: base, actorId: Number(d.slice(6)), log: wjQuiet() }).list().length === 0), 'no entry for a compaction');
+        emit({ type: 'system', subtype: 'compact_boundary', session_id: SID }, evResult(''));
+        await new Promise(r => setImmediate(r));
+        assert.strictEqual(session._compacting, false, 'flag cleared when the compaction settles');
+        // The same session doing real work afterwards is journaled again.
+        emit({ type: 'system', subtype: 'task_started', task_id: 'c9', description: 'x', session_id: SID });
+        assert.strictEqual(fs.readdirSync(base).length, 0, 'session not watched by this test path; reconcile picks it up');
+        stoa.reconcileJournal();
+        const d = fs.readdirSync(base).find(x => x.startsWith('actor-'));
+        assert.deepStrictEqual(createWorkJournal({ baseDir: base, actorId: Number(d.slice(6)), log: wjQuiet() }).list().map(e => e.state), ['background_only']);
+      });
+    } finally {
+      stoa.clearSessionIdleTimer(key); stoa.sessionPool.delete(key); stoa.__resetDeps();
+      console.log = origLog;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js work journal — journal dir not writable: the turn still completes normally, nothing thrown', async () => {
+    const fs = require('fs');
+    if (process.getuid?.() === 0) { console.log('    (skipped: root ignores permissions)'); return; }
+    await withJournalAgent(async ({ base, sent, until, trigger, done, warns }) => {
+      fs.chmodSync(base, 0o500);
+      try {
+        await trigger(81006, 'plain question');
+        await until(() => done(81006), 'turn completed');
+        assert.strictEqual(done(81006).content, 'ok');
+        assert.strictEqual(done(81006).result_meta.exit_reason, 'completed');
+        assert.ok(!sent.some(m => m.type === 'agent_error'), 'no agent_error');
+        assert.ok(warns.some(w => /\[journal\] write failed/.test(w)), warns.join('|'));
+      } finally { fs.chmodSync(base, 0o700); }
+    });
+  });
+
+  await uta('stoa.js work journal — restart (self-update path) shuts sessions down but keeps their entries for recovery', async () => {
+    await withJournalAgent(async ({ stoa, entries, until, trigger }) => {
+      await trigger(81007, 'HOLD across restart');
+      await until(() => entries().length === 1, 'entry while running');
+      let restarted = 0;
+      stoa.__setDeps({ doRestart: () => { restarted++; } });
+      await stoa.handleAgentMessage({ type: 'restart', reason: 'manual' });
+      await until(() => restarted === 1, 'restart requested');
+      // What doRestart does next: sessions shut down, the run rejects and its finally runs.
+      for (const s of stoa.sessionPool.values()) s.shutdown();
+      await until(() => !stoa.activeTriggers.has(81007), 'run settled');
+      stoa.reconcileJournal();
+      assert.deepStrictEqual(entries().map(e => [e.message_id, e.state]), [[81007, 'turn_running']], 'entry kept for card 3/3');
+    });
+  });
+
+  await uta('stoa.js work journal — connector SIGKILLed mid-turn: the entry is on disk and valid afterwards', async () => {
+    const fs = require('fs');
+    const cp = require('child_process');
+    const cli = fakeStreamClaude();
+    const base = wjMkBase();
+    const workdir = fs.realpathSync(wjMkBase());
+    try {
+      const script = `
+        const stoa = require(${JSON.stringify(path.join(__dirname, 'stoa.js'))});
+        console.log = () => {}; console.warn = () => {};
+        stoa.__setDeps({ send: () => {}, journalDir: ${JSON.stringify(base)} });
+        stoa.handleAgentMessage({ type: 'agent_trigger', room_id: 4503, message_id: 81008, thread_id: 5, task_id: 33, prompt: 'HOLD forever', workdir: ${JSON.stringify(workdir)} });
+        setInterval(() => {}, 1000);`;
+      const child = cp.spawn(process.execPath, ['-e', script], { stdio: 'ignore', env: { ...process.env, STOA_ACTOR_ID: '31' } });
+      const exited = new Promise(r => child.once('exit', (c, s) => r(s)));
+      const dir = path.join(base, 'actor-31');
+      const end = Date.now() + 10000;
+      while (Date.now() < end && !(fs.existsSync(dir) && fs.readdirSync(dir).some(f => f.endsWith('.json')))) await new Promise(r => setTimeout(r, 25));
+      child.kill('SIGKILL');
+      assert.strictEqual(await exited, 'SIGKILL');
+      const { createWorkJournal } = require('./lib/work-journal');
+      const list = createWorkJournal({ baseDir: base, actorId: 31, log: wjQuiet() }).list();
+      assert.deepStrictEqual(list.map(e => [e.session_key, e.room_id, e.thread_id, e.task_id, e.message_id, e.state, e.actor_id, e.pid]),
+        [[`${workdir}::4503::t:5`, 4503, 5, 33, 81008, 'turn_running', 31, child.pid]]);
+    } finally {
+      cli.restore();
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
   await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
     const stoa = require('./stoa.js');
     const origLog = console.log, origWarn = console.warn;
@@ -11034,6 +11522,8 @@ async function run() {
       const running = await waitFor(() => { const c = card(t1.id); return c.thread_id ? c : null; });
       assert.ok(running, 'card got its thread');
       assert.deepStrictEqual([running.col, running.status, running.thread_id, running.message_id], ['ongoing', 'running', running.message_id, m1.reply_to ?? running.message_id]);
+      // The agent's work journal (lib/work-journal.js) records the card that owns the run's thread.
+      assert.deepStrictEqual([m1.thread_id, m1.task_id], [running.thread_id, t1.id], 'agent_trigger carries the card of its thread');
       const msg = tDb.prepare('SELECT content, automation_provider, automation_name, automation_id, task_id, task_seq, thread_id FROM messages WHERE id=?').get(running.message_id);
       assert.deepStrictEqual([msg.automation_provider, msg.automation_name, msg.automation_id, msg.task_id, msg.task_seq, msg.thread_id],
         ['task', 'Write the release notes', null, t1.id, 1, null]);
@@ -11055,6 +11545,24 @@ async function run() {
       const off = await waitFor(() => frames.find(f => f.type === 'task_settings' && !f.settings.running && f.settings.idle_reason === 'empty'));
       assert.ok(off, 'runner switched itself off: Backlog done');
       assert.notStrictEqual(card(t1.id).thread_id, card(t2.id).thread_id, 'one thread per card');
+    });
+
+    await test('Tasks — agent_trigger outside a card thread carries no task_id (main feed message and its follow-up)', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      // A main feed message runs in its own thread (runAgentsForMessage: thread = the message itself).
+      const mainTrig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content: 'journal: plain question' }));
+      const mm = await mainTrig;
+      const root = tDb.prepare("SELECT id FROM messages WHERE room_id=? AND content='journal: plain question' ORDER BY id DESC LIMIT 1").get(roomId).id;
+      assert.strictEqual(mm.thread_id, root);
+      assert.ok(!('task_id' in mm), 'main feed run: no task_id');
+      await completeRun(agA.ws, roomId, mm);
+      assert.strictEqual(tDb.prepare('SELECT COUNT(*) AS n FROM room_tasks WHERE room_id=? AND thread_id=?').get(roomId, root).n, 0, 'no card owns this thread');
+      const thrTrig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && m.thread_id === root && m.message_id !== mm.message_id, 8000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content: 'journal: follow-up', thread_id: root }));
+      const tm = await thrTrig;
+      assert.ok(!('task_id' in tm), 'plain thread run: no task_id');
+      await completeRun(agA.ws, roomId, tm);
     });
 
     await test('Tasks — completion_mode agent end to end: PATCH validates, quiet thread keeps the card, agent task_complete finishes it and completes the thread', async () => {
@@ -11158,6 +11666,7 @@ async function run() {
         const taskMsg = tDb.prepare('SELECT id, thread_id FROM messages WHERE task_id=? ORDER BY id DESC LIMIT 1').get(a.id);
         assert.ok(taskMsg.id > threadA && taskMsg.thread_id === threadA, 'task message is a reply in the kept thread');
         assert.strictEqual(tDb.prepare('SELECT thread_id FROM messages WHERE id=?').get(m2.message_id).thread_id, threadA, 'the run is in that thread');
+        assert.strictEqual(m2.task_id, a.id, 'a continued run in the kept thread still carries its card');
       } finally {
         await req('POST', `${base()}/runner/stop`);
         await completeRun(agA.ws, roomId, m2);
@@ -11702,6 +12211,21 @@ async function run() {
       assert.strictEqual(back.body.files['stoa.js'], origHash, `${label}: served again once the bundle is valid`);
       assert.strictEqual((await req('GET', '/api/client/file/stoa.js')).status, 200);
     };
+
+    // Task #27: the work journal lives in lib/, so it only reaches agents inlined in the bundle.
+    await test('agent bundle — lib/work-journal.js is inlined, no ./lib require left, served bundle carries it', async () => {
+      const src = fsB.readFileSync(bundlePath, 'utf8');
+      assert.match(src, /\/\/ lib\/work-journal\.js\n/, 'module inlined by esbuild');
+      // esbuild may suffix a hoisted name (createWorkJournal2); the module wrapper and its export are stable.
+      assert.match(src, /var require_work_journal = __commonJS\(/, 'module wrapped by esbuild');
+      assert.match(src, /function createWorkJournal\d*\(\{ baseDir, actorId/, 'journal factory inlined');
+      assert.match(src, /= require_work_journal\(\);/, 'connector loads the inlined module');
+      assert.ok(!/require\(["']\.\/lib\/work-journal/.test(src), 'no runtime require of the lib file');
+      assert.deepStrictEqual(require('./lib/agent-bundle-check').unshippedAgentRequires(src), []);
+      const f = await req('GET', '/api/client/file/stoa.js');
+      assert.strictEqual(f.status, 200);
+      assert.ok(/= require_work_journal\(\);/.test(f.raw), 'the bundle agents download has the journal');
+    });
 
     await test('GET /api/client/* — bundle deleted at runtime → manifest drops stoa.js, file 503, raw source never served', () =>
       withBrokenBundle('missing', () => fsB.unlinkSync(bundlePath)));
