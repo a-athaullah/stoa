@@ -19682,6 +19682,71 @@ async function run() {
     assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
   });
 
+  await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip names the platform', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.value = ''; this.label = ''; this.title = ''; this.selected = false; this._text = ''; }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      appendChild(c) { this.children.push(c); return c; }
+      get options() { return this.children.flatMap(c => c.tagName === 'OPTGROUP' ? c.children : [c]); }
+      get selectedIndex() { const i = this.options.findIndex(o => o.selected); return i < 0 ? 0 : i; }
+      set selectedIndex(i) { this.options.forEach((o, j) => { o.selected = j === i; }); }
+    }
+    const ctx = { document: { createElement: t => new El(t), getElementById: () => null, addEventListener() {} }, localStorage: { getItem: () => null } };
+    vm.createContext(ctx);
+    for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const actor = { id: 5, adapter: 'claude', harness_status: [{ id: 'codex', installed: true, models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }] }] };
+    // Shape of fetchPlatformModels() output; the server-side enabled_models filter is covered against the real /api/ai/models below.
+    run(`allServerModels = [
+      { value: 'claude-opus-5-5', label: 'Opus 5.5', platform: 'anthropic', platform_id: 'anthropic' },
+      { value: 'qwen3', label: 'qwen3', platform: 'Venice.ai', platform_id: 'venice-x' },
+      { value: 'shared', label: 'shared', platform: 'Venice.ai', platform_id: 'venice-x' },
+      { value: 'shared', label: 'shared', platform: 'OpenRouter', platform_id: 'or-1' },
+    ]`);
+    const populate = (harness, model, pid) => { const sel = new El('select'); run('_saPopulateModelSel')(sel, harness, actor, model, pid); return sel; };
+    const shape = sel => sel.children.map(c => c.tagName === 'OPTGROUP' ? [c.label, c.children.map(o => [o.value, o.dataset.platformId || null, o.textContent])] : [c.value, c.dataset.platformId || null, c.textContent]);
+    const picked = sel => JSON.parse(JSON.stringify(run('_saSelectedModel')(sel)));
+
+    const s1 = populate('claude', 'shared', 'or-1');
+    assert.deepStrictEqual(shape(s1), [
+      ['', null, 'use tier'],
+      ['Claude', [['claude-opus-5-5', null, 'Opus 5.5']]],
+      ['Venice.ai', [['qwen3', 'venice-x', 'qwen3 · Venice.ai'], ['shared', 'venice-x', 'shared · Venice.ai']]],
+      ['OpenRouter', [['shared', 'or-1', 'shared · OpenRouter']]],
+    ]);
+    assert.deepStrictEqual(picked(s1), { model: 'shared', platformId: 'or-1' }, 'same model name on two platforms: the pinned platform wins');
+    s1.selectedIndex = s1.options.findIndex(o => o.value === 'shared' && o.dataset.platformId === 'venice-x');
+    assert.deepStrictEqual(picked(s1), { model: 'shared', platformId: 'venice-x' });
+    s1.selectedIndex = 1;
+    assert.deepStrictEqual(picked(s1), { model: 'claude-opus-5-5', platformId: null }, 'Claude model sends no platform');
+    s1.selectedIndex = 0;
+    assert.deepStrictEqual(picked(s1), { model: null, platformId: null }, 'use tier sends neither');
+
+    assert.deepStrictEqual(picked(populate('claude', 'claude-opus-5-5', null)), { model: 'claude-opus-5-5', platformId: null });
+    assert.deepStrictEqual(picked(populate('claude', 'shared', null)), { model: 'shared', platformId: null }, 'an unpinned unknown name is kept as a Claude model, never borrowed from a platform');
+
+    const gone = populate('claude', 'llama-x', 'deleted-plat');
+    const last = gone.children[gone.children.length - 1];
+    assert.deepStrictEqual([last.value, last.dataset.platformId, last.textContent, last.selected], ['llama-x', 'deleted-plat', 'llama-x · platform unavailable', true], 'pin to a missing platform stays visible and selected');
+    assert.ok(last.title.length > 0);
+
+    const codex = populate('codex', 'shared', 'or-1');
+    assert.deepStrictEqual(shape(codex), [['', null, 'use tier'], ['gpt-5.5', null, 'GPT-5.5']], 'non-claude harness lists no platforms');
+    assert.deepStrictEqual(picked(codex), { model: null, platformId: null }, 'a platform pin does not survive a switch to codex');
+
+    run(`allServerModels = [{ value: 'claude-opus-5-5', label: 'Opus 5.5', platform: 'anthropic', platform_id: 'anthropic' }]`);
+    assert.deepStrictEqual(shape(populate('claude', '', null)), [['', null, 'use tier'], ['claude-opus-5-5', null, 'Opus 5.5']], 'no platforms → flat Claude list, no optgroup');
+    run(`allServerModels = [{ value: 'qwen3', label: 'qwen3', platform: 'Venice.ai', platform_id: 'venice-x' }]`);
+    const chip = sa => run('_saModelChipText')(sa);
+    assert.strictEqual(chip({ model: 'qwen3', model_platform_id: 'venice-x' }), 'qwen3 · Venice.ai');
+    assert.strictEqual(chip({ model: 'llama-x', model_platform_id: 'deleted-plat' }), 'llama-x · platform unavailable');
+    assert.strictEqual(chip({ model: 'claude-opus-5-5', model_platform_id: null }), 'claude-opus-5-5');
+  });
+
   await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -24048,6 +24113,67 @@ async function run() {
       else db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
       ws.close();
       delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+    }
+  });
+
+  // Sub-agent picker against the real server: /api/ai/models feeds the optgroups, the picked pair saves and preselects on reload.
+  await test('sub-agent model picker — real /api/ai/models honours enabled_models and disabled platforms; picked model + platform saves and preselects from the list', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const vm = require('vm');
+    const fs = require('fs');
+    const db = require('./db');
+    const keyWhere = "scope='global' AND scope_id IS NULL AND key_name='ai_platforms'";
+    const orig = db.prepare(`SELECT value FROM settings WHERE ${keyWhere}`).get();
+    const plats = [
+      { id: 'test-safe-plat', name: 'SA FE Plat', vendor: 'openrouter', enabled: true, base_url: 'https://safe.invalid/api', api_keys: ['k'],
+        cached_models: [{ model: 'vendor/fe-a', tools: true }, 'vendor/fe-b', { model: 'vendor/fe-c' }], enabled_models: ['vendor/fe-a', 'vendor/fe-b'] },
+      { id: 'test-safe-off', name: 'SA FE Off', vendor: 'openrouter', enabled: false, base_url: 'https://safe-off.invalid/api', api_keys: ['k'], cached_models: ['vendor/fe-a'] },
+    ];
+    if (orig) db.prepare(`UPDATE settings SET value=? WHERE ${keyWhere}`).run(JSON.stringify(plats));
+    else db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(JSON.stringify(plats));
+    await new Promise(r => setTimeout(r, 1100)); // getParsedSetting 1s cache
+    let saId = null;
+    try {
+      const models = await req('GET', '/api/ai/models');
+      assert.strictEqual(models.status, 200);
+      class El {
+        constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.value = ''; this.label = ''; this.title = ''; this.selected = false; this._text = ''; }
+        set textContent(v) { this._text = String(v); this.children = []; }
+        get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+        set innerHTML(v) { this.children = []; this._text = ''; }
+        appendChild(c) { this.children.push(c); return c; }
+        get options() { return this.children.flatMap(c => c.tagName === 'OPTGROUP' ? c.children : [c]); }
+        get selectedIndex() { const i = this.options.findIndex(o => o.selected); return i < 0 ? 0 : i; }
+        set selectedIndex(i) { this.options.forEach((o, j) => { o.selected = j === i; }); }
+      }
+      const ctx = { document: { createElement: t => new El(t), getElementById: () => null, addEventListener() {} }, localStorage: { getItem: () => null },
+        currentRoomData: null, fjson: async url => (url === '/api/ai/models' ? models.body : []) };
+      vm.createContext(ctx);
+      for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+      const run = s => vm.runInContext(s, ctx);
+      await run('fetchPlatformModels()');
+      const actor = { id: hsActorId, adapter: 'claude', harness_status: [] };
+      const populate = (model, pid) => { const sel = new El('select'); run('_saPopulateModelSel')(sel, 'claude', actor, model, pid); return sel; };
+      const sel = populate('', null);
+      const groups = sel.children.filter(c => c.tagName === 'OPTGROUP').map(g => [g.label, g.children.map(o => [o.value, o.dataset.platformId || null])]);
+      const fe = groups.filter(([label]) => label.startsWith('SA FE'));
+      assert.deepStrictEqual(fe, [['SA FE Plat', [['vendor/fe-a', 'test-safe-plat'], ['vendor/fe-b', 'test-safe-plat']]]], 'model outside enabled_models and the disabled platform are not offered');
+      assert.strictEqual(groups[0][0], 'Claude');
+
+      sel.selectedIndex = sel.options.findIndex(o => o.value === 'vendor/fe-b');
+      const picked = run('_saSelectedModel')(sel);
+      const created = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'sa-fe-picker', tier: 'quick', model: picked.model, model_platform_id: picked.platformId });
+      assert.ok(created.status === 200 || created.status === 201, JSON.stringify(created.body));
+      saId = created.body.id;
+      const row = (await req('GET', `/api/actors/${hsActorId}/sub-agents`)).body.find(s => s.id === saId);
+      assert.deepStrictEqual([row.model, row.model_platform_id], ['vendor/fe-b', 'test-safe-plat'], 'list returns the saved pair');
+      const reopened = run('_saSelectedModel')(populate(row.model, row.model_platform_id));
+      assert.deepStrictEqual([reopened.model, reopened.platformId], ['vendor/fe-b', 'test-safe-plat'], 'edit form preselects the saved platform model');
+      assert.strictEqual(run('_saModelChipText')(row), 'vendor/fe-b · SA FE Plat');
+    } finally {
+      if (saId) await req('DELETE', `/api/sub-agents/${saId}`);
+      if (orig) db.prepare(`UPDATE settings SET value=? WHERE ${keyWhere}`).run(orig.value);
+      else db.prepare(`DELETE FROM settings WHERE ${keyWhere}`).run();
     }
   });
 
