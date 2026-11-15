@@ -1,4 +1,42 @@
 // ── Platforms tab ────────────────────────────────────────────────────────────
+const VENICE_BASE_URL = 'https://api.venice.ai/api/v1';
+const VENICE_DEFAULT_EXTRA_BODY = { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } };
+
+function sParseServerTime(v) {
+  if (!v) return null;
+  const s = typeof v === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(v) ? v.replace(' ', 'T') + 'Z' : v;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function sFormatBalance(n, digits) {
+  return typeof n === 'number' && isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: digits }) : '—';
+}
+
+function sPlatformBalanceText(p) {
+  const checked = sParseServerTime(p.balances_checked_at);
+  if (!p.balances || !checked) return 'Balance not checked yet';
+  const when = checked.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return `USD ${sFormatBalance(p.balances.usd, 2)} · DIEM ${sFormatBalance(p.balances.diem, 4)} · checked ${when}`;
+}
+
+async function sTestPlatformKey(id) {
+  let data;
+  try {
+    const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}/health`, { method: 'POST' });
+    data = await resp.json().catch(() => null);
+    if (!data) throw new Error('http ' + resp.status);
+    if (!resp.ok && !data.status) data = { status: 'error', message: data.error || 'Key test failed' };
+  } catch { data = { status: 'error', message: 'Key test failed' }; }
+  const ok = data.status === 'ok';
+  showToast(data.message || (ok ? 'API key OK' : 'Key test failed'), ok ? undefined : { error: true });
+  if (data.balances) {
+    const el = document.getElementById('s-platform-balance-' + id);
+    if (el) el.textContent = sPlatformBalanceText({ balances: data.balances, balances_checked_at: data.balances_checked_at || new Date().toISOString() });
+  }
+  return data;
+}
+
 async function sLoadPlatformsTab() {
   const container = document.getElementById('s-platforms-list');
   if (!container) return;
@@ -46,6 +84,26 @@ async function sLoadPlatformsTab() {
     btnWrap.append(editBtn, delBtn);
 
     card.append(nameEl, urlEl, btnWrap);
+    if (p.vendor === 'venice') {
+      const balRow = document.createElement('div');
+      balRow.className = 's-plat-balance-row';
+      const bal = document.createElement('span');
+      bal.className = 's-plat-balance';
+      bal.id = 's-platform-balance-' + p.id;
+      bal.textContent = sPlatformBalanceText(p);
+      const testBtn = document.createElement('button');
+      testBtn.className = 's-plat-link-btn';
+      testBtn.type = 'button';
+      testBtn.textContent = 'test key';
+      testBtn.title = 'Test the API key and refresh the balance';
+      testBtn.addEventListener('click', async () => {
+        testBtn.disabled = true;
+        await sTestPlatformKey(p.id);
+        testBtn.disabled = false;
+      });
+      balRow.append(bal, testBtn);
+      card.appendChild(balRow);
+    }
     container.appendChild(card);
   }
 
@@ -86,7 +144,7 @@ function sShowPlatformForm(existing) {
   typeSel.className = 's-server-input';
   typeSel.name = 'platform-type';
   typeSel.style.cssText = 'flex:1;cursor:pointer';
-  [['custom', 'Custom Platform'], ['ollama', 'Ollama Cloud']].forEach(([val, label]) => {
+  [['custom', 'Custom Platform'], ['ollama', 'Ollama Cloud'], ['venice', 'Venice.ai']].forEach(([val, label]) => {
     const opt = document.createElement('option');
     opt.value = val; opt.textContent = label;
     if ((existing?.vendor || 'custom') === val) opt.selected = true;
@@ -126,9 +184,58 @@ function sShowPlatformForm(existing) {
       ? 'Base URL must serve /chat/completions (with or without /v1). Stoa translates Anthropic requests to OpenAI format.'
       : 'Base URL must serve the Anthropic Messages API (/v1/messages).';
   };
-  fmtSel.addEventListener('change', applyFormatHint);
+  fmtSel.addEventListener('change', () => { applyFormatHint(); applyExtraVisibility(); });
   applyFormatHint();
-  const formatBody = vendor => (vendor === 'ollama' ? {} : { api_format: fmtSel.value });
+  const formatBody = vendor => (vendor === 'ollama' ? {} : { api_format: fmtSel.value, ...extraBodyField() });
+
+  const extraRow = document.createElement('div');
+  extraRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
+  const extraLbl = document.createElement('span');
+  extraLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap;padding-top:7px';
+  extraLbl.textContent = 'extra body';
+  const extraWrap = document.createElement('div');
+  extraWrap.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
+  const extraInp = document.createElement('textarea');
+  extraInp.className = 's-server-input s-plat-extra';
+  extraInp.name = 'platform-extra-body';
+  extraInp.rows = 6;
+  extraInp.spellcheck = false;
+  extraInp.setAttribute('wrap', 'off');
+  extraInp.placeholder = '{ "temperature": 0.7 }';
+  extraInp.setAttribute('aria-label', 'Extra request body (JSON)');
+  extraInp.setAttribute('aria-describedby', 's-plat-extra-hint');
+  extraInp.value = existing?.extra_body && typeof existing.extra_body === 'object' ? JSON.stringify(existing.extra_body, null, 2) : '';
+  const extraHint = document.createElement('div');
+  extraHint.id = 's-plat-extra-hint';
+  extraHint.className = 's-plat-hint';
+  extraHint.textContent = 'JSON object merged into every /chat/completions request. Leave empty for none.';
+  const extraErr = document.createElement('div');
+  extraErr.className = 's-plat-hint s-plat-error';
+  extraErr.setAttribute('role', 'alert');
+  extraErr.style.display = 'none';
+  extraWrap.append(extraInp, extraHint, extraErr);
+  extraRow.append(extraLbl, extraWrap);
+  const setExtraError = msg => {
+    extraErr.textContent = msg || '';
+    extraErr.style.display = msg ? 'block' : 'none';
+    extraInp.setAttribute('aria-invalid', msg ? 'true' : 'false');
+  };
+  extraInp.addEventListener('input', () => setExtraError(''));
+  const usesExtraBody = () => typeSel.value === 'venice' || (typeSel.value !== 'ollama' && fmtSel.value === 'openai_chat');
+  const extraBodyField = () => {
+    if (!usesExtraBody()) return {};
+    const raw = extraInp.value.trim();
+    if (!raw) return { extra_body: null };
+    return { extra_body: JSON.parse(raw) };
+  };
+  const checkExtraBody = () => {
+    if (!usesExtraBody() || !extraInp.value.trim()) { setExtraError(''); return true; }
+    let v;
+    try { v = JSON.parse(extraInp.value); } catch (e) { setExtraError('Extra body is not valid JSON: ' + e.message); return false; }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) { setExtraError('Extra body must be a JSON object, e.g. { "key": "value" }'); return false; }
+    setExtraError('');
+    return true;
+  };
 
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
@@ -189,15 +296,48 @@ function sShowPlatformForm(existing) {
   keyInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addKeyBtn.click(); } });
   addRow.append(keyInp, addKeyBtn);
 
+  const veniceHint = document.createElement('div');
+  veniceHint.className = 's-plat-hint s-plat-hint-indent';
+  veniceHint.textContent = 'Use an "Inference Only" API key from venice.ai/settings/api and set a daily spend limit on it, so an agent cannot drain the balance.';
+  const presetNames = { ollama: 'Ollama Cloud', venice: 'Venice.ai' };
+  const defaultExtraText = JSON.stringify(VENICE_DEFAULT_EXTRA_BODY, null, 2);
+  let customUrl = existing?.vendor === 'venice' ? '' : (existing?.base_url || '');
+  let customFormat = fmtSel.value;
+  let prevType = typeSel.value;
+
+  function applyExtraVisibility() {
+    extraRow.style.display = usesExtraBody() ? 'flex' : 'none';
+    if (!usesExtraBody()) setExtraError('');
+  }
+
   function applyTypeMode() {
-    const isOllama = typeSel.value === 'ollama';
+    const type = typeSel.value;
+    const isOllama = type === 'ollama';
+    const isVenice = type === 'venice';
+    if (prevType !== 'venice') { customUrl = urlF.inp.value; customFormat = fmtSel.value; }
+    if (isVenice) {
+      urlF.inp.value = VENICE_BASE_URL;
+      fmtSel.value = 'openai_chat';
+      if (!existing?.extra_body && !extraInp.value.trim()) extraInp.value = defaultExtraText;
+    } else if (prevType === 'venice') {
+      urlF.inp.value = customUrl;
+      fmtSel.value = customFormat;
+      if (extraInp.value.trim() === defaultExtraText) extraInp.value = '';
+    }
+    urlF.inp.readOnly = isVenice;
+    urlF.inp.classList?.toggle('is-locked', isVenice);
+    fmtSel.disabled = isVenice;
     urlF.row.style.display = isOllama ? 'none' : 'flex';
-    urlHint.style.display = isOllama ? 'none' : 'block';
+    urlHint.style.display = isOllama || isVenice ? 'none' : 'block';
     fmtRow.style.display = isOllama ? 'none' : 'flex';
-    fmtHint.style.display = isOllama ? 'none' : 'block';
-    if (!existing && isOllama && !nameF.inp.value) nameF.inp.value = 'Ollama Cloud';
-    else if (!existing && !isOllama && nameF.inp.value === 'Ollama Cloud') nameF.inp.value = '';
-    keyInp.placeholder = isOllama ? 'Ollama API key...' : 'sk-...';
+    fmtHint.style.display = isOllama || isVenice ? 'none' : 'block';
+    veniceHint.style.display = isVenice ? 'block' : 'none';
+    applyFormatHint();
+    applyExtraVisibility();
+    if (!existing && presetNames[type] && (!nameF.inp.value || Object.values(presetNames).includes(nameF.inp.value))) nameF.inp.value = presetNames[type];
+    else if (!existing && !presetNames[type] && Object.values(presetNames).includes(nameF.inp.value)) nameF.inp.value = '';
+    keyInp.placeholder = isOllama ? 'Ollama API key...' : isVenice ? 'Venice API key...' : 'sk-...';
+    prevType = type;
   }
   typeSel.addEventListener('change', applyTypeMode);
   applyTypeMode();
@@ -206,7 +346,7 @@ function sShowPlatformForm(existing) {
   keysRow.append(keysLbl, keysWrap);
 
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
+  btnRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;padding-top:4px';
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 's-server-save'; cancelBtn.textContent = 'cancel';
   cancelBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
@@ -228,6 +368,7 @@ function sShowPlatformForm(existing) {
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+    if (!checkExtraBody()) { extraInp.focus(); return; }
     try {
       let platformId;
       if (existing) {
@@ -287,6 +428,7 @@ function sShowPlatformForm(existing) {
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+    if (!checkExtraBody()) { extraInp.focus(); return; }
     healthBtn.disabled = true;
     if (!id) {
       // new platform — create first, then discover
@@ -302,6 +444,7 @@ function sShowPlatformForm(existing) {
         const created = await resp.json();
         id = created.id;
         existing = created;
+        applyTestKeyVisibility();
         saveBtn.textContent = 'update';
         healthBtn.textContent = 'discover models';
       } catch { showToast('Failed to save platform', { error: true }); healthBtn.disabled = false; return; }
@@ -363,6 +506,9 @@ function sShowPlatformForm(existing) {
           }
         }
       }
+      let tail = null;
+      try { tail = buf.trim() ? JSON.parse(buf) : null; } catch {}
+      if (tail?.status === 'error') throw new Error(tail.message || 'discovery failed');
       fetchPlatformModels();
     } catch (e) {
       progressLabel.textContent = 'discovery failed';
@@ -372,7 +518,33 @@ function sShowPlatformForm(existing) {
     healthBtn.textContent = 'discover models'; healthBtn.disabled = false;
   });
 
-  btnRow.append(cancelBtn, healthBtn, saveBtn);
+  const testKeyBtn = document.createElement('button');
+  testKeyBtn.className = 's-server-save'; testKeyBtn.type = 'button'; testKeyBtn.textContent = 'test key';
+  testKeyBtn.title = 'Test the API key and refresh the balance';
+  testKeyBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
+  const applyTestKeyVisibility = () => { testKeyBtn.style.display = typeSel.value === 'venice' && existing?.id ? '' : 'none'; };
+  typeSel.addEventListener('change', applyTestKeyVisibility);
+  applyTestKeyVisibility();
+  testKeyBtn.addEventListener('click', async () => {
+    const id = existing?.id;
+    const name = nameF.inp.value.trim();
+    const vendor = typeSel.value;
+    const pending = keyInp.value.trim();
+    if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
+    if (!name) { showToast('Name is required', { error: true }); return; }
+    if (!checkExtraBody()) { extraInp.focus(); return; }
+    testKeyBtn.disabled = true;
+    try {
+      const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, base_url: urlF.inp.value.trim(), api_keys: [...keyStore], vendor, ...formatBody(vendor) }),
+      });
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); showToast(err.error || 'Failed to save platform', { error: true }); return; }
+      await sTestPlatformKey(id);
+    } catch { showToast('Failed to save platform', { error: true }); } finally { testKeyBtn.disabled = false; }
+  });
+
+  btnRow.append(cancelBtn, testKeyBtn, healthBtn, saveBtn);
 
   const modelSection = document.createElement('div');
   modelSection.id = 's-model-checklist-wrap';
@@ -380,7 +552,7 @@ function sShowPlatformForm(existing) {
     sRenderModelChecklist(modelSection, existing.cached_models, existing.enabled_models ?? null);
   }
 
-  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, keysRow, progressWrap, modelSection, btnRow);
+  form.append(typeRow, nameF.row, urlF.row, urlHint, fmtRow, fmtHint, veniceHint, keysRow, extraRow, progressWrap, modelSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);
@@ -442,9 +614,21 @@ function sRenderModelChecklist(container, cachedModels, enabledModels) {
     cb.checked = enabledSet ? enabledSet.has(modelName) : true;
     cb.className = 's-model-cb';
     const lbl = document.createElement('span');
-    lbl.style.cssText = 'font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint);flex:1';
+    lbl.style.cssText = 'font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint);flex:1;min-width:0;overflow-wrap:anywhere';
     lbl.textContent = modelName;
     row.append(cb, lbl);
+    const tags = typeof m === 'object' && m ? ['uncensored', 'reasoning'].filter(k => m[k] === true) : [];
+    if (tags.length) {
+      const tagWrap = document.createElement('span');
+      tagWrap.className = 's-plat-tags';
+      for (const k of tags) {
+        const tag = document.createElement('span');
+        tag.className = 's-plat-tag';
+        tag.textContent = k;
+        tagWrap.appendChild(tag);
+      }
+      row.appendChild(tagWrap);
+    }
     const tools = typeof m === 'object' && m.tools;
     const local = typeof m === 'object' && m.local;
     if (local || vision || tools) {
