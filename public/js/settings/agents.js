@@ -663,6 +663,17 @@ function _saModelChipText(sa) {
   return `${sa.model} · ${_saPlatformName(sa.model_platform_id) || 'platform unavailable'}`;
 }
 
+const SA_MODEL_HINT = 'leave on "use tier" unless this worker needs a specific model';
+
+// Names the selected model's platform under the select, where a long model name cannot push it out of view.
+function _saModelHintText(modelSel) {
+  const o = modelSel.options[modelSel.selectedIndex];
+  const platformId = o && o.value ? o.dataset.platformId : null;
+  if (!platformId) return SA_MODEL_HINT;
+  const name = _saPlatformName(platformId);
+  return name ? `runs on AI platform ${name}` : 'platform unavailable — pick another model';
+}
+
 function _saSelectedModel(modelSel) {
   const o = modelSel.options[modelSel.selectedIndex];
   if (!o || !o.value) return { model: null, platformId: null };
@@ -1571,14 +1582,18 @@ function buildSubAgentsSection(actor) {
     const fhSpacer = document.createElement('span'); fhSpacer.style.flex = '1';
     const fhClose = document.createElement('button'); fhClose.className = 's-icon-btn'; fhClose.title = 'Close'; fhClose.innerHTML = svgX(15); fhClose.addEventListener('click', () => saShowForm(false));
     fh.append(fhTitle, fhHint, fhSpacer, fhClose);
-    const grid = document.createElement('div'); grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px';
+    const grid = document.createElement('div'); grid.className = 's-sa-form-grid';
     const labelInp = document.createElement('input'); labelInp.name = 'subagent-label'; labelInp.placeholder = 'probe'; labelInp.value = existing?.label || ''; labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
     const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
     const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
     const modelSel = document.createElement('select'); modelSel.name = 'subagent-model'; modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
     const parentHarness = actor.adapter || 'claude';
     _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '', existing?.model_platform_id || null);
-    const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
+    const modelField = saMakeField('model override', modelSel, SA_MODEL_HINT);
+    const modelHint = modelField.querySelector('.s-sa-hint');
+    const syncModelHint = () => { modelHint.textContent = _saModelHintText(modelSel); };
+    syncModelHint();
+    modelSel.addEventListener('change', syncModelHint);
     grid.append(labelField, modelField);
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
     const spInp = document.createElement('textarea'); spInp.name = 'subagent-system-prompt'; spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
@@ -1598,6 +1613,7 @@ function buildSubAgentsSection(actor) {
       selectedHarness = harnSel.value || null;
       const cur = _saSelectedModel(modelSel);
       _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, cur.model || '', cur.platformId);
+      syncModelHint();
     });
     const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';

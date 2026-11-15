@@ -19682,7 +19682,7 @@ async function run() {
     assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
   });
 
-  await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip names the platform', () => {
+  await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip and hint name the platform', () => {
     const vm = require('vm');
     const fs = require('fs');
     class El {
@@ -19737,6 +19737,16 @@ async function run() {
     const codex = populate('codex', 'shared', 'or-1');
     assert.deepStrictEqual(shape(codex), [['', null, 'use tier'], ['gpt-5.5', null, 'GPT-5.5']], 'non-claude harness lists no platforms');
     assert.deepStrictEqual(picked(codex), { model: null, platformId: null }, 'a platform pin does not survive a switch to codex');
+
+    const hint = sel => run('_saModelHintText')(sel);
+    const defaultHint = run('SA_MODEL_HINT');
+    assert.strictEqual(hint(s1), defaultHint, 'use tier keeps the default hint');
+    s1.selectedIndex = s1.options.findIndex(o => o.value === 'shared' && o.dataset.platformId === 'or-1');
+    assert.strictEqual(hint(s1), 'runs on AI platform OpenRouter', 'hint names the platform of the selected option, not the first same-named one');
+    s1.selectedIndex = 1;
+    assert.strictEqual(hint(s1), defaultHint, 'Claude model keeps the default hint');
+    assert.strictEqual(hint(gone), 'platform unavailable — pick another model');
+    assert.strictEqual(hint(codex), defaultHint);
 
     run(`allServerModels = [{ value: 'claude-opus-5-5', label: 'Opus 5.5', platform: 'anthropic', platform_id: 'anthropic' }]`);
     assert.deepStrictEqual(shape(populate('claude', '', null)), [['', null, 'use tier'], ['claude-opus-5-5', null, 'Opus 5.5']], 'no platforms → flat Claude list, no optgroup');
