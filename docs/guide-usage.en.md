@@ -1531,7 +1531,7 @@ This disables Venice's own system prompt injection and per-call web search billi
 
 **Venice billing errors** — a 402 response from Venice maps to one of three distinct messages: *USD spend limit reached* (raise the key's daily limit at venice.ai), *DIEM spend limit reached* (same), or *account balance empty* (add credits at venice.ai/settings/api).
 
-**Venice image tools** — When an agent's run is on a Venice model, two additional MCP tools become available automatically: `stoa__image_generate` (text-to-image) and `stoa__image_edit` (edit or combine existing images). The server decides which image model and safe mode to use — the agent cannot choose:
+**Venice image tools** — When an agent's run is on a Venice model, two additional MCP tools become available automatically: `stoa__image_generate` (text-to-image) and `stoa__image_edit` (edit or combine existing images). The server decides which image model and safe mode to use — the agent cannot choose. In Claude Code (the Stoa harness), these tools are marked to load upfront — they appear in the tool list immediately without calling ToolSearch. The run prompt names each available tool with its full CLI name so the agent knows they are there.
 
 | Chat model type | Image model slot | Content filter |
 |---|---|---|
@@ -1541,13 +1541,13 @@ This disables Venice's own system prompt injection and per-call web search billi
 
 Generated and edited images are posted as attachments in the room thread or feed, visible in the chat immediately. The tool returns the image URL and message id.
 
-For `stoa__image_edit`, source images must already be attached to messages in the room session. Use `stoa__messages_read` or `stoa__thread_read` to list messages — each message now includes a `file_urls` field with the `/uploads/<file>` paths the edit tool accepts. A generated image from `stoa__image_generate` is also an attachment and can be passed directly to `stoa__image_edit`.
+For `stoa__image_edit`, source images must be `/uploads/<file>` URLs — they must be attached to messages in the room session. Use `stoa__messages_read` or `stoa__thread_read` to list messages — each message includes a `file_urls` field with the paths the edit tool accepts. A generated image from `stoa__image_generate` is also an attachment and can be passed directly to `stoa__image_edit`. To use a local file, upload it first by including a `[send:/absolute/path]` marker in the content of `stoa__message_send`, then take its URL from `file_urls` in `stoa__messages_read`; or ask the owner to attach the image.
 
 **Sub-agents** only receive image tools if their own run resolves to the same Venice platform. A sub-agent whose tier uses a different model (e.g., a Claude fallback) does not get image tools.
 
 **Image model slots** — After clicking **discover models** on a Venice platform, four **Image models** slots appear in the platform form (owner only): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Values are prefilled from discovery defaults. Standard slots (`generate`, `edit`) reject models flagged as uncensored. If a slot is empty or its model no longer appears after the most recent discovery, the tool returns a message asking the owner to set a model in **Settings > Platforms**.
 
-**Venice video tool** — When an agent's run is on a Venice model, `stoa__video_generate` becomes available automatically. The tool accepts a text prompt and returns immediately with a `job_id` and quoted price — video generation runs asynchronously in the background. The finished mp4 is posted as an attachment in the session thread and the agent is woken when it is ready.
+**Venice video tool** — When an agent's run is on a Venice model, `stoa__video_generate` becomes available automatically. The tool accepts a text prompt and returns immediately with a `job_id` and quoted price — video generation runs asynchronously in the background. The finished mp4 is posted as an attachment in the session thread and the agent is woken when it is ready. In Claude Code, the tool is marked to load upfront and the run prompt names it explicitly.
 
 | Run model type | Video model slot | Kind |
 |---|---|---|
@@ -1555,7 +1555,7 @@ For `stoa__image_edit`, source images must already be attached to messages in th
 | Venice, standard | `model` / `model_i2v` | text-to-video / image-to-video |
 | Any other platform | Tool not visible | — |
 
-**Image-to-video** — Pass `image` (a `/uploads/…` URL from a message already in the session's room) to generate video from a reference image. Use `stoa__messages_read` or `stoa__thread_read` to list messages; each message includes a `file_urls` field with the paths the tool accepts.
+**Image-to-video** — Pass `image` (a `/uploads/…` URL from a message already in the session's room) to generate video from a reference image. Use `stoa__messages_read` or `stoa__thread_read` to list messages; each message includes a `file_urls` field with the paths the tool accepts. To use a local file, upload it first by including a `[send:/absolute/path]` marker in the content of `stoa__message_send`, then take its URL from `file_urls`; or ask the owner to attach the image.
 
 **Sub-agents** only receive the video tool if their own run resolves to the same Venice platform. A sub-agent whose tier uses a different model does not get the video tool.
 
