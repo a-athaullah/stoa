@@ -1550,8 +1550,12 @@ const isProxyPlatform = (p) => p?.vendor === 'ollama' || p?.api_format === 'open
 function platformApiFormatError(apiFormat, vendor) {
   if (!PLATFORM_API_FORMATS.has(apiFormat)) return `api_format must be one of: ${[...PLATFORM_API_FORMATS].join(', ')}`;
   if (apiFormat === 'openai_chat' && vendor === 'ollama') return 'api_format openai_chat is not available for Ollama Cloud';
+  if (apiFormat !== 'openai_chat' && vendor === 'venice') return 'Venice platforms use api_format openai_chat';
   return null;
 }
+// Venice's base_url is fixed; '' (a form that hides the field) counts as not set.
+const veniceBaseUrlError = (baseUrl) => (baseUrl !== undefined && baseUrl !== '' && baseUrl !== venice.VENICE_BASE_URL
+  ? `Venice platforms always use ${venice.VENICE_BASE_URL}` : null);
 
 async function isOllamaDaemonUrl(baseUrl) {
   try {
@@ -1698,21 +1702,32 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     return json(res, anthropicError('invalid_request_error', 'messages: array required'), 400);
   }
   let target;
-  try { target = openaiTranslator.chatCompletionsUrl(plat.base_url); } catch {
+  // A venice platform sends its key to Venice only, whatever base_url the stored setting holds.
+  try { target = openaiTranslator.chatCompletionsUrl(venice.isVenice(plat) ? venice.VENICE_BASE_URL : plat.base_url); } catch {
     return json(res, anthropicError('api_error', 'Platform base URL is missing or invalid'), 503);
   }
   const reqModel = typeof parsed.model === 'string' ? parsed.model : '';
-  const model = openaiTranslator.pickModel(reqModel, plat);
+  let model;
+  if (venice.isVenice(plat)) {
+    // Never pass an unlisted name through: Venice reads a ':' suffix as venice_parameters.
+    const names = venice.veniceModelNames(plat);
+    if (!names.length) return json(res, anthropicError('invalid_request_error', 'No Venice models discovered yet: run "discover models" for this platform in Settings first'), 400);
+    model = names.includes(reqModel) ? reqModel : names[0];
+  } else {
+    model = openaiTranslator.pickModel(reqModel, plat);
+  }
   const wantStream = parsed.stream === true;
   const upstream = await fetchWithKeyRotation(target, keys, key => ({
     'Content-Type': 'application/json',
     Accept: wantStream ? 'text/event-stream' : 'application/json',
     Authorization: `Bearer ${key}`,
-  }), JSON.stringify(openaiTranslator.toOpenAIRequest(parsed, model)));
+  }), JSON.stringify(venice.buildChatRequest(plat, openaiTranslator.toOpenAIRequest(parsed, model))));
   if (!upstream) return json(res, anthropicError('api_error', 'Platform unreachable'), 502);
   console.log(`[openai-proxy] ${reqModel || '?'} → ${model || '?'} @ ${plat.id} status=${upstream.status}`);
   if (!upstream.ok) {
-    const m = openaiTranslator.mapError(upstream.status, await upstream.text().catch(() => ''));
+    const text = await upstream.text().catch(() => '');
+    if (upstream.status === 402 && venice.isVenice(plat)) return json(res, anthropicError('billing_error', venice.billingMessage(text)), 402);
+    const m = openaiTranslator.mapError(upstream.status, text);
     return json(res, m.body, m.status);
   }
 
@@ -1766,6 +1781,7 @@ const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
 const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
 const openaiTranslator = require('./lib/openai-translator');
+const venice = require('./lib/venice');
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 
@@ -3818,6 +3834,7 @@ const server = http.createServer(async (req, res) => {
       api_keys: p.api_keys || (p.api_key ? [p.api_key] : []),
       api_key: undefined,
       api_format: p.api_format || 'anthropic',
+      extra_body: p.extra_body ?? null,
     }));
     return json(res, safe);
   }
@@ -3828,11 +3845,16 @@ const server = http.createServer(async (req, res) => {
     const platforms = structuredClone(getParsedSetting('ai_platforms') ?? []);
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'A platform with this name already exists' })); }
-    const apiFormat = body.api_format === undefined ? 'anthropic' : body.api_format;
-    const formatErr = platformApiFormatError(apiFormat, body.vendor || 'generic');
+    const vendor = body.vendor || 'generic';
+    const isVenice = vendor === 'venice';
+    const apiFormat = body.api_format === undefined ? (isVenice ? 'openai_chat' : 'anthropic') : body.api_format;
+    const formatErr = platformApiFormatError(apiFormat, vendor) || (isVenice ? veniceBaseUrlError(body.base_url) : null)
+      || (body.extra_body !== undefined ? venice.extraBodyError(body.extra_body) : null);
     if (formatErr) return json(res, { error: formatErr }, 400);
     const keys = Array.isArray(body.api_keys) ? body.api_keys : (body.api_key ? [body.api_key] : []);
-    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic', api_format: apiFormat };
+    const platform = { id, name: body.name.trim(), base_url: isVenice ? venice.VENICE_BASE_URL : (body.base_url || ''), api_keys: keys, enabled: true, vendor, api_format: apiFormat };
+    const extraBody = body.extra_body === undefined ? (isVenice ? venice.defaultExtraBody() : null) : body.extra_body;
+    if (extraBody) platform.extra_body = extraBody;
     platforms.push(platform);
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platform);
@@ -3849,20 +3871,48 @@ const server = http.createServer(async (req, res) => {
       if (!body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name cannot be empty' })); }
       platforms[idx].name = body.name.trim();
     }
+    const vendor = body.vendor !== undefined ? body.vendor : platforms[idx].vendor;
+    const toVenice = vendor === 'venice';
+    const enteringVenice = toVenice && platforms[idx].vendor !== 'venice';
     if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
     if (body.api_keys !== undefined) {
       platforms[idx].api_keys = Array.isArray(body.api_keys) ? body.api_keys.filter(Boolean) : [];
     }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
     if (body.vendor !== undefined || body.api_format !== undefined) {
-      const vendor = body.vendor !== undefined ? body.vendor : platforms[idx].vendor;
-      const apiFormat = body.api_format !== undefined ? body.api_format : (platforms[idx].api_format || 'anthropic');
+      // Switching to Venice without naming a format takes the only one Venice speaks.
+      const apiFormat = body.api_format !== undefined ? body.api_format : (enteringVenice ? 'openai_chat' : (platforms[idx].api_format || 'anthropic'));
       const formatErr = platformApiFormatError(apiFormat, vendor);
       if (formatErr) return json(res, { error: formatErr }, 400);
       platforms[idx].api_format = apiFormat;
     }
     if (body.vendor !== undefined) platforms[idx].vendor = body.vendor;
-    if (body.enabled_models !== undefined) platforms[idx].enabled_models = Array.isArray(body.enabled_models) ? body.enabled_models : null;
+    if (toVenice) {
+      const urlErr = veniceBaseUrlError(body.base_url);
+      if (urlErr) return json(res, { error: urlErr }, 400);
+      platforms[idx].base_url = venice.VENICE_BASE_URL;
+    }
+    if (body.extra_body !== undefined) {
+      const ebErr = venice.extraBodyError(body.extra_body);
+      if (ebErr) return json(res, { error: ebErr }, 400);
+      if (body.extra_body === null) delete platforms[idx].extra_body;
+      else platforms[idx].extra_body = body.extra_body;
+    } else if (enteringVenice && !platforms[idx].extra_body) {
+      platforms[idx].extra_body = venice.defaultExtraBody();
+    }
+    if (body.enabled_models !== undefined) {
+      const enabledModels = Array.isArray(body.enabled_models) ? body.enabled_models : null;
+      if (toVenice && enabledModels) {
+        // Only discovered names: anything else (e.g. a ':enable_web_search=on' suffix) would reach Venice.
+        const known = new Set(venice.veniceModelNames({ cached_models: platforms[idx].cached_models }));
+        const unknown = enabledModels.filter(n => !known.has(n));
+        if (unknown.length) {
+          const list = unknown.slice(0, 5).map(n => JSON.stringify(String(n).slice(0, 100))).join(', ');
+          return json(res, { error: known.size ? `Unknown Venice model(s): ${list}. Pick from the discovered list.` : 'No Venice models discovered yet: run "discover models" first' }, 400);
+        }
+      }
+      platforms[idx].enabled_models = enabledModels;
+    }
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platforms[idx]);
   }
@@ -3944,6 +3994,26 @@ const server = http.createServer(async (req, res) => {
     return { ok: false, status: 404, models: [] };
   }
 
+  async function veniceGet(path, key) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const headers = { Accept: 'application/json' };
+      if (key) headers.Authorization = `Bearer ${key}`;
+      const resp = await fetch(venice.VENICE_BASE_URL + path, { headers, signal: ctrl.signal });
+      return { status: resp.status, data: await resp.json().catch(() => null) };
+    } finally { clearTimeout(timer); }
+  }
+
+  // Re-read after the network wait (like saveCachedModels) so edits made meanwhile are not overwritten.
+  function saveBalances(platformId, balances, checkedAt) {
+    const freshPlatforms = JSON.parse(getSetting('ai_platforms') || '[]');
+    const plat = freshPlatforms.find(p => p.id === platformId);
+    if (!plat) return;
+    Object.assign(plat, { balances, balances_checked_at: checkedAt });
+    setSetting('ai_platforms', JSON.stringify(freshPlatforms));
+  }
+
   async function fetchOllamaCloudModels(apiKey) {
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
@@ -3964,6 +4034,24 @@ const server = http.createServer(async (req, res) => {
     const platforms = getParsedSetting('ai_platforms') ?? [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (venice.isVenice(plat)) {
+      // /models is public and lists capabilities, so no per-model probe (each would be billed).
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      let list;
+      try {
+        const r = await veniceGet('/models?type=text');
+        if (r.status !== 200 || !Array.isArray(r.data?.data)) throw new Error(`Venice model list failed (HTTP ${r.status})`);
+        list = venice.parseVeniceModels(r.data);
+      } catch (e) {
+        res.write(JSON.stringify({ type: 'error', message: e.name === 'AbortError' ? 'Venice model list timed out' : (e.message || 'Discovery failed') }) + '\n');
+        return res.end();
+      }
+      if (res.destroyed) return res.end();
+      res.write(JSON.stringify({ type: 'start', total: list.total }) + '\n');
+      saveCachedModels(platformId, list.usable);
+      res.write(JSON.stringify({ type: 'done', tested: list.total, usable: list.usable }) + '\n');
+      return res.end();
+    }
     if (plat.vendor === 'ollama') {
       const keys = getPlatKeys(plat);
       if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured for Ollama Cloud' });
@@ -4075,6 +4163,32 @@ const server = http.createServer(async (req, res) => {
     const platforms = getParsedSetting('ai_platforms') ?? [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (venice.isVenice(plat)) {
+      // Not GET /models: it is public and succeeds with any key. rate_limits is free and needs a valid key.
+      const keys = getPlatKeys(plat);
+      if (!keys.length) return json(res, { status: 'error', message: 'No API key configured' });
+      let first = null;
+      for (let i = 0; i < keys.length; i++) {
+        const label = keys.length > 1 ? `API key #${i + 1}` : 'API key';
+        let r;
+        try { r = await veniceGet('/api_keys/rate_limits', keys[i]); } catch (e) {
+          return json(res, { status: 'error', message: e.name === 'AbortError' ? 'Venice did not answer in time' : 'Venice unreachable' });
+        }
+        if (r.status === 401) return json(res, { status: 'error', message: `${label} rejected by Venice` });
+        if (r.status === 403) return json(res, { status: 'error', message: `${label} not allowed by Venice (IP restriction or API access disabled)` });
+        const info = r.status === 200 ? venice.parseRateLimits(r.data) : null;
+        if (!info) return json(res, { status: 'error', message: `Venice key check failed (HTTP ${r.status})` });
+        if (!first) first = info;
+        if (!info.accessPermitted) {
+          const checkedAt = new Date().toISOString();
+          saveBalances(platformId, info.balances, checkedAt);
+          return json(res, { status: 'error', message: `${label} has no inference access (no balance or spend limit reached)`, accessPermitted: false, balances: info.balances, balances_checked_at: checkedAt });
+        }
+      }
+      const checkedAt = new Date().toISOString();
+      saveBalances(platformId, first.balances, checkedAt);
+      return json(res, { status: 'ok', message: keys.length > 1 ? `${keys.length} API keys OK` : 'API key OK', accessPermitted: true, balances: first.balances, balances_checked_at: checkedAt });
+    }
     if (plat.vendor === 'ollama') {
       const keys = getPlatKeys(plat);
       if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured' });
