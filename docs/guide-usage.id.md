@@ -1532,7 +1532,7 @@ Ini menonaktifkan injeksi system prompt Venice dan billing web search per-reques
 
 **Error billing Venice** — respons 402 dari Venice dipetakan ke salah satu dari tiga pesan: *Batas belanja USD tercapai* (naikkan batas harian key di venice.ai), *Batas belanja DIEM tercapai* (sama), atau *Saldo akun kosong* (tambahkan kredit di venice.ai/settings/api).
 
-**Tool gambar Venice** — Saat run agent menggunakan model Venice, dua tool MCP tambahan tersedia otomatis: `stoa__image_generate` (teks ke gambar) dan `stoa__image_edit` (edit atau gabungkan gambar yang sudah ada). Server yang menentukan model gambar dan safe mode — agent tidak bisa memilih:
+**Tool gambar Venice** — Saat run agent menggunakan model Venice, dua tool MCP tambahan tersedia otomatis: `stoa__image_generate` (teks ke gambar) dan `stoa__image_edit` (edit atau gabungkan gambar yang sudah ada). Server yang menentukan model gambar dan safe mode — agent tidak bisa memilih. Di Claude Code (harness Stoa), tool ini ditandai agar dimuat sejak awal — langsung muncul di daftar tool tanpa perlu memanggil ToolSearch. Prompt run menyebut setiap tool yang tersedia beserta nama CLI lengkapnya.
 
 | Tipe model chat | Slot model gambar | Filter konten |
 |---|---|---|
@@ -1542,13 +1542,13 @@ Ini menonaktifkan injeksi system prompt Venice dan billing web search per-reques
 
 Gambar yang dihasilkan atau diedit langsung dikirim sebagai attachment di thread atau feed room. Tool mengembalikan URL gambar dan id pesan.
 
-Untuk `stoa__image_edit`, gambar sumber harus sudah ada sebagai attachment di room sesi ini. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan — setiap pesan kini menyertakan field `file_urls` berisi path `/uploads/<file>` yang diterima tool edit. Gambar hasil `stoa__image_generate` juga menjadi attachment dan bisa langsung dipakai sebagai input edit.
+Untuk `stoa__image_edit`, gambar sumber harus berupa URL `/uploads/<file>` — harus sudah ada sebagai attachment di pesan room sesi ini. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan — setiap pesan menyertakan field `file_urls` berisi path yang diterima tool edit. Gambar hasil `stoa__image_generate` juga menjadi attachment dan bisa langsung dipakai sebagai input edit. Untuk menggunakan file lokal, unggah dulu dengan menyertakan marker `[send:/path/absolut]` di konten `stoa__message_send`, lalu ambil URL-nya dari `file_urls` di `stoa__messages_read`; atau minta owner untuk melampirkan gambar.
 
 **Sub-agent** hanya menerima tool gambar jika run-nya sendiri menggunakan platform Venice yang sama. Sub-agent dengan tier model berbeda (misalnya fallback ke Claude) tidak mendapatkan tool gambar.
 
 **Slot model gambar** — Setelah klik **discover models** pada platform Venice, empat slot **Image models** muncul di form platform (owner saja): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Nilai diisi otomatis dari default discovery. Slot standar (`generate`, `edit`) menolak model yang ditandai uncensored. Jika slot kosong atau model tidak ditemukan lagi saat discovery terakhir, tool akan meminta owner untuk mengatur model di **Settings > Platforms**.
 
-**Tool video Venice** — Saat run agent menggunakan model Venice, `stoa__video_generate` tersedia otomatis. Tool menerima prompt teks dan langsung mengembalikan `job_id` beserta harga quote — pembuatan video berjalan asinkron di latar belakang. File mp4 yang selesai diposting sebagai lampiran di thread sesi dan agent dibangunkan saat siap.
+**Tool video Venice** — Saat run agent menggunakan model Venice, `stoa__video_generate` tersedia otomatis. Tool menerima prompt teks dan langsung mengembalikan `job_id` beserta harga quote — pembuatan video berjalan asinkron di latar belakang. File mp4 yang selesai diposting sebagai lampiran di thread sesi dan agent dibangunkan saat siap. Di Claude Code, tool ini ditandai agar dimuat sejak awal dan disebutkan langsung di prompt run.
 
 | Tipe model run | Slot model video | Jenis |
 |---|---|---|
@@ -1556,7 +1556,7 @@ Untuk `stoa__image_edit`, gambar sumber harus sudah ada sebagai attachment di ro
 | Venice, standar | `model` / `model_i2v` | teks-ke-video / gambar-ke-video |
 | Platform lain | Tool tidak terlihat | — |
 
-**Image-to-video** — Tambahkan `image` (URL `/uploads/…` dari pesan di room sesi yang sama) untuk membuat video dari gambar referensi. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan; setiap pesan menyertakan field `file_urls` berisi path yang diterima tool.
+**Image-to-video** — Tambahkan `image` (URL `/uploads/…` dari pesan di room sesi yang sama) untuk membuat video dari gambar referensi. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan; setiap pesan menyertakan field `file_urls` berisi path yang diterima tool. Untuk menggunakan file lokal, unggah dulu dengan menyertakan marker `[send:/path/absolut]` di konten `stoa__message_send`, lalu ambil URL-nya dari `file_urls`; atau minta owner untuk melampirkan gambar.
 
 **Sub-agent** hanya mendapat tool video jika run mereka sendiri menggunakan platform Venice yang sama. Sub-agent yang menggunakan model berbeda tidak mendapat tool video.
 
