@@ -603,6 +603,8 @@
 .s-sa-row:hover { background: var(--h-surface-hi); }
 .s-sa-add-pill { transition: background .12s, border-color .12s, color .12s; }
 .s-sa-add-pill:hover { background: var(--h-surface-hi); color: var(--h-ink); border-color: var(--h-hairline); }
+/* Stacks by the form's own width: the settings panel is narrow at tablet widths too, not only on phones. */
+.s-sa-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
 .s-panel-header { display: flex; align-items: center; gap: 12px; }
 .s-field-group-row { display: flex; gap: 26px; flex-wrap: wrap; }
 .s-field-group { display: flex; flex-direction: column; gap: 7px; min-width: 240px; }

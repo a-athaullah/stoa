@@ -78,6 +78,12 @@ Agent ready to receive commands
 - Tasks from API spawn (`/sub-agent-trigger`) are delivered to the sub-agent as a task input (outside chat history). Scheduled triggers (`room_schedules`) post a room message routed to their target agent; an `@label` in the task reaches the sub-agent through normal mention routing
 - Mentions inside inline code (backticks) or code fences (``` or ~~~) are never treated as triggers; unclosed fences/backticks have no suppressing effect
 
+### Sub-Agent Model on an AI Platform
+- `sub_agents.model_platform_id` (migration `20261115-sub-agent-model-platform.sql`) pins a non-Claude `model` of a claude-harness sub-agent to one AI platform (Settings → AI platforms; same id as `rooms.model_config.platform_id`).
+- Saved via REST (`POST /api/actors/:id/sub-agents`, `PATCH /api/sub-agents/:id`) and MCP (`stoa__sub_agent_create/update`), both through `lib/sub-agents.js` `modelCheck`: the platform must exist, be enabled and serve the model (`cached_models`, narrowed by `enabled_models` — `platformServesModel` in server.js, shared with `isModelCompatible`). 400 for: id without a model, id on a non-claude harness, non-Claude model on the claude harness without an id. A Claude model or no model stores NULL. A PATCH that changes the model without sending the id keeps the stored platform only if it serves the new model (else 400); a harness change away from claude or a cleared model drops it. Rules are checked only when `model`, `model_platform_id` or `harness` is sent, so a sub-agent whose platform was disabled later can still be renamed or parked.
+- Run (`triggerAiResponse`): base URL / keys / proxy token (`isProxyPlatform` → `mintProxyToken`) / tools support / `runPlatform` (Venice image + video tools via `setRunContext`) come from the sub-agent's platform, not the room's. `model_source='sub_agent_platform'`, chain = that one model (no tier fallback). The platform is re-checked per run (`subAgentPlatformCheck`); missing / disabled / model gone → the run ends at once with an error naming the sub-agent.
+- Changing the parent's adapter away from claude resets an inheriting sub-agent's platform model to the harness default and clears the id.
+
 ### Sub-Agent Team (Room 2638)
 
 Stoa dioperasikan oleh tim sub-agent terspesialisasi yang di-trigger via @mention:

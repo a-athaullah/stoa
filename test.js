@@ -19682,6 +19682,81 @@ async function run() {
     assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
   });
 
+  await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip and hint name the platform', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.value = ''; this.label = ''; this.title = ''; this.selected = false; this._text = ''; }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      appendChild(c) { this.children.push(c); return c; }
+      get options() { return this.children.flatMap(c => c.tagName === 'OPTGROUP' ? c.children : [c]); }
+      get selectedIndex() { const i = this.options.findIndex(o => o.selected); return i < 0 ? 0 : i; }
+      set selectedIndex(i) { this.options.forEach((o, j) => { o.selected = j === i; }); }
+    }
+    const ctx = { document: { createElement: t => new El(t), getElementById: () => null, addEventListener() {} }, localStorage: { getItem: () => null } };
+    vm.createContext(ctx);
+    for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const actor = { id: 5, adapter: 'claude', harness_status: [{ id: 'codex', installed: true, models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }] }] };
+    // Shape of fetchPlatformModels() output; the server-side enabled_models filter is covered against the real /api/ai/models below.
+    run(`allServerModels = [
+      { value: 'claude-opus-5-5', label: 'Opus 5.5', platform: 'anthropic', platform_id: 'anthropic' },
+      { value: 'qwen3', label: 'qwen3', platform: 'Venice.ai', platform_id: 'venice-x' },
+      { value: 'shared', label: 'shared', platform: 'Venice.ai', platform_id: 'venice-x' },
+      { value: 'shared', label: 'shared', platform: 'OpenRouter', platform_id: 'or-1' },
+    ]`);
+    const populate = (harness, model, pid) => { const sel = new El('select'); run('_saPopulateModelSel')(sel, harness, actor, model, pid); return sel; };
+    const shape = sel => sel.children.map(c => c.tagName === 'OPTGROUP' ? [c.label, c.children.map(o => [o.value, o.dataset.platformId || null, o.textContent])] : [c.value, c.dataset.platformId || null, c.textContent]);
+    const picked = sel => JSON.parse(JSON.stringify(run('_saSelectedModel')(sel)));
+
+    const s1 = populate('claude', 'shared', 'or-1');
+    assert.deepStrictEqual(shape(s1), [
+      ['', null, 'use tier'],
+      ['Claude', [['claude-opus-5-5', null, 'Opus 5.5']]],
+      ['Venice.ai', [['qwen3', 'venice-x', 'qwen3 · Venice.ai'], ['shared', 'venice-x', 'shared · Venice.ai']]],
+      ['OpenRouter', [['shared', 'or-1', 'shared · OpenRouter']]],
+    ]);
+    assert.deepStrictEqual(picked(s1), { model: 'shared', platformId: 'or-1' }, 'same model name on two platforms: the pinned platform wins');
+    s1.selectedIndex = s1.options.findIndex(o => o.value === 'shared' && o.dataset.platformId === 'venice-x');
+    assert.deepStrictEqual(picked(s1), { model: 'shared', platformId: 'venice-x' });
+    s1.selectedIndex = 1;
+    assert.deepStrictEqual(picked(s1), { model: 'claude-opus-5-5', platformId: null }, 'Claude model sends no platform');
+    s1.selectedIndex = 0;
+    assert.deepStrictEqual(picked(s1), { model: null, platformId: null }, 'use tier sends neither');
+
+    assert.deepStrictEqual(picked(populate('claude', 'claude-opus-5-5', null)), { model: 'claude-opus-5-5', platformId: null });
+    assert.deepStrictEqual(picked(populate('claude', 'shared', null)), { model: 'shared', platformId: null }, 'an unpinned unknown name is kept as a Claude model, never borrowed from a platform');
+
+    const gone = populate('claude', 'llama-x', 'deleted-plat');
+    const last = gone.children[gone.children.length - 1];
+    assert.deepStrictEqual([last.value, last.dataset.platformId, last.textContent, last.selected], ['llama-x', 'deleted-plat', 'llama-x · platform unavailable', true], 'pin to a missing platform stays visible and selected');
+    assert.ok(last.title.length > 0);
+
+    const codex = populate('codex', 'shared', 'or-1');
+    assert.deepStrictEqual(shape(codex), [['', null, 'use tier'], ['gpt-5.5', null, 'GPT-5.5']], 'non-claude harness lists no platforms');
+    assert.deepStrictEqual(picked(codex), { model: null, platformId: null }, 'a platform pin does not survive a switch to codex');
+
+    const hint = sel => run('_saModelHintText')(sel);
+    const defaultHint = run('SA_MODEL_HINT');
+    assert.strictEqual(hint(s1), defaultHint, 'use tier keeps the default hint');
+    s1.selectedIndex = s1.options.findIndex(o => o.value === 'shared' && o.dataset.platformId === 'or-1');
+    assert.strictEqual(hint(s1), 'runs on AI platform OpenRouter', 'hint names the platform of the selected option, not the first same-named one');
+    s1.selectedIndex = 1;
+    assert.strictEqual(hint(s1), defaultHint, 'Claude model keeps the default hint');
+    assert.strictEqual(hint(gone), 'platform unavailable — pick another model');
+    assert.strictEqual(hint(codex), defaultHint);
+
+    run(`allServerModels = [{ value: 'claude-opus-5-5', label: 'Opus 5.5', platform: 'anthropic', platform_id: 'anthropic' }]`);
+    assert.deepStrictEqual(shape(populate('claude', '', null)), [['', null, 'use tier'], ['claude-opus-5-5', null, 'Opus 5.5']], 'no platforms → flat Claude list, no optgroup');
+    run(`allServerModels = [{ value: 'qwen3', label: 'qwen3', platform: 'Venice.ai', platform_id: 'venice-x' }]`);
+    const chip = sa => run('_saModelChipText')(sa);
+    assert.strictEqual(chip({ model: 'qwen3', model_platform_id: 'venice-x' }), 'qwen3 · Venice.ai');
+    assert.strictEqual(chip({ model: 'llama-x', model_platform_id: 'deleted-plat' }), 'llama-x · platform unavailable');
+    assert.strictEqual(chip({ model: 'claude-opus-5-5', model_platform_id: null }), 'claude-opus-5-5');
+  });
+
   await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -23908,6 +23983,237 @@ async function run() {
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
 
+  // Sub-agent model on an AI platform (sub_agents.model_platform_id): save rules (REST) + run resolution
+  await test('sub-agent model_platform_id — create/patch validation, run uses the sub-agent platform, proxy token, disabled platform, adapter reset', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const platRow = () => db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const origPlatforms = platRow();
+    const setPlatforms = async (list) => {
+      if (platRow()) db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(list));
+      else db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(JSON.stringify(list));
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting 1s cache
+    };
+    const saPlat = { id: 'test-sa-plat', name: 'SA Plat', vendor: 'openrouter', enabled: true, base_url: 'https://sa-plat.invalid/api', api_keys: ['sa-key-1'],
+      cached_models: [{ model: 'vendor/model-a', tools: true }, 'vendor/model-b', { model: 'vendor/model-c' }], enabled_models: ['vendor/model-a', 'vendor/model-b'] };
+    const offPlat = { id: 'test-sa-off', name: 'SA Off', vendor: 'openrouter', enabled: false, base_url: 'https://sa-off.invalid/api', api_keys: ['off-key'], cached_models: ['vendor/model-a'] };
+    const ocPlat = { id: 'test-sa-oc', name: 'SA OC', vendor: 'other', api_format: 'openai_chat', enabled: true, base_url: 'https://sa-oc.invalid/v1', api_keys: ['oc-key'], cached_models: ['oc-model'] };
+    await setPlatforms([saPlat, offPlat, ocPlat]);
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+    ws.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready;
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws.send(JSON.stringify({ type: 'harnesses_update', harnesses_available: ['claude', 'codex'], request_id: msg.request_id, harness_status: [
+          { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+          { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true }] },
+        ] }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    const created = [];
+    try {
+      const post = (body) => req('POST', `/api/actors/${hsActorId}/sub-agents`, { tier: 'deep', ...body });
+      const bad = async (body, re) => {
+        const r = await post(body);
+        assert.strictEqual(r.status, 400, `${JSON.stringify(body)} → ${r.status}`);
+        assert.match(r.body.error, re);
+        assert.ok(!db.prepare('SELECT 1 FROM sub_agents WHERE label=?').get(body.label), 'no row written');
+      };
+      await bad({ label: 'sap-noid', model: 'vendor/model-a' }, /not available for harness claude .*model_platform_id/);
+      await bad({ label: 'sap-off', model: 'vendor/model-a', model_platform_id: 'test-sa-off' }, /AI platform "SA Off" is disabled/);
+      await bad({ label: 'sap-c', model: 'vendor/model-c', model_platform_id: 'test-sa-plat' }, /model "vendor\/model-c" is not available on AI platform "SA Plat"/);
+      await bad({ label: 'sap-ghost', model: 'vendor/model-a', model_platform_id: 'no-such-plat' }, /AI platform "no-such-plat" not found/);
+      await bad({ label: 'sap-nomodel', model_platform_id: 'test-sa-plat' }, /model_platform_id requires a model/);
+      await bad({ label: 'sap-codex', harness: 'codex', model: 'vendor/model-a', model_platform_id: 'test-sa-plat' }, /only for the claude harness/);
+      await bad({ label: 'sap-type', model: 'vendor/model-a', model_platform_id: 42 }, /model_platform_id must be a string/);
+
+      // A Claude model never keeps a platform id.
+      const cl = await post({ label: 'sap-claude', model: 'claude-opus-5-5', model_platform_id: 'test-sa-plat' });
+      assert.strictEqual(cl.status, 201);
+      created.push(cl.body.id);
+      assert.strictEqual(db.prepare('SELECT model_platform_id FROM sub_agents WHERE id=?').get(cl.body.id).model_platform_id, null);
+
+      const ok = await post({ label: 'sap-ok', model: 'vendor/model-a', model_platform_id: 'test-sa-plat' });
+      assert.strictEqual(ok.status, 201, JSON.stringify(ok.body));
+      const saId = ok.body.id;
+      created.push(saId);
+      assert.deepStrictEqual([ok.body.model, ok.body.model_platform_id], ['vendor/model-a', 'test-sa-plat']);
+      const listed = (await req('GET', `/api/actors/${hsActorId}/sub-agents`)).body.find(s => s.id === saId);
+      assert.strictEqual(listed.model_platform_id, 'test-sa-plat', 'REST list returns it');
+
+      // Model change without the id: kept when the platform serves the new model, else 400 and nothing changes.
+      const keep = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'vendor/model-b' });
+      assert.deepStrictEqual([keep.status, keep.body.model, keep.body.model_platform_id], [200, 'vendor/model-b', 'test-sa-plat']);
+      const gone = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'vendor/model-c' });
+      assert.strictEqual(gone.status, 400);
+      assert.match(gone.body.error, /not available on AI platform "SA Plat"/);
+      assert.deepStrictEqual(db.prepare('SELECT model, model_platform_id FROM sub_agents WHERE id=?').get(saId), { model: 'vendor/model-b', model_platform_id: 'test-sa-plat' });
+      const toOff = await req('PATCH', `/api/sub-agents/${saId}`, { model_platform_id: 'test-sa-off' });
+      assert.strictEqual(toOff.status, 400);
+      assert.match(toOff.body.error, /disabled/);
+
+      // Run: the room is on a Claude model with no platform, the sub-agent still runs on its own platform.
+      await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+      db.prepare("UPDATE rooms SET model='claude-sonnet-5-5', model_config=NULL WHERE id=?").run(hsRoomId);
+      const runSub = async () => {
+        const trig = waitForWsMessage(ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === saId, 5000);
+        const r = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, { sub_agent_id: saId, task: 'run on the sub-agent platform please' },
+          { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        return trig;
+      };
+      let t = await runSub();
+      assert.deepStrictEqual([t.model, t.model_source, t.base_url, t.api_keys, t.models], ['vendor/model-b', 'sub_agent_platform', 'https://sa-plat.invalid/api', ['sa-key-1'], undefined]);
+      assert.strictEqual(db.prepare('SELECT model_source FROM messages WHERE id=?').get(t.message_id).model_source, 'sub_agent_platform');
+      await completeSubAgentRun(ws, hsRoomId, t);
+
+      // A proxied platform (openai_chat): Stoa's proxy URL + a proxy token minted for that platform, not its own keys.
+      const oc = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'oc-model', model_platform_id: 'test-sa-oc' });
+      assert.deepStrictEqual([oc.status, oc.body.model_platform_id], [200, 'test-sa-oc']);
+      t = await runSub();
+      assert.strictEqual(t.model, 'oc-model');
+      assert.notStrictEqual(t.base_url, 'https://sa-oc.invalid/v1');
+      assert.ok(t.base_url, 'proxy base url');
+      assert.strictEqual(t.api_keys.length, 1);
+      assert.ok(t.api_keys[0].startsWith(`stoa-proxy:test-sa-oc:${hsActorId}:`), t.api_keys[0]);
+      await completeSubAgentRun(ws, hsRoomId, t);
+
+      // Platform disabled after saving: unrelated edits still work, the run ends with an error naming the sub-agent.
+      await setPlatforms([saPlat, offPlat, { ...ocPlat, enabled: false }]);
+      const ren = await req('PATCH', `/api/sub-agents/${saId}`, { description: 'still editable' });
+      assert.strictEqual(ren.status, 200);
+      let gotTrigger = false;
+      const spy = (raw) => { const m = JSON.parse(raw.toString()); if (m.type === 'agent_trigger' && m.sub_agent?.id === saId) gotTrigger = true; };
+      ws.on('message', spy);
+      const before = db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages').get().m;
+      const r = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, { sub_agent_id: saId, task: 'this run must fail clearly' },
+        { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+      assert.strictEqual(r.status, 200);
+      let errRow;
+      for (let i = 0; i < 40 && !errRow; i++) {
+        await new Promise(res => setTimeout(res, 50));
+        errRow = db.prepare("SELECT content, state, model_source FROM messages WHERE id>? AND sub_agent_id=? AND state='complete'").get(before, saId);
+      }
+      ws.off('message', spy);
+      assert.ok(errRow, 'error message written');
+      assert.ok(errRow.content.includes('Sub-agent "sap-ok"') && errRow.content.includes('"SA OC" is disabled'), errRow.content);
+      assert.strictEqual(errRow.model_source, 'sub_agent_platform');
+      assert.strictEqual(gotTrigger, false, 'no agent_trigger for a run that cannot start');
+
+      // Platform deleted after saving: the run says the pinned platform is gone (id in brackets), not a bare "not found".
+      await setPlatforms([saPlat, offPlat]);
+      const beforeGone = db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages').get().m;
+      const rGone = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, { sub_agent_id: saId, task: 'pinned platform deleted' },
+        { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+      assert.strictEqual(rGone.status, 200);
+      let goneRow;
+      for (let i = 0; i < 40 && !goneRow; i++) {
+        await new Promise(res => setTimeout(res, 50));
+        goneRow = db.prepare("SELECT content FROM messages WHERE id>? AND sub_agent_id=? AND state='complete'").get(beforeGone, saId);
+      }
+      assert.ok(goneRow, 'error message written');
+      assert.ok(goneRow.content.includes('Sub-agent "sap-ok"')
+        && goneRow.content.includes('AI platform yang dipin untuk model ini sudah dihapus (id "test-sa-oc")')
+        && !goneRow.content.includes('not found'), goneRow.content);
+
+      // Harness switched to codex while the platform pin stays: the 400 names the pin as the cause and nothing changes.
+      await setPlatforms([saPlat, offPlat, ocPlat]);
+      const toCodex = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex' });
+      assert.strictEqual(toCodex.status, 400, JSON.stringify(toCodex.body));
+      assert.match(toCodex.body.error, /model "oc-model" is from an AI platform, which only the claude harness can run; to switch to codex also send a codex model or model: null/);
+      assert.deepStrictEqual(db.prepare('SELECT model, harness, model_platform_id FROM sub_agents WHERE id=?').get(saId),
+        { model: 'oc-model', harness: null, model_platform_id: 'test-sa-oc' });
+      const codexTier = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex', model: null });
+      assert.deepStrictEqual([codexTier.status, codexTier.body.model, codexTier.body.model_platform_id], [200, null, null]);
+      assert.strictEqual((await req('PATCH', `/api/sub-agents/${saId}`, { harness: null })).status, 200);
+
+      // Back to a Claude model: the id is cleared.
+      const back = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'claude-opus-5-5' });
+      assert.deepStrictEqual([back.status, back.body.model_platform_id], [200, null]);
+
+      // Parent adapter leaves claude: an inheriting platform-pinned sub-agent resets to the harness default, id cleared.
+      const pinned = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'vendor/model-a', model_platform_id: 'test-sa-plat' });
+      assert.strictEqual(pinned.status, 200, JSON.stringify(pinned.body));
+      const ad = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+      assert.strictEqual(ad.status, 200, JSON.stringify(ad.body));
+      assert.deepStrictEqual(db.prepare('SELECT model, model_platform_id FROM sub_agents WHERE id=?').get(saId), { model: 'gpt-6.1-sol', model_platform_id: null });
+    } finally {
+      await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+      for (const id of created) await req('DELETE', `/api/sub-agents/${id}`);
+      db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+      if (origPlatforms) db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlatforms.value);
+      else db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      ws.close();
+      delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+    }
+  });
+
+  // Sub-agent picker against the real server: /api/ai/models feeds the optgroups, the picked pair saves and preselects on reload.
+  await test('sub-agent model picker — real /api/ai/models honours enabled_models and disabled platforms; picked model + platform saves and preselects from the list', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const vm = require('vm');
+    const fs = require('fs');
+    const db = require('./db');
+    const keyWhere = "scope='global' AND scope_id IS NULL AND key_name='ai_platforms'";
+    const orig = db.prepare(`SELECT value FROM settings WHERE ${keyWhere}`).get();
+    const plats = [
+      { id: 'test-safe-plat', name: 'SA FE Plat', vendor: 'openrouter', enabled: true, base_url: 'https://safe.invalid/api', api_keys: ['k'],
+        cached_models: [{ model: 'vendor/fe-a', tools: true }, 'vendor/fe-b', { model: 'vendor/fe-c' }], enabled_models: ['vendor/fe-a', 'vendor/fe-b'] },
+      { id: 'test-safe-off', name: 'SA FE Off', vendor: 'openrouter', enabled: false, base_url: 'https://safe-off.invalid/api', api_keys: ['k'], cached_models: ['vendor/fe-a'] },
+    ];
+    if (orig) db.prepare(`UPDATE settings SET value=? WHERE ${keyWhere}`).run(JSON.stringify(plats));
+    else db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(JSON.stringify(plats));
+    await new Promise(r => setTimeout(r, 1100)); // getParsedSetting 1s cache
+    let saId = null;
+    try {
+      const models = await req('GET', '/api/ai/models');
+      assert.strictEqual(models.status, 200);
+      class El {
+        constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.value = ''; this.label = ''; this.title = ''; this.selected = false; this._text = ''; }
+        set textContent(v) { this._text = String(v); this.children = []; }
+        get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+        set innerHTML(v) { this.children = []; this._text = ''; }
+        appendChild(c) { this.children.push(c); return c; }
+        get options() { return this.children.flatMap(c => c.tagName === 'OPTGROUP' ? c.children : [c]); }
+        get selectedIndex() { const i = this.options.findIndex(o => o.selected); return i < 0 ? 0 : i; }
+        set selectedIndex(i) { this.options.forEach((o, j) => { o.selected = j === i; }); }
+      }
+      const ctx = { document: { createElement: t => new El(t), getElementById: () => null, addEventListener() {} }, localStorage: { getItem: () => null },
+        currentRoomData: null, fjson: async url => (url === '/api/ai/models' ? models.body : []) };
+      vm.createContext(ctx);
+      for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+      const run = s => vm.runInContext(s, ctx);
+      await run('fetchPlatformModels()');
+      const actor = { id: hsActorId, adapter: 'claude', harness_status: [] };
+      const populate = (model, pid) => { const sel = new El('select'); run('_saPopulateModelSel')(sel, 'claude', actor, model, pid); return sel; };
+      const sel = populate('', null);
+      const groups = sel.children.filter(c => c.tagName === 'OPTGROUP').map(g => [g.label, g.children.map(o => [o.value, o.dataset.platformId || null])]);
+      const fe = groups.filter(([label]) => label.startsWith('SA FE'));
+      assert.deepStrictEqual(fe, [['SA FE Plat', [['vendor/fe-a', 'test-safe-plat'], ['vendor/fe-b', 'test-safe-plat']]]], 'model outside enabled_models and the disabled platform are not offered');
+      assert.strictEqual(groups[0][0], 'Claude');
+
+      sel.selectedIndex = sel.options.findIndex(o => o.value === 'vendor/fe-b');
+      const picked = run('_saSelectedModel')(sel);
+      const created = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'sa-fe-picker', tier: 'quick', model: picked.model, model_platform_id: picked.platformId });
+      assert.ok(created.status === 200 || created.status === 201, JSON.stringify(created.body));
+      saId = created.body.id;
+      const row = (await req('GET', `/api/actors/${hsActorId}/sub-agents`)).body.find(s => s.id === saId);
+      assert.deepStrictEqual([row.model, row.model_platform_id], ['vendor/fe-b', 'test-safe-plat'], 'list returns the saved pair');
+      const reopened = run('_saSelectedModel')(populate(row.model, row.model_platform_id));
+      assert.deepStrictEqual([reopened.model, reopened.platformId], ['vendor/fe-b', 'test-safe-plat'], 'edit form preselects the saved platform model');
+      assert.strictEqual(run('_saModelChipText')(row), 'vendor/fe-b · SA FE Plat');
+    } finally {
+      if (saId) await req('DELETE', `/api/sub-agents/${saId}`);
+      if (orig) db.prepare(`UPDATE settings SET value=? WHERE ${keyWhere}`).run(orig.value);
+      else db.prepare(`DELETE FROM settings WHERE ${keyWhere}`).run();
+    }
+  });
+
   // set_room_model — codex model accepted in room with codex participant
   await test('set_room_model — codex model accepted in room with codex participant', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
@@ -27224,6 +27530,32 @@ async function run() {
       assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: clash.id, tier: 'deep' }), 'sub-agent not found', 'another parent\'s row');
       assert.strictEqual(mDb.prepare('SELECT tier FROM sub_agents WHERE id=?').get(mcpSub2.id).tier, 'deep', 'untouched by agent B');
       assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a created sub-agent mcpsubtwo · config', '__test-mcp-a updated sub-agent mcpsubtwo · config']);
+    });
+
+    await test('MCP stoa tools — sub_agent_create / update / list carry model_platform_id with the REST rules', async () => {
+      const sel = "SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'";
+      const orig = mDb.prepare(sel).get();
+      const write = (v) => (mDb.prepare(sel).get()
+        ? mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(v)
+        : mDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(v));
+      write(JSON.stringify([{ id: 'mcp-sa-plat', name: 'MCP Plat', vendor: 'openrouter', enabled: true, base_url: 'https://mcp-sa.invalid/api', api_keys: ['k'], cached_models: ['mcp/model-x', 'mcp/model-y'] }]));
+      await new Promise(r => setTimeout(r, 1100));
+      let id = null;
+      try {
+        assert.match(await stoaErr(tokA, 'sub_agent_create', { label: 'mcpplatsub', harness: 'claude', model: 'mcp/model-x' }), /model_platform_id/);
+        const c = await stoaOk(tokA, 'sub_agent_create', { label: 'mcpplatsub', harness: 'claude', model: 'mcp/model-x', model_platform_id: 'mcp-sa-plat', link_to_room: false });
+        id = c.sub_agent.id;
+        assert.strictEqual(c.sub_agent.model_platform_id, 'mcp-sa-plat');
+        const listed = (await stoaOk(tokA, 'sub_agent_list')).sub_agents.find(s => s.id === id);
+        assert.deepStrictEqual([listed.model, listed.model_platform_id], ['mcp/model-x', 'mcp-sa-plat'], 'summary carries it');
+        assert.match(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: id, model: 'mcp/model-z' }), /not available on AI platform "MCP Plat"/);
+        const u = await stoaOk(tokA, 'sub_agent_update', { sub_agent_id: id, model: 'claude-sonnet-5-5' });
+        assert.strictEqual(u.sub_agent.model_platform_id, null, 'a Claude model clears it');
+        assert.strictEqual(mDb.prepare('SELECT model_platform_id FROM sub_agents WHERE id=?').get(id).model_platform_id, null);
+      } finally {
+        if (id) mDb.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
+        if (orig) write(orig.value); else mDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      }
     });
 
     await test('sub-agent label rename — clash in a linked room → 409 naming the room (REST + MCP); own label / unlinked → 200', async () => {

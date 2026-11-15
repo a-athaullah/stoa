@@ -188,6 +188,10 @@ Harness Accounts & Limits (migration `20261030-harness-accounts.sql`, `lib/harne
 - `harness_models` — models offered per harness (`harness_id`, `model_id`, `display_name`, `is_default`, `is_active`; UNIQUE(harness_id, model_id)). Codex rows from `codex debug models`, claude rows from the agents' binary scan (plus migrated former custom models). Additive: nothing sets `is_active=0` on absence from a CLI list.
 - `agent_model_failures` — (`actor_id` FK → `actors(id)` ON DELETE CASCADE, `harness`, `model_id`, `cli_version`, `failed_at`), PK (actor_id, harness, model_id). A run proved the model unknown to that agent's CLI; hidden for that agent until it reports another `cli_version` for the harness or a CLI update finishes (`migrations/20261110-claude-models-from-cli.sql`).
 
+### sub_agents (migration-only)
+- Created by `migrations/20260831-sub-agent-definitions.sql`; every later column is an ALTER migration and is **not** in `schema.sqlite.sql` (a baseline column would break the ALTER on a fresh clone).
+- `model_platform_id TEXT` (`20261115-sub-agent-model-platform.sql`) — AI platform id (as `rooms.model_config.platform_id`) serving the sub-agent's non-Claude `model` on the claude harness; NULL for a harness / Claude model. Rules and run behavior: architecture.md "Sub-Agent Model on an AI Platform".
+
 ## Automation Tables
 
 ### automation_connections
