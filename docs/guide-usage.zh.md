@@ -1494,10 +1494,10 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 配置内置 Claude 模型之外的外部 AI 模型供应商。点击 **+ add platform** 注册新供应商：
 
-- **Type** — **Ollama Cloud**（内置代理，无需 URL）或 **Custom Platform**（任意 AI API 供应商）
+- **Type** — **Ollama Cloud**（内置代理，无需 URL）、**Venice.ai**（预设供应商，URL 锁定）或 **Custom Platform**（任意 AI API 供应商）
 - **Name** — 平台的标签名称（例如："My OpenRouter"）
-- **Base URL** — Custom Platform 必填（例如：`https://openrouter.ai/api/v1`）
-- **API format** — 仅限 Custom Platform：**Anthropic Messages（默认）** 或 **OpenAI Chat Completions**。详见下文。
+- **Base URL** — Custom Platform 必填（例如：`https://openrouter.ai/api/v1`）；Venice.ai 已锁定
+- **API format** — 仅限 Custom Platform：**Anthropic Messages（默认）** 或 **OpenAI Chat Completions**。详见下文。Venice.ai 始终使用 OpenAI Chat。
 - **API Key** — 该供应商的 API 密钥
 
 **API format** 决定 Stoa 与平台的通信方式：
@@ -1513,8 +1513,23 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览器（单用户应用，只有您才能访问）。
 
+**Venice.ai** — 选择"Venice.ai"类型以使用 Venice 作为预设供应商。URL（`https://api.venice.ai/api/v1`）和 API 格式（OpenAI Chat）自动设置，无法更改。请在 `venice.ai/settings/api` 使用 **Inference Only** API 密钥，并为该密钥设置每日消费限额，以防 Agent 耗尽余额。平台卡片显示当前余额（USD · DIEM）。在编辑表单中点击 **test key** 可验证密钥并刷新显示余额。
+
+**Extra body**（OpenAI Chat 平台，包括 Venice.ai）— 合并到每个 `/chat/completions` 请求中的 JSON 对象（在 Stoa 自身字段之前）。用于传递供应商特定参数。限制：必须为 JSON 对象（不能是数组），≤ 4 KB，且不能包含 Stoa 控制的字段（`model`、`messages`、`tools`、`tool_choice`、`stream`、`stream_options`）。Venice.ai 默认值：
+
+```json
+{"venice_parameters":{"include_venice_system_prompt":false,"enable_web_search":"off"}}
+```
+
+这将禁用 Venice 自身的系统提示注入和按请求计费的网络搜索。清空该字段可恢复 Venice 的默认系统提示行为。
+
+**Venice 模型发现** — 发现时会隐藏需要端到端加密握手的模型（`e2ee-*` 前缀）、不支持 function calling 的模型以及标记为离线的模型。已发现的模型会在适用时显示能力标签：**uncensored**、**reasoning** 和 **vision**。
+
+**Venice 计费错误** — Venice 返回的 402 响应对应以下三种消息之一：*USD 消费限额已达上限*（在 venice.ai 提高密钥每日限额）、*DIEM 消费限额已达上限*（同上），或*账户余额不足*（在 venice.ai/settings/api 添加积分）。
+
 **支持的供应商** — 任何提供 Anthropic Messages 或 OpenAI Chat Completions 端点的供应商均可使用：
 - **Ollama Cloud** — 选择"Ollama Cloud"类型（内置代理，支持密钥轮换，40+ 模型，最高 480B）
+- **Venice.ai** — 选择"Venice.ai"类型（`https://api.venice.ai/api/v1`，OpenAI Chat，50+ 开放权重模型（含无审查变体））
 - **本地 Ollama** — `http://localhost:11434/v1`（免费、私密、可离线使用 — 参见 [Ollama 安装指南](doc-ollama)）
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`

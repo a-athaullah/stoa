@@ -1498,10 +1498,10 @@ If the server exits at startup with `[db] better-sqlite3 cannot load in this Nod
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
 
-- **Type** — **Ollama Cloud** (built-in proxy, no URL needed) or **Custom Platform** (any AI API provider)
+- **Type** — **Ollama Cloud** (built-in proxy, no URL needed), **Venice.ai** (preset vendor, URL locked), or **Custom Platform** (any AI API provider)
 - **Name** — a label for the platform (e.g., "My OpenRouter")
-- **Base URL** — required for Custom Platform (e.g., `https://openrouter.ai/api/v1`)
-- **API format** — Custom Platform only: **Anthropic Messages (default)** or **OpenAI Chat Completions**. See below.
+- **Base URL** — required for Custom Platform (e.g., `https://openrouter.ai/api/v1`); locked for Venice.ai
+- **API format** — Custom Platform only: **Anthropic Messages (default)** or **OpenAI Chat Completions**. See below. Venice.ai always uses OpenAI Chat.
 - **API Key** — your API key for that provider
 
 **API format** controls how Stoa communicates with the platform:
@@ -1517,8 +1517,23 @@ On a new platform, click **add & discover** to save and probe available models i
 
 The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
+**Venice.ai** — select the "Venice.ai" type to use Venice as a preset vendor. The URL (`https://api.venice.ai/api/v1`) and API format (OpenAI Chat) are set automatically and cannot be changed. Use an **Inference Only** API key from `venice.ai/settings/api`, and set a daily spend limit on the key so an agent cannot drain the balance. The platform card shows the current balance (USD · DIEM). Click **test key** in the edit form to verify the key and refresh the displayed balance.
+
+**Extra body** (OpenAI Chat platforms, including Venice.ai) — a JSON object merged into every `/chat/completions` request, before Stoa's own fields. Use it to pass provider-specific parameters. Constraints: must be a JSON object (not an array), ≤ 4 KB, and cannot contain fields Stoa controls (`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`). Venice.ai default:
+
+```json
+{"venice_parameters":{"include_venice_system_prompt":false,"enable_web_search":"off"}}
+```
+
+This disables Venice's own system prompt injection and per-call web search billing. Clear the field to restore Venice's default system prompt behavior.
+
+**Venice model discovery** — Discovery hides models that require an end-to-end encryption handshake (`e2ee-*` prefix), lack function-calling support, or are marked offline. Discovered models show capability labels where applicable: **uncensored**, **reasoning**, and **vision**.
+
+**Venice billing errors** — a 402 response from Venice maps to one of three distinct messages: *USD spend limit reached* (raise the key's daily limit at venice.ai), *DIEM spend limit reached* (same), or *account balance empty* (add credits at venice.ai/settings/api).
+
 **Supported providers** — any provider that exposes an Anthropic Messages or OpenAI Chat Completions endpoint works:
 - **Ollama Cloud** — select the "Ollama Cloud" type (built-in proxy with key rotation, 40+ models up to 480B)
+- **Venice.ai** — select the "Venice.ai" type (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ open-weight models including uncensored variants)
 - **Local Ollama** — `http://localhost:11434/v1` (free, private, works offline — see [Ollama setup guide](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
