@@ -178,20 +178,34 @@ function isModelCompatible(actorId, harness, model, { allowPlatform = false } = 
     if (allowPlatform) {
       try {
         const platforms = getParsedSetting('ai_platforms');
-        if (platforms) {
-          for (const p of platforms) {
-            if (!p.enabled) continue;
-            const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
-            const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
-            if (cachedNames.includes(model) && (!enabledSet || enabledSet.has(model))) return true;
-          }
-        }
+        if (Array.isArray(platforms) && platforms.some(p => p.enabled && platformServesModel(p, model))) return true;
       } catch {}
     }
     return false;
   }
   const hModels = getHarnessModels(actorId, harness);
   return hModels.some(m => m.model_id === model);
+}
+
+// A platform serves a model when it is in its cached list and, if the user narrowed the list, in enabled_models.
+function platformServesModel(plat, model) {
+  const cached = Array.isArray(plat.cached_models) ? plat.cached_models.map(m => typeof m === 'string' ? m : m?.model) : [];
+  if (!cached.includes(model)) return false;
+  return !Array.isArray(plat.enabled_models) || plat.enabled_models.includes(model);
+}
+
+// A sub-agent's model pinned to an AI platform (sub_agents.model_platform_id): checked when it is saved
+// (lib/sub-agents.js) and again on every run, since the platform can be disabled or edited later.
+// → { plat } or { error } (an English sentence for the API and the run's error message).
+function subAgentPlatformCheck(platformId, model) {
+  let platforms;
+  try { platforms = getParsedSetting('ai_platforms'); } catch { platforms = null; }
+  const plat = Array.isArray(platforms) ? platforms.find(p => p.id === platformId) : null;
+  if (!plat) return { error: `AI platform "${platformId}" not found` };
+  const name = plat.name || plat.id;
+  if (!plat.enabled) return { error: `AI platform "${name}" is disabled` };
+  if (!platformServesModel(plat, model)) return { error: `model "${model}" is not available on AI platform "${name}"` };
+  return { plat };
 }
 
 // Resolve model for a specific agent, considering room model compatibility with harness.
@@ -1878,7 +1892,7 @@ const systemPrompts = createSystemPrompts({ db });
 const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
 const skillsHttp = createSkillsHttp({ skills, json });
 const subAgents = createSubAgents({
-  db, broadcast, getHarnessModels, saveAvatarFile, deleteAvatarFile, resolveThread,
+  db, broadcast, getHarnessModels, saveAvatarFile, deleteAvatarFile, resolveThread, platformCheck: subAgentPlatformCheck,
   onDeleted: (id) => mcpGateway.forgetSubAgent(id),
   isAgentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
   runSubAgent: (roomId, ai, task, threadId) => {
@@ -4474,10 +4488,12 @@ const server = http.createServer(async (req, res) => {
               }
             }
           }
-          const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
+          const inheritSubs = db.prepare('SELECT id, label, model, model_platform_id FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
           for (const sub of inheritSubs) {
-            if (!isModelCompatible(id, adapter, sub.model)) {
-              db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModelId, sub.id);
+            // A platform-pinned model stays on the claude harness; whether its platform still serves it is checked per run.
+            const keeps = sub.model_platform_id ? adapter === 'claude' : isModelCompatible(id, adapter, sub.model);
+            if (!keeps) {
+              db.prepare('UPDATE sub_agents SET model=?, model_platform_id=NULL WHERE id=?').run(defaultModelId, sub.id);
               fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModelId });
             }
           }
@@ -8458,66 +8474,86 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
 
   let modelBaseUrl, modelApiKeys, modelToolsSupported, runPlatform;
-  if (effectiveHarness === 'claude' && roomRow2?.model_config) {
-    try {
-      const cfg = JSON.parse(roomRow2.model_config);
-      if (cfg.platform_id) {
-        const platforms = getParsedSetting('ai_platforms');
-        if (platforms) {
-          const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
-          if (plat) {
-            runPlatform = plat;
-            if (isProxyPlatform(plat)) {
-              // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
-              modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
-              const proxyToken = mintProxyToken(cfg.platform_id, ai.actor_id);
-              modelApiKeys = proxyToken ? [proxyToken] : undefined;
-            } else {
-              modelBaseUrl = plat.base_url || cfg.base_url || undefined;
-              modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
-            }
-            if (Array.isArray(plat.cached_models) && roomModel) {
-              const modelInfo = plat.cached_models.find(m => (typeof m === 'string' ? m : m.model) === roomModel);
-              if (modelInfo && typeof modelInfo === 'object') modelToolsSupported = modelInfo.tools === true;
-            }
-          }
-        }
-      }
-    } catch {}
-  }
-
-  let effectiveModel, modelSource, modelChain;
-  if (subAgent?.tier) {
-    modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
-    effectiveModel = modelChain[0] || null;
-    modelSource = effectiveModel === roomModel ? 'room' : (effectiveModel ? 'tier' : 'cli_default');
-  } else {
-    const resolved = resolveAgentModel(ai.actor_id, effectiveHarness, roomModel);
-    effectiveModel = resolved.model;
-    modelSource = resolved.source;
-    modelChain = effectiveModel ? [effectiveModel] : [];
-  }
-
-  // Platform config only applies when model comes from room preference
-  if (modelSource !== 'room' && modelBaseUrl) {
-    modelBaseUrl = undefined;
-    modelApiKeys = undefined;
-    modelToolsSupported = undefined;
-  }
-  // Sub-agent with claude model uses Anthropic API directly, not room's platform proxy
-  if (subAgent && effectiveModel?.startsWith('claude-') && modelBaseUrl) {
-    modelBaseUrl = undefined;
-    modelApiKeys = undefined;
-    modelToolsSupported = undefined;
-  }
-
-  db.prepare('UPDATE messages SET model_source=? WHERE id=?').run(modelSource, msgId);
-
-  if (effectiveModel && !effectiveModel.startsWith('claude-') && !modelBaseUrl && effectiveHarness === 'claude') {
-    const errContent = `⚠ Model "${effectiveModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;
+  // Base URL / keys / tools support of the platform a run's model comes from: the room's (model_config) or
+  // a sub-agent's own (sub_agents.model_platform_id).
+  const usePlatform = (plat, model, fallbackBaseUrl) => {
+    runPlatform = plat;
+    if (isProxyPlatform(plat)) {
+      // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
+      modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
+      const proxyToken = mintProxyToken(plat.id, ai.actor_id);
+      modelApiKeys = proxyToken ? [proxyToken] : undefined;
+    } else {
+      modelBaseUrl = plat.base_url || fallbackBaseUrl || undefined;
+      modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+    }
+    if (Array.isArray(plat.cached_models) && model) {
+      const modelInfo = plat.cached_models.find(m => (typeof m === 'string' ? m : m.model) === model);
+      if (modelInfo && typeof modelInfo === 'object') modelToolsSupported = modelInfo.tools === true;
+    }
+  };
+  const failRun = (errContent) => {
     db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(errContent, msgId);
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
-    return;
+  };
+
+  let effectiveModel, modelSource, modelChain;
+  // A sub-agent pinned to a platform model runs on that platform whatever the room uses, with no tier fallback.
+  const subPlatformId = effectiveHarness === 'claude' && subAgent?.model_platform_id && subAgent.model
+    && !subAgent.model.startsWith('claude-') ? subAgent.model_platform_id : null;
+  if (subPlatformId) {
+    effectiveModel = subAgent.model;
+    modelSource = 'sub_agent_platform';
+    modelChain = [effectiveModel];
+    db.prepare('UPDATE messages SET model_source=? WHERE id=?').run(modelSource, msgId);
+    const chk = subAgentPlatformCheck(subPlatformId, effectiveModel);
+    if (!chk.error) usePlatform(chk.plat, effectiveModel);
+    if (chk.error || !modelBaseUrl) {
+      failRun(`⚠ Sub-agent "${subAgent.label}" tidak bisa jalan dengan model "${effectiveModel}": ${chk.error || 'AI platform-nya tidak punya base URL'}. Ubah model sub-agent ini di Settings.`);
+      return;
+    }
+  } else {
+    if (effectiveHarness === 'claude' && roomRow2?.model_config) {
+      try {
+        const cfg = JSON.parse(roomRow2.model_config);
+        if (cfg.platform_id) {
+          const platforms = getParsedSetting('ai_platforms');
+          const plat = Array.isArray(platforms) ? platforms.find(p => p.id === cfg.platform_id && p.enabled) : null;
+          if (plat) usePlatform(plat, roomModel, cfg.base_url);
+        }
+      } catch {}
+    }
+
+    if (subAgent?.tier) {
+      modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
+      effectiveModel = modelChain[0] || null;
+      modelSource = effectiveModel === roomModel ? 'room' : (effectiveModel ? 'tier' : 'cli_default');
+    } else {
+      const resolved = resolveAgentModel(ai.actor_id, effectiveHarness, roomModel);
+      effectiveModel = resolved.model;
+      modelSource = resolved.source;
+      modelChain = effectiveModel ? [effectiveModel] : [];
+    }
+
+    // Room platform config only applies when the model comes from the room preference
+    if (modelSource !== 'room' && modelBaseUrl) {
+      modelBaseUrl = undefined;
+      modelApiKeys = undefined;
+      modelToolsSupported = undefined;
+    }
+    // Sub-agent with claude model uses Anthropic API directly, not room's platform proxy
+    if (subAgent && effectiveModel?.startsWith('claude-') && modelBaseUrl) {
+      modelBaseUrl = undefined;
+      modelApiKeys = undefined;
+      modelToolsSupported = undefined;
+    }
+
+    db.prepare('UPDATE messages SET model_source=? WHERE id=?').run(modelSource, msgId);
+
+    if (effectiveModel && !effectiveModel.startsWith('claude-') && !modelBaseUrl && effectiveHarness === 'claude') {
+      failRun(`⚠ Model "${effectiveModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`);
+      return;
+    }
   }
   // The prompt teaches the stoa__* tools only when this session really gets them: a token (none for a
   // tool-less model or when issuing fails) and a harness that mounts the gateway. Otherwise the curl
