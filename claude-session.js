@@ -97,6 +97,7 @@ class ClaudeSession extends EventEmitter {
       }
       this._autoTurn = null;
       this._backgroundTasks = [];
+      this.emit('activity');
       this._restarting = true;
       setTimeout(() => {
         if (this._dead) return;
@@ -125,6 +126,8 @@ class ClaudeSession extends EventEmitter {
     this._startTask(this._queue.shift());
   }
 
+  // 'activity' fires whenever the background-task list or the CLI's own (auto) turn changes, so
+  // stoa.js can keep its work journal current between Stoa-started turns.
   hasBackgroundTasks() {
     return this._backgroundTasks.length > 0;
   }
@@ -171,6 +174,7 @@ class ClaudeSession extends EventEmitter {
     }
     if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
       this._backgroundTasks = Array.isArray(event.tasks) ? event.tasks : [];
+      this.emit('activity');
       return;
     }
     // The CLI can hold the level event above back past a turn's result, so the list would miss a
@@ -179,17 +183,24 @@ class ClaudeSession extends EventEmitter {
     if (event.type === 'system' && event.subtype === 'task_started') {
       if (typeof event.task_id === 'string' && event.is_backgrounded !== false && !this._backgroundTasks.some(t => t?.task_id === event.task_id)) {
         this._backgroundTasks = [...this._backgroundTasks, { task_id: event.task_id, description: event.description }];
+        this.emit('activity');
       }
       return;
     }
     if (event.type === 'system' && event.subtype === 'task_notification') {
-      if (typeof event.task_id === 'string') this._backgroundTasks = this._backgroundTasks.filter(t => t?.task_id !== event.task_id);
+      if (typeof event.task_id === 'string') {
+        this._backgroundTasks = this._backgroundTasks.filter(t => t?.task_id !== event.task_id);
+        this.emit('activity');
+      }
       return;
     }
 
     if (this._isTurnEvent(event)) {
       if (this.busy) this._turnStarted = true;
-      else if (!this._autoTurn) this._autoTurn = { content: '' };
+      else if (!this._autoTurn) {
+        this._autoTurn = { content: '' };
+        this.emit('activity');
+      }
     }
 
     if (this._autoTurn && !this.busy) {
@@ -261,6 +272,7 @@ class ClaudeSession extends EventEmitter {
     if (event.type !== 'result') return;
     const content = this._autoTurn.content || event.result || '';
     this._autoTurn = null;
+    this.emit('activity');
     this.emit('unsolicited_result', { content, sessionId: event.session_id || null });
     this._drainQueue();
   }

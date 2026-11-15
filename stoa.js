@@ -253,6 +253,7 @@ var { readAvatarFile } = require("./lib/avatar-image");
 var { extractSendMarkers, failureNotes } = require("./lib/send-markers");
 var { unshippedAgentRequires } = require("./lib/agent-bundle-check");
 var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
+var { createWorkJournal } = require("./lib/work-journal");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -495,6 +496,7 @@ function doRestart() {
     restartAfterUpdate = true;
     return;
   }
+  journalFrozen = true;
   if (_restartOverride) return _restartOverride();
   console.log("[stoa:update] restarting to apply...");
   clearInterval(keepAlive);
@@ -513,6 +515,121 @@ function sendThenRestart(data) {
   setTimeout(go, 1e3).unref();
 }
 var sessionPool = /* @__PURE__ */ new Map();
+// Work journal (lib/work-journal.js): which sessions are working, on disk, so a connector restart
+// leaves a record of the work it cut off. Only the agent process writes one; in-process importers
+// (test.js) opt in through __setDeps({ journalDir }).
+var DEFAULT_JOURNAL_DIR = path.join(os.homedir(), ".stoa", "journal");
+var JOURNAL_RECONCILE_MS = 30 * 1e3;
+// A background task that ends while the session is idle makes the CLI start a turn of its own to
+// report it. Its entry is held this long so that turn continues the same stretch of work (same
+// since/cause) and a restart in between still finds the unreported result.
+var JOURNAL_BG_SETTLE_MS = 5 * 1e3;
+var workJournal = null;
+// Exit paths (restart, SIGINT) shut sessions down on purpose: their entries must survive that.
+var journalFrozen = false;
+// sessionKey -> facts of the session (room/thread/sub-agent/run/card/resume id/harness), kept
+// while it is pooled; journalStretch: when the current stretch of work began and why;
+// journalWritten: { fingerprint, state } of the entry this process wrote, so unchanged state is not
+// rewritten and only entries this process owns are removed (an earlier process's entry waits for
+// recovery); journalSettleTimers: pending removals of a finished background_only stretch.
+var journalFacts = /* @__PURE__ */ new Map();
+var journalStretch = /* @__PURE__ */ new Map();
+var journalWritten = /* @__PURE__ */ new Map();
+var journalSettleTimers = /* @__PURE__ */ new Map();
+function openWorkJournal(baseDir) {
+  try {
+    return createWorkJournal({ baseDir: path.resolve(baseDir), actorId: ACTOR_ID });
+  } catch (e) {
+    console.warn(`[journal] disabled: ${e.message}`);
+    return null;
+  }
+}
+function journalNote(sessionKey, facts) {
+  journalFacts.set(sessionKey, { ...journalFacts.get(sessionKey) || {}, ...facts });
+}
+function sessionWorkState(sessionKey) {
+  const session = sessionPool.get(sessionKey);
+  let trigger = false;
+  for (const t of activeTriggers.values()) if (t.sessionKey === sessionKey) trigger = true;
+  // A compaction runs as a turn too, but it is housekeeping, not work to recover.
+  const autoTurn = !trigger && !!session?.isTurnActive?.() && !session._compacting;
+  const background = !!session?.hasBackgroundTasks?.();
+  if (trigger) return { state: "turn_running", cause: "turn" };
+  if (autoTurn) return { state: "turn_running", cause: "auto_turn" };
+  if (background) return { state: "background_only", cause: "background" };
+  return null;
+}
+function clearJournalSettle(sessionKey) {
+  const timer = journalSettleTimers.get(sessionKey);
+  if (timer) {
+    clearTimeout(timer);
+    journalSettleTimers.delete(sessionKey);
+  }
+}
+function journalSync(sessionKey, { settled = false } = {}) {
+  if (!workJournal || journalFrozen || !sessionKey) return;
+  try {
+    const work = sessionWorkState(sessionKey);
+    if (!work) {
+      const written = journalWritten.get(sessionKey);
+      if (!settled && written?.state === "background_only" && sessionPool.has(sessionKey)) {
+        if (!journalSettleTimers.has(sessionKey)) {
+          const timer = setTimeout(() => {
+            journalSettleTimers.delete(sessionKey);
+            journalSync(sessionKey, { settled: true });
+          }, JOURNAL_BG_SETTLE_MS);
+          timer.unref?.();
+          journalSettleTimers.set(sessionKey, timer);
+        }
+        return;
+      }
+      clearJournalSettle(sessionKey);
+      journalStretch.delete(sessionKey);
+      if (!sessionPool.has(sessionKey)) journalFacts.delete(sessionKey);
+      if (written) {
+        journalWritten.delete(sessionKey);
+        workJournal.remove(sessionKey);
+      }
+      return;
+    }
+    clearJournalSettle(sessionKey);
+    let stretch = journalStretch.get(sessionKey);
+    if (!stretch) {
+      stretch = { since: (/* @__PURE__ */ new Date()).toISOString(), cause: work.cause };
+      journalStretch.set(sessionKey, stretch);
+    }
+    const parsed = parseSessionKey(sessionKey);
+    const facts = journalFacts.get(sessionKey) || {};
+    const session = sessionPool.get(sessionKey);
+    const fields = {
+      room_id: facts.room_id ?? parsed.roomId,
+      thread_id: facts.thread_id ?? parsed.threadId,
+      sub_agent_id: facts.sub_agent_id ?? parsed.subAgentId,
+      message_id: facts.message_id ?? null,
+      task_id: facts.task_id ?? null,
+      resume_session_id: facts.resume_session_id || session?.resumeId || null,
+      harness: session?._harness || facts.harness || "claude",
+      state: work.state,
+      cause: stretch.cause,
+      since: stretch.since
+    };
+    const fingerprint = JSON.stringify(fields);
+    if (journalWritten.get(sessionKey)?.fingerprint === fingerprint) return;
+    if (workJournal.upsert(sessionKey, fields)) journalWritten.set(sessionKey, { fingerprint, state: work.state });
+  } catch (e) {
+    console.warn(`[journal] sync failed: ${e.message}`);
+  }
+}
+// Safety net for changes no event reports (a harness without activity events, a crashed CLI).
+function reconcileJournal() {
+  const keys = new Set([...sessionPool.keys(), ...journalWritten.keys()]);
+  for (const t of activeTriggers.values()) if (t.sessionKey) keys.add(t.sessionKey);
+  for (const key of keys) journalSync(key);
+}
+function watchSessionActivity(session, sessionKey) {
+  if (typeof session?.on !== "function") return;
+  session.on("activity", () => journalSync(sessionKey));
+}
 // Must match MAX_UPLOAD in server.js /api/upload/raw.
 var MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 function formatMB(bytes) {
@@ -547,7 +664,9 @@ function compactWithTimeout(session) {
       }, COMPACT_IDLE_MS);
     };
     resetIdle();
-    session.send({ prompt: "/compact", onState: resetIdle, onToken: resetIdle }).then((result) => {
+    session._compacting = true;
+    const done = () => { session._compacting = false; };
+    session.send({ prompt: "/compact", onState: resetIdle, onToken: resetIdle }).finally(done).then((result) => {
       if (timedOut) return;
       clearTimeout(idleTimer);
       clearTimeout(hardTimer);
@@ -792,6 +911,7 @@ async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env,
   session._systemPromptHash = systemPromptHash || null;
   session._harness = harness;
   attachUnsolicitedHandler(session, sessionKey);
+  watchSessionActivity(session, sessionKey);
   sessionPool.set(sessionKey, session);
   return session;
 }
@@ -819,6 +939,7 @@ function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, sy
     session._systemPromptHash = systemPromptHash || null;
     session._harness = harness;
     attachUnsolicitedHandler(session, key);
+    watchSessionActivity(session, key);
     sessionPool.set(key, session);
     console.log(`[stoa] ${harness} session started for ${key}`);
     startSessionIdleTimer(key);
@@ -855,6 +976,7 @@ function startSessionIdleTimer(sessionKey, holdSince = null) {
     session.shutdown();
     sessionPool.delete(sessionKey);
     sessionIdleTimers.delete(sessionKey);
+    journalSync(sessionKey);
     console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
   }, SESSION_IDLE_TTL * 6e4);
   // unref: housekeeping only — the agent stays alive via its WS/keepAlive; a ref'd timer
@@ -1610,6 +1732,7 @@ async function handleAgentMessage(msg) {
         session = new ClaudeSession({ workDir: workdirResolved, flags: ["--resume", msg.claude_session_id], resumeId: msg.claude_session_id });
         watchClaudeRateLimits(session, null);
         attachUnsolicitedHandler(session, key);
+        watchSessionActivity(session, key);
         sessionPool.set(key, session);
         startSessionIdleTimer(key);
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
@@ -1714,6 +1837,8 @@ async function processTrigger(msg) {
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
   const entry = { workdir, session: null, sessionKey, room_id, harness: msg.harness || "claude", model: null, thirdParty: !!msg.base_url, startedAt: Date.now(), lastActivity: Date.now() };
   activeTriggers.set(message_id, entry);
+  journalNote(sessionKey, { room_id, thread_id: threadId || null, sub_agent_id: subAgent?.id ?? null, message_id, task_id: msg.task_id ?? null, harness: entry.harness, resume_session_id: msg.claude_session_id || null });
+  journalSync(sessionKey);
   let sessionRef = null;
   let statusHandler = null;
   let hangWatchdog = null;
@@ -2108,6 +2233,7 @@ ${allNotes}`;
       }
     }
     let { content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype, isError } = result;
+    if (typeof sessionId === "string" && sessionId) journalNote(sessionKey, { resume_session_id: sessionId });
     content = stripLeadingThinkingMarker(content);
     const AUTH_EXPIRED_RE = /not logged in|please run \/(reauth|login)/i;
     if (triggerHarness === "claude" && !aborted && AUTH_EXPIRED_RE.test(content) && content.length < 200) {
@@ -2231,6 +2357,7 @@ ${allNotes}`;
     }
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log("[stoa] too many trigger errors, restarting clean...");
+      journalFrozen = true;
       for (const s of sessionPool.values()) s.shutdown();
       process.exit(0);
     }
@@ -2242,6 +2369,7 @@ ${allNotes}`;
       fs.rmSync(path.join(workdir, ".stoa-attachments", String(message_id)), { recursive: true, force: true });
     } catch {}
     activeTriggers.delete(message_id);
+    journalSync(sessionKey);
     try { if (targetDir) startSessionIdleTimer(sessionKey); } catch {}
     const steerKey = `${room_id}:${threadId || 0}`;
     const steers = pendingSteerMessages.get(steerKey) || [];
@@ -2455,12 +2583,14 @@ function sweepStaleTriggers(now) {
         if (!cancelled) {
           entry.completedBySweep = true;
           activeTriggers.delete(msgId);
+          journalSync(entry.sessionKey);
           send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
           forceCleaned = true;
         }
       } else {
         entry.completedBySweep = true;
         activeTriggers.delete(msgId);
+        journalSync(entry.sessionKey);
         send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
         forceCleaned = true;
       }
@@ -2944,6 +3074,7 @@ function out(line) {
 if (require.main === module) {
 process.on("SIGINT", () => {
   clearTimeout(reconnectTimer);
+  journalFrozen = true;
   for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
@@ -2969,6 +3100,8 @@ if (CF_ACCESS) {
     .catch((e) => { console.error(`[stoa] Cloudflare Access proxy failed to start: ${e.message}`); return null; });
 }
 if (ACTOR_TYPE === "ai") {
+  workJournal = openWorkJournal(process.env.STOA_JOURNAL_DIR || DEFAULT_JOURNAL_DIR);
+  setInterval(reconcileJournal, JOURNAL_RECONCILE_MS).unref();
   preConnectUpdate().then(() => {
     connect();
     updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
@@ -2989,6 +3122,8 @@ function __setDeps(overrides) {
   if (overrides.BACKGROUND_HOLD_MAX_MS != null) BACKGROUND_HOLD_MAX_MS = overrides.BACKGROUND_HOLD_MAX_MS;
   if (overrides.doRestart) _restartOverride = overrides.doRestart;
   if (overrides.skillsDir) SKILLS_DIR = overrides.skillsDir;
+  if (overrides.journalDir) workJournal = openWorkJournal(overrides.journalDir);
+  if (overrides.JOURNAL_BG_SETTLE_MS != null) JOURNAL_BG_SETTLE_MS = overrides.JOURNAL_BG_SETTLE_MS;
 }
 function __resetDeps() {
   _sendOverride = null;
@@ -2997,6 +3132,14 @@ function __resetDeps() {
   _fetchOverride = null;
   SKILLS_DIR = DEFAULT_SKILLS_DIR;
   skillLocks.clear();
+  workJournal = null;
+  journalFrozen = false;
+  journalFacts.clear();
+  journalStretch.clear();
+  journalWritten.clear();
+  for (const t of journalSettleTimers.values()) clearTimeout(t);
+  journalSettleTimers.clear();
+  JOURNAL_BG_SETTLE_MS = 5 * 1e3;
   SESSION_IDLE_TTL = 5;
   BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
   FETCH_TIMEOUT_MS = 60000;
@@ -3010,4 +3153,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };
