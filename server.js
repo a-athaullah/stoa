@@ -1717,11 +1717,13 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     model = openaiTranslator.pickModel(reqModel, plat);
   }
   const wantStream = parsed.stream === true;
+  // Reasoning round-trip (thinking blocks sealed with SIGNING_KEY, bound to this platform).
+  const codec = openaiTranslator.reasoningCodec(plat.id, SIGNING_KEY);
   const upstream = await fetchWithKeyRotation(target, keys, key => ({
     'Content-Type': 'application/json',
     Accept: wantStream ? 'text/event-stream' : 'application/json',
     Authorization: `Bearer ${key}`,
-  }), JSON.stringify(venice.buildChatRequest(plat, openaiTranslator.toOpenAIRequest(parsed, model))));
+  }), JSON.stringify(venice.buildChatRequest(plat, openaiTranslator.toOpenAIRequest(parsed, model, codec))));
   if (!upstream) return json(res, anthropicError('api_error', 'Platform unreachable'), 502);
   console.log(`[openai-proxy] ${reqModel || '?'} → ${model || '?'} @ ${plat.id} status=${upstream.status}`);
   if (!upstream.ok) {
@@ -1732,7 +1734,7 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
   }
 
   if (upstream.headers.get('content-type')?.includes('text/event-stream')) {
-    const tr = openaiTranslator.createStreamTranslator(reqModel);
+    const tr = openaiTranslator.createStreamTranslator(reqModel, codec);
     const reader = upstream.body.getReader();
     const dec = new TextDecoder();
     res.writeHead(200, SSE_HEADERS);
@@ -1755,7 +1757,7 @@ async function proxyOpenAIChat(res, plat, keys, raw) {
     const m = openaiTranslator.mapError(502, JSON.stringify(oa?.error ? oa : { error: 'Platform returned an unrecognised response' }));
     return json(res, m.body, m.status);
   }
-  const msg = openaiTranslator.fromOpenAIResponse(oa, reqModel);
+  const msg = openaiTranslator.fromOpenAIResponse(oa, reqModel, codec);
   // Upstream ignored stream:true — still answer in the event format the caller asked for.
   if (wantStream) { res.writeHead(200, SSE_HEADERS); return res.end(openaiTranslator.messageToStreamEvents(msg)); }
   return json(res, msg);

@@ -933,6 +933,15 @@ function runUnitTests() {
   ut('matchThinkingBlock — non-object → false', () => {
     assert.strictEqual(matchThinkingBlock('string'), false);
   });
+  // Thinking from an openai_chat platform (Stoa envelope signature) is unsigned as far as Anthropic is concerned.
+  ut('matchThinkingBlock / replaceThinkingBlock — Stoa reasoning envelope counts as unsigned: dropped on the direct-Anthropic path', () => {
+    const env = { type: 'thinking', thinking: 'venice thought', signature: 'stoa-oa1.cGxhdA.e30.' + 'a'.repeat(64) };
+    assert.strictEqual(require('./lib/thinking-sanitizer').STOA_REASONING_PREFIX, 'stoa-oa1.');
+    assert.strictEqual(matchThinkingBlock(env), true);
+    assert.strictEqual(replaceThinkingBlock(env), null);
+    assert.strictEqual(matchThinkingBlock({ ...env, signature: 'EqQBCkYIBhgCKkAstoa-oa1.' }), false, 'prefix only, Anthropic signature kept');
+    assert.strictEqual(matchThinkingBlock({ type: 'thinking', thinking: 'x', signature: 42 }), true, 'non-string signature is not a signature');
+  });
 
   // ── Transcript sanitizer (R21) ───────────────────────────────────────────
   console.log('\n  [Transcript sanitizer]');
@@ -2641,6 +2650,134 @@ function runUnitTests() {
     assert.ok(oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'image', source: {} }] }] }) >= 1600);
     assert.ok(oat.estimateTokens({ messages: [], tools: [{ name: 'T', input_schema: { type: 'object', description: 'z'.repeat(400) } }] }) > 100);
     assert.strictEqual(oat.estimateTokens({}), 1);
+  });
+
+  // Reasoning round-trip: thinking blocks sealed with a Stoa envelope, opened only by the same platform.
+  const KEY_A = Buffer.alloc(32, 7);
+  // Rebuild the assistant content the CLI would store from an Anthropic event stream.
+  const sseContent = (events) => {
+    const blocks = [];
+    for (const e of events) {
+      if (e.type === 'content_block_start') blocks[e.index] = { ...e.content_block };
+      else if (e.type === 'content_block_delta') {
+        const b = blocks[e.index];
+        if (e.delta.type === 'text_delta') b.text += e.delta.text;
+        else if (e.delta.type === 'thinking_delta') b.thinking += e.delta.thinking;
+        else if (e.delta.type === 'signature_delta') b.signature += e.delta.signature;
+        else if (e.delta.type === 'input_json_delta') b.input = JSON.parse(e.delta.partial_json);
+      }
+    }
+    return blocks;
+  };
+  ut('openai reasoningCodec — seal/open bound to platform, payload and thinking text; forged, foreign, damaged and oversized envelopes refused', () => {
+    const a = oat.reasoningCodec('plat-a', KEY_A);
+    const sig = a.seal({ rk: 'reasoning_content', rd: [{ type: 'reasoning.encrypted', data: 'x' }], ts: 'T', tc: { c1: { google: { thought_signature: 'G' } } } }, 'why');
+    assert.match(sig, /^stoa-oa1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[0-9a-f]{64}$/);
+    assert.deepStrictEqual(a.open(sig, 'why'), { rk: 'reasoning_content', rd: [{ type: 'reasoning.encrypted', data: 'x' }], ts: 'T', tc: { c1: { google: { thought_signature: 'G' } } } });
+    assert.strictEqual(a.open(sig, 'why edited'), null, 'thinking text is covered by the HMAC');
+    assert.strictEqual(oat.reasoningCodec('plat-b', KEY_A).open(sig, 'why'), null, 'other platform');
+    assert.strictEqual(oat.reasoningCodec('plat-a', Buffer.alloc(32, 8)).open(sig, 'why'), null, 'other server key');
+    const [pre, tag, body, mac] = sig.split('.');
+    const forgedBody = Buffer.from(JSON.stringify({ ts: 'EVIL' })).toString('base64url');
+    for (const bad of [`${pre}.${tag}.${forgedBody}.${mac}`, `${pre}.${tag}.${body}.${mac.slice(0, -1)}${mac.endsWith('0') ? '1' : '0'}`, `${pre}.${tag}.${body}`, `${pre}.${tag}.${body}.${mac}.x`,
+      `${pre}.${tag}.${body}.${'z'.repeat(64)}`, 'abc', '', null, undefined, 42, 'stoa-oa1.' + 'A'.repeat(500 * 1024)]) {
+      assert.strictEqual(a.open(bad, 'why'), null, String(bad).slice(0, 40));
+    }
+    // A validly signed but malformed payload never crashes and yields nothing usable.
+    const raw = (json) => { const p = Buffer.from(json).toString('base64url'); const s = a.seal({}, ''); const t = s.split('.')[1];
+      return `stoa-oa1.${t}.${p}.${require('crypto').createHmac('sha256', KEY_A).update(`oa1|plat-a|${p}|${require('crypto').createHash('sha256').update('').digest('hex')}`).digest('hex')}`; };
+    assert.strictEqual(a.open(raw('not json'), ''), null);
+    assert.strictEqual(a.open(raw('[1,2]'), ''), null);
+    assert.deepStrictEqual(a.open(raw('{"rk":"evil","rd":"x","ts":5,"tc":[1]}'), ''), { rk: null, rd: null, ts: null, tc: null });
+    // Oversized upstream data is not preserved, but the block stays valid and keeps its text key.
+    const big = a.seal({ rk: 'reasoning', rd: [{ type: 'reasoning.encrypted', data: 'x'.repeat(200 * 1024) }] }, 't');
+    assert.deepStrictEqual(a.open(big, 't'), { rk: 'reasoning', rd: null, ts: null, tc: null });
+  });
+  ut('openai reasoning non-stream — thinking block first with sealed upstream data; second turn sends it back byte-identical; other platform / Anthropic / edited blocks dropped', () => {
+    const a = oat.reasoningCodec('plat-a', KEY_A);
+    const rd = [{ type: 'reasoning.text', text: 'step 1', signature: 'c2ln', format: 'google-gemini-v1', index: 0 }, { type: 'reasoning.encrypted', data: 'RU5D', id: 'r2', index: 1 }];
+    const oa = { choices: [{ message: { role: 'assistant', content: null, reasoning_content: 'I should read', reasoning_details: rd, thought_signature: 'VFMx',
+      tool_calls: [{ id: 'call_g', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' }, extra_content: { google: { thought_signature: 'R0M=' } } }] }, finish_reason: 'tool_calls' }] };
+    const m = oat.fromOpenAIResponse(oa, 'gem', a);
+    assert.deepStrictEqual(m.content.map(b => b.type), ['thinking', 'tool_use']);
+    assert.strictEqual(m.content[0].thinking, 'I should read');
+    assert.ok(m.content[0].signature.startsWith(oat.ENVELOPE_PREFIX));
+    const turn2 = { messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: m.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_g', content: 'body' }] }] };
+    const back = oat.toOpenAIRequest(turn2, 'gem', a).messages[1];
+    assert.strictEqual(JSON.stringify(back), JSON.stringify({ role: 'assistant', content: null, reasoning_content: 'I should read', reasoning_details: rd, thought_signature: 'VFMx',
+      tool_calls: [{ id: 'call_g', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' }, extra_content: { google: { thought_signature: 'R0M=' } } }] }));
+    const plain = { role: 'assistant', content: null, tool_calls: [{ id: 'call_g', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' } }] };
+    assert.deepStrictEqual(oat.toOpenAIRequest(turn2, 'gem', oat.reasoningCodec('plat-b', KEY_A)).messages[1], plain, 'platform A reasoning never reaches platform B');
+    assert.deepStrictEqual(oat.toOpenAIRequest(turn2, 'gem').messages[1], plain, 'no codec = thinking dropped');
+    const edited = structuredClone(turn2);
+    edited.messages[1].content[0].thinking = 'something else';
+    assert.deepStrictEqual(oat.toOpenAIRequest(edited, 'gem', a).messages[1], plain, 'edited thinking dropped');
+    const anth = structuredClone(turn2);
+    anth.messages[1].content[0] = { type: 'thinking', thinking: 'claude thought', signature: 'EqQBCkYIBhgCKkA' };
+    anth.messages[1].content.unshift({ type: 'redacted_thinking', data: 'abc' });
+    assert.deepStrictEqual(oat.toOpenAIRequest(anth, 'gem', a).messages[1], plain, 'Anthropic thinking never sent to an openai_chat platform');
+    // Details-only (no readable reasoning_content): text taken from reasoning_details, no reasoning_content sent back.
+    const d = oat.fromOpenAIResponse({ choices: [{ message: { content: 'ok', reasoning_details: rd }, finish_reason: 'stop' }] }, 'gem', a);
+    assert.strictEqual(d.content[0].thinking, 'step 1');
+    assert.deepStrictEqual(oat.toOpenAIRequest({ messages: [{ role: 'assistant', content: d.content }] }, 'gem', a).messages[0], { role: 'assistant', content: 'ok', reasoning_details: rd });
+    // `reasoning` (OpenRouter-style key) goes back under the same key.
+    const r = oat.fromOpenAIResponse({ choices: [{ message: { content: 'ok', reasoning: 'hmm' }, finish_reason: 'stop' }] }, 'x', a);
+    assert.deepStrictEqual(oat.toOpenAIRequest({ messages: [{ role: 'assistant', content: r.content }] }, 'x', a).messages[0], { role: 'assistant', content: 'ok', reasoning: 'hmm' });
+  });
+  ut('openai reasoning — response without reasoning is exactly as before, with or without codec', () => {
+    const oa = { choices: [{ message: { content: 'ok', tool_calls: [{ id: 'call_9', function: { name: 'Read', arguments: '{"p":"x"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 1 } };
+    const a = oat.reasoningCodec('plat-a', KEY_A);
+    const strip = (m) => ({ ...m, id: null });
+    assert.deepStrictEqual(strip(oat.fromOpenAIResponse(oa, 'm', a)), strip(oat.fromOpenAIResponse(oa, 'm')));
+    assert.deepStrictEqual(oat.fromOpenAIResponse(oa, 'm', a).content, [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'call_9', name: 'Read', input: { p: 'x' } }]);
+    const wire = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"T","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n';
+    const evs = (codec) => { const tr = oat.createStreamTranslator('m', codec); return parseSse(tr.push(wire) + tr.end()).filter(e => e.type !== 'message_start'); };
+    assert.deepStrictEqual(evs(a), evs(null));
+    const body = { messages: [{ role: 'user', content: 'x' }, { role: 'assistant', content: [{ type: 'text', text: 'y' }] }] };
+    assert.deepStrictEqual(oat.toOpenAIRequest(body, 'm', a), oat.toOpenAIRequest(body, 'm'));
+  });
+  ut('openai reasoning stream — thinking streams live and is signed before text opens; fragmented reasoning_details joined; late data sealed in a trailing block; round-trip exact', () => {
+    const a = oat.reasoningCodec('plat-a', KEY_A);
+    const tr = oat.createStreamTranslator('m', a);
+    const chunks = [
+      { choices: [{ delta: { role: 'assistant', reasoning_content: 'thi' } }] },
+      { choices: [{ delta: { reasoning_content: 'nk', reasoning_details: [{ type: 'reasoning.text', text: 'a', index: 0, format: 'f1' }] } }] },
+      { choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'b', index: 0, signature: 'sg' }] } }] },
+      { choices: [{ delta: { content: 'Hi' } }] },
+      { choices: [{ delta: { thought_signature: 'TS', tool_calls: [{ index: 0, id: 'call_1', function: { name: 'Bash', arguments: '{"c":1}' }, extra_content: { google: { thought_signature: 'GC' } } }] }, finish_reason: 'tool_calls' }] },
+    ];
+    const wire = chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n';
+    let out = '';
+    for (let i = 0; i < wire.length; i += 11) out += tr.push(wire.slice(i, i + 11));
+    const ev = parseSse(out + tr.end());
+    const content = sseContent(ev);
+    assert.deepStrictEqual(content.map(b => b.type), ['thinking', 'text', 'thinking', 'tool_use']);
+    assert.deepStrictEqual(ev.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking), ['thi', 'nk']);
+    // The first thinking block's signature arrives before its stop, and both before the text block starts.
+    const sigAt = ev.findIndex(e => e.delta?.type === 'signature_delta');
+    const textAt = ev.findIndex(e => e.content_block?.type === 'text');
+    assert.ok(sigAt > 0 && ev[sigAt + 1].type === 'content_block_stop' && sigAt < textAt);
+    assert.deepStrictEqual([content[0].thinking, content[1].text, content[2].thinking], ['think', 'Hi', '']);
+    const back = oat.toOpenAIRequest({ messages: [{ role: 'assistant', content }] }, 'm', a).messages[0];
+    assert.deepStrictEqual(back, { role: 'assistant', content: 'Hi', reasoning_content: 'think',
+      reasoning_details: [{ type: 'reasoning.text', text: 'ab', index: 0, format: 'f1', signature: 'sg' }], thought_signature: 'TS',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Bash', arguments: '{"c":1}' }, extra_content: { google: { thought_signature: 'GC' } } }] });
+    // Reasoning straight into tool calls (no text): one thinking block carries everything incl. tool extra_content.
+    const t2 = oat.createStreamTranslator('m', a);
+    const c2 = sseContent(parseSse(t2.push('data: {"choices":[{"delta":{"reasoning_content":"r"}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"k","function":{"name":"T","arguments":"{}"},"extra_content":{"x":1}}]}}]}\n\n') + t2.end()));
+    assert.deepStrictEqual(c2.map(b => b.type), ['thinking', 'tool_use']);
+    assert.deepStrictEqual(a.open(c2[0].signature, 'r'), { rk: 'reasoning_content', rd: null, ts: null, tc: { k: { x: 1 } } });
+    // Without a codec reasoning is dropped as before.
+    const t3 = oat.createStreamTranslator('m');
+    assert.deepStrictEqual(sseContent(parseSse(t3.push(wire) + t3.end())).map(b => b.type), ['text', 'tool_use']);
+  });
+  ut('openai reasoning messageToStreamEvents — thinking block re-emitted with thinking_delta + signature_delta before text', () => {
+    const a = oat.reasoningCodec('plat-a', KEY_A);
+    const msg = oat.fromOpenAIResponse({ choices: [{ message: { content: 'hi', reasoning_content: 'why', thought_signature: 'S' }, finish_reason: 'stop' }] }, 'm', a);
+    const ev = parseSse(oat.messageToStreamEvents(msg));
+    assert.deepStrictEqual(ev.slice(1, 5).map(e => e.delta?.type || e.type), ['content_block_start', 'thinking_delta', 'signature_delta', 'content_block_stop']);
+    assert.deepStrictEqual(ev[1].content_block, { type: 'thinking', thinking: '', signature: '' });
+    assert.deepStrictEqual(sseContent(ev), msg.content);
   });
 
   // Accept-Encoding parsing for gzipped JSON responses (lib/http-compress.js).
@@ -9611,6 +9748,36 @@ async function run() {
       assert.strictEqual(wakesFor(r.body.message_id), 0);
     });
 
+    // stoa.js carries its own copy of lib/thinking-sanitizer.js: the resume sanitizer must drop Stoa envelopes too.
+    await test('stoa.js sanitizeThinking — resume onto Claude drops openai_chat reasoning (Stoa envelope), keeps Anthropic-signed thinking; third-party strips all', async () => {
+      const stoa = require('./stoa.js');
+      const os = require('os');
+      const fs = require('fs');
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-sanit-'));
+      const origHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        const workdir = '/tmp/wk-sanit';
+        const dir = path.join(home, '.claude', 'projects', workdir.replace(/\//g, '-'));
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, 'sess-1.jsonl');
+        const venice = { type: 'thinking', thinking: 'venice thought', signature: 'stoa-oa1.cGxhdA.e30.' + 'a'.repeat(64) };
+        const claude = { type: 'thinking', thinking: 'claude thought', signature: 'EqQBCkYIBhgCKkA' };
+        const line = (content) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content } });
+        const write = () => fs.writeFileSync(file, [line([venice, { type: 'text', text: 'a' }]), line([claude, { type: 'text', text: 'b' }])].join('\n'));
+        const blocks = () => fs.readFileSync(file, 'utf8').split('\n').map(l => JSON.parse(l).message.content.map(b => b.type + (b.signature ? ':' + b.signature.slice(0, 8) : '')));
+        write();
+        await stoa.sanitizeThinking(workdir, 'sess-1', { thirdParty: false });
+        assert.deepStrictEqual(blocks(), [['text'], ['thinking:EqQBCkYI', 'text']]);
+        write();
+        await stoa.sanitizeThinking(workdir, 'sess-1', { thirdParty: true });
+        assert.deepStrictEqual(blocks(), [['text'], ['text']]);
+      } finally {
+        process.env.HOME = origHome;
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     await test('stoa.js postUnsolicitedResult end-to-end: background left → no wake; none left → parent woken', async () => {
       if (!wkSa) { console.log('    (skipped)'); return; }
       const stoa = require('./stoa.js');
@@ -11876,6 +12043,101 @@ async function run() {
       } finally {
         mock.close();
         plain.close();
+        if (origPlat) secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+        else secDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      }
+    });
+
+    // /v1/messages openai_chat — reasoning round-trip through the real proxy (mock upstream, two platforms).
+    await test('/v1/messages openai_chat reasoning — thinking + Stoa signature out (stream and JSON); tool loop sends reasoning back byte-identical; never to another platform; forged dropped', async () => {
+      const seen = [];
+      const rd = [{ type: 'reasoning.text', text: 'plan', signature: 'c2lnLzEr', format: 'google-gemini-v1', index: 0 }, { type: 'reasoning.encrypted', data: 'RU5DUllQVA==', index: 1 }];
+      const mock = http.createServer((rq, rs) => {
+        let raw = '';
+        rq.on('data', c => { raw += c; });
+        rq.on('end', () => {
+          const b = JSON.parse(raw);
+          seen.push({ path: rq.url, body: b });
+          const last = b.messages.at(-1);
+          if (last.role === 'tool' || last.content === 'plain') {
+            rs.writeHead(200, { 'Content-Type': 'application/json' });
+            return rs.end(JSON.stringify({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] }));
+          }
+          if (!b.stream) {
+            rs.writeHead(200, { 'Content-Type': 'application/json' });
+            return rs.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, reasoning_content: 'need to read', reasoning_details: rd, thought_signature: 'VFMvMQ==',
+              tool_calls: [{ id: 'call_r', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' }, extra_content: { google: { thought_signature: 'R0MvMQ==' } } }] }, finish_reason: 'tool_calls' }] }));
+          }
+          rs.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          const chunks = [
+            { choices: [{ delta: { role: 'assistant', reasoning_content: 'need ' } }] },
+            { choices: [{ delta: { reasoning_content: 'to read', reasoning_details: rd } }] },
+            { choices: [{ delta: { thought_signature: 'VFMvMQ==', tool_calls: [{ index: 0, id: 'call_r', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' }, extra_content: { google: { thought_signature: 'R0MvMQ==' } } }] }, finish_reason: 'tool_calls' }] },
+          ];
+          rs.end(chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n');
+        });
+      });
+      await new Promise(r => mock.listen(0, '127.0.0.1', r));
+      const base = `http://127.0.0.1:${mock.address().port}/v1`;
+      const plats = ['__sec-rsn-a', '__sec-rsn-b'].map(id => ({ id, name: id, vendor: 'generic', api_format: 'openai_chat', enabled: true, base_url: base, api_keys: ['k'], cached_models: [{ model: 'gem', tools: true }] }));
+      const origPlat = secDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      (origPlat ? secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : secDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)")).run(JSON.stringify(plats));
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      const post = (platId, body) => anon(() => req('POST', '/v1/messages', body,
+        { Authorization: `Bearer stoa-proxy:${platId}`, 'x-agent-id': String(secAgent.actorId), 'x-agent-secret': secAgent.secret }), true);
+      const tools = [{ name: 'Read', description: 'read', input_schema: { type: 'object', properties: { p: { type: 'string' } } } }];
+      const expected = { role: 'assistant', content: null, reasoning_content: 'need to read', reasoning_details: rd, thought_signature: 'VFMvMQ==',
+        tool_calls: [{ id: 'call_r', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' }, extra_content: { google: { thought_signature: 'R0MvMQ==' } } }] };
+      const stripped = { role: 'assistant', content: null, tool_calls: [{ id: 'call_r', type: 'function', function: { name: 'Read', arguments: '{"p":"a"}' } }] };
+      const asst = () => seen.at(-1).body.messages.find(m => m.role === 'assistant');
+      const turn2 = (content) => ({ model: 'gem', max_tokens: 64, tools, messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_r', content: 'file' }] }] });
+      try {
+        // Non-streaming: thinking first, signed with a Stoa envelope.
+        const n = await post('__sec-rsn-a', { model: 'gem', max_tokens: 64, tools, messages: [{ role: 'user', content: 'go' }] });
+        assert.strictEqual(n.status, 200, n.raw);
+        assert.deepStrictEqual(n.body.content.map(b => b.type), ['thinking', 'tool_use']);
+        assert.strictEqual(n.body.content[0].thinking, 'need to read');
+        assert.match(n.body.content[0].signature, /^stoa-oa1\./);
+        // Tool loop turn 2 on the same platform: the upstream gets its reasoning back exactly as it sent it.
+        const r2 = await post('__sec-rsn-a', turn2(n.body.content));
+        assert.strictEqual(r2.status, 200, r2.raw);
+        assert.strictEqual(JSON.stringify(asst()), JSON.stringify(expected));
+        // Same history sent to platform B (same upstream, same model): no reasoning, no extra_content.
+        await post('__sec-rsn-b', turn2(n.body.content));
+        assert.deepStrictEqual(asst(), stripped);
+        // Forged / damaged / Anthropic-signed thinking never reaches the upstream.
+        const sig = n.body.content[0].signature;
+        const forged = sig.split('.');
+        forged[2] = Buffer.from(JSON.stringify({ ts: 'EVIL' })).toString('base64url');
+        for (const bad of [forged.join('.'), sig.slice(0, -2), 'stoa-oa1.@@@.###.zz', 'EqQBCkYIBhgCKkA']) {
+          await post('__sec-rsn-a', turn2([{ ...n.body.content[0], signature: bad }, n.body.content[1]]));
+          assert.deepStrictEqual(asst(), stripped, bad.slice(0, 20));
+        }
+        await post('__sec-rsn-a', turn2([{ ...n.body.content[0], thinking: 'tampered' }, n.body.content[1]]));
+        assert.deepStrictEqual(asst(), stripped, 'edited thinking text');
+
+        // Streaming: thinking_delta live, signature_delta before the block stops, same round-trip.
+        const s = await post('__sec-rsn-a', { model: 'gem', stream: true, max_tokens: 64, tools, messages: [{ role: 'user', content: 'go' }] });
+        assert.strictEqual(s.status, 200, s.raw);
+        const ev = s.raw.split('\n\n').filter(Boolean).map(c => JSON.parse(c.match(/^data: (.+)$/m)[1]));
+        assert.deepStrictEqual(ev.filter(e => e.delta?.type === 'thinking_delta').map(e => e.delta.thinking), ['need ', 'to read']);
+        const blocks = [];
+        for (const e of ev) {
+          if (e.type === 'content_block_start') blocks[e.index] = { ...e.content_block };
+          else if (e.delta?.type === 'thinking_delta') blocks[e.index].thinking += e.delta.thinking;
+          else if (e.delta?.type === 'signature_delta') blocks[e.index].signature += e.delta.signature;
+          else if (e.delta?.type === 'input_json_delta') blocks[e.index].input = JSON.parse(e.delta.partial_json);
+        }
+        assert.deepStrictEqual(blocks.map(b => b.type), ['thinking', 'tool_use']);
+        await post('__sec-rsn-a', turn2(blocks));
+        assert.strictEqual(JSON.stringify(asst()), JSON.stringify(expected));
+
+        // No reasoning upstream → response exactly as before (no thinking block).
+        const p = await post('__sec-rsn-a', { model: 'gem', max_tokens: 8, messages: [{ role: 'user', content: 'plain' }] });
+        assert.deepStrictEqual(p.body.content, [{ type: 'text', text: 'done' }]);
+      } finally {
+        mock.close();
         if (origPlat) secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
         else secDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
       }

@@ -176,6 +176,22 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 | Recovery mutates JSONL with `.sig-bak` backup | No wire copy; backup = recoverable |
 | Content-path detection uses length < 600 | CLI returns API errors as result text; long agent replies discussing the bug contain the same phrases |
 | Not gated by provider/base_url | Proxies forward Anthropic error bodies verbatim |
+| Stoa reasoning envelope (`signature` starting `stoa-oa1.`) counts as unsigned | Thinking from an `openai_chat` platform is signed by Stoa, not Anthropic (see 0c). Without this the Venice → Claude switch would keep the block (it has a signature) and Anthropic would answer 400. Prefix lives in `STOA_REASONING_PREFIX`; stoa.js carries its own inline copy of the sanitizer, keep both in sync |
+
+### 0c. openai_chat reasoning round-trip (task #20)
+Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-style) return `reasoning_content` (or `reasoning`), `reasoning_details`, `thought_signature`, and per tool call `extra_content` (Gemini `extra_content.google.thought_signature`). In a tool loop they must come back exactly as received.
+
+- Response → Anthropic `thinking` block (text = reasoning_content/reasoning, else text of reasoning_details) whose `signature` is a Stoa envelope `stoa-oa1.<b64url platId>.<b64url JSON payload>.<hmac>`. HMAC = `SIGNING_KEY` over platform id + payload + sha256(thinking text). Payload: `rk` (text key), `rd`, `ts`, `tc` {tool_call id: extra_content}. Streaming: `thinking_delta` live, `signature_delta` when the block closes (before text opens); data that arrives later (late `thought_signature`, tool `extra_content`) is sealed in one extra empty thinking block before the tool_use blocks.
+- Request → `translateAssistant` opens envelopes of the target platform only and restores the fields on the assistant message (`extra_content` onto the matching tool call). Envelope of another platform, forged/damaged/edited block, Anthropic-signed thinking, `redacted_thinking` → dropped.
+- Payload > 192 KB → upstream data not preserved (thinking text still shown, warning logged). Signature > 384 KB, bad base64/JSON → block dropped, never a crash.
+
+| Decision | Rationale |
+|----------|-----------|
+| Envelope inside the thinking `signature`, not a DB side table | CLI stores and replays the block verbatim; no server state, survives resume on any machine |
+| HMAC binds platform id | Reasoning from platform A must never reach platform B (other provider, other account) |
+| Resume onto an `openai_chat` platform still strips ALL thinking (thirdParty) | Only affects a resume (new CLI process); the tool loop inside one process keeps its blocks in memory, which is where reasoning_details are required. Earlier turns' reasoning is optional for the providers documented. Keeps the Claude ↔ proxy switch rules simple |
+| `strip_thinking_response:true` still injected for Venice reasoning models | Per API reference it only removes `<think>` tags written into `content`; reasoning arrives in separate fields. Owner can override via extra_body. Verify on the live smoke test that reasoning_content survives it |
+| reasoning_content is sent back | Venice accepts it on assistant messages; DeepSeek thinking-mode tool loops require it |
 
 ---
 
