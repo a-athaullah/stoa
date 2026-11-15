@@ -1513,7 +1513,7 @@ Stoa はアプリの最左端に**縦型サイドバーナビ**を配置して�
 
 API キーはサーバーに保存され、Settings 編集フォームでのみブラウザに返されます（シングルユーザーアプリのため、アクセスできるのはあなただけです）。
 
-**Venice.ai** — 「Venice.ai」タイプを選択すると、Venice をプリセットベンダーとして使用できます。URL（`https://api.venice.ai/api/v1`）と API フォーマット（OpenAI Chat）は自動で設定され変更できません。`venice.ai/settings/api` で **Inference Only** API キーを取得し、エージェントが残高を使い切らないよう1日の利用上限を設定してください。プラットフォームカードには現在の残高（USD · DIEM）が表示されます。編集フォームの **test key** をクリックしてキーを検証し、表示残高を更新できます。
+**Venice.ai** — 「Venice.ai」タイプを選択すると、Venice をプリセットベンダーとして使用できます。URL（`https://api.venice.ai/api/v1`）と API フォーマット（OpenAI Chat）は自動で設定され変更できません。`venice.ai/settings/api` で **Inference Only** API キーを取得し、エージェントが残高を使い切らないよう1日の利用上限を設定してください。プラットフォームカードには現在の残高（USD · DIEM）が表示されます。プラットフォームカードまたは編集フォームの **test key** をクリックしてキーを検証し、表示残高を更新できます。
 
 **Extra body**（OpenAI Chat プラットフォーム、Venice.ai を含む） — `/chat/completions` リクエストごとにマージされる JSON オブジェクト（Stoa 自身のフィールドより先に適用）。プロバイダー固有のパラメーターを渡すために使用します。制約：JSON オブジェクト（配列不可）、≤ 4 KB、Stoa が制御するフィールド（`model`、`messages`、`tools`、`tool_choice`、`stream`、`stream_options`）は設定不可。Venice.ai のデフォルト値：
 

@@ -1518,7 +1518,7 @@ Untuk platform baru, klik **add & discover** untuk menyimpan dan mendeteksi mode
 
 API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
-**Venice.ai** — pilih tipe "Venice.ai" untuk menggunakan Venice sebagai preset vendor. URL (`https://api.venice.ai/api/v1`) dan format API (OpenAI Chat) diatur otomatis dan tidak bisa diubah. Gunakan API key **Inference Only** dari `venice.ai/settings/api`, dan pasang batas belanja harian pada key tersebut agar agent tidak bisa menguras saldo. Kartu platform menampilkan saldo terkini (USD · DIEM). Klik **test key** di form edit untuk memverifikasi key dan memperbarui saldo yang ditampilkan.
+**Venice.ai** — pilih tipe "Venice.ai" untuk menggunakan Venice sebagai preset vendor. URL (`https://api.venice.ai/api/v1`) dan format API (OpenAI Chat) diatur otomatis dan tidak bisa diubah. Gunakan API key **Inference Only** dari `venice.ai/settings/api`, dan pasang batas belanja harian pada key tersebut agar agent tidak bisa menguras saldo. Kartu platform menampilkan saldo terkini (USD · DIEM). Klik **test key** di kartu platform atau di form edit untuk memverifikasi key dan memperbarui saldo yang ditampilkan.
 
 **Extra body** (platform OpenAI Chat, termasuk Venice.ai) — objek JSON yang di-merge ke setiap request `/chat/completions`, sebelum field milik Stoa. Gunakan untuk mengirim parameter khusus provider. Batasan: harus berupa objek JSON (bukan array), ≤ 4 KB, dan tidak boleh mengandung field yang dikontrol Stoa (`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`). Default Venice.ai:
 

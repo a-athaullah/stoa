@@ -1513,7 +1513,7 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览器（单用户应用，只有您才能访问）。
 
-**Venice.ai** — 选择"Venice.ai"类型以使用 Venice 作为预设供应商。URL（`https://api.venice.ai/api/v1`）和 API 格式（OpenAI Chat）自动设置，无法更改。请在 `venice.ai/settings/api` 使用 **Inference Only** API 密钥，并为该密钥设置每日消费限额，以防 Agent 耗尽余额。平台卡片显示当前余额（USD · DIEM）。在编辑表单中点击 **test key** 可验证密钥并刷新显示余额。
+**Venice.ai** — 选择"Venice.ai"类型以使用 Venice 作为预设供应商。URL（`https://api.venice.ai/api/v1`）和 API 格式（OpenAI Chat）自动设置，无法更改。请在 `venice.ai/settings/api` 使用 **Inference Only** API 密钥，并为该密钥设置每日消费限额，以防 Agent 耗尽余额。平台卡片显示当前余额（USD · DIEM）。在平台卡片或编辑表单中点击 **test key** 可验证密钥并刷新显示余额。
 
 **Extra body**（OpenAI Chat 平台，包括 Venice.ai）— 合并到每个 `/chat/completions` 请求中的 JSON 对象（在 Stoa 自身字段之前）。用于传递供应商特定参数。限制：必须为 JSON 对象（不能是数组），≤ 4 KB，且不能包含 Stoa 控制的字段（`model`、`messages`、`tools`、`tool_choice`、`stream`、`stream_options`）。Venice.ai 默认值：
 

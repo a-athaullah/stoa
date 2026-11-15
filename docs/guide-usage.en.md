@@ -1517,7 +1517,7 @@ On a new platform, click **add & discover** to save and probe available models i
 
 The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
-**Venice.ai** — select the "Venice.ai" type to use Venice as a preset vendor. The URL (`https://api.venice.ai/api/v1`) and API format (OpenAI Chat) are set automatically and cannot be changed. Use an **Inference Only** API key from `venice.ai/settings/api`, and set a daily spend limit on the key so an agent cannot drain the balance. The platform card shows the current balance (USD · DIEM). Click **test key** in the edit form to verify the key and refresh the displayed balance.
+**Venice.ai** — select the "Venice.ai" type to use Venice as a preset vendor. The URL (`https://api.venice.ai/api/v1`) and API format (OpenAI Chat) are set automatically and cannot be changed. Use an **Inference Only** API key from `venice.ai/settings/api`, and set a daily spend limit on the key so an agent cannot drain the balance. The platform card shows the current balance (USD · DIEM). Click **test key** on the platform card or in the edit form to verify the key and refresh the displayed balance.
 
 **Extra body** (OpenAI Chat platforms, including Venice.ai) — a JSON object merged into every `/chat/completions` request, before Stoa's own fields. Use it to pass provider-specific parameters. Constraints: must be a JSON object (not an array), ≤ 4 KB, and cannot contain fields Stoa controls (`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`). Venice.ai default:
 

@@ -1513,7 +1513,7 @@ Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사�
 
 API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 반환됩니다 (싱글유저 앱이므로 접근 권한은 본인만 갖습니다).
 
-**Venice.ai** — "Venice.ai" 타입을 선택하면 Venice를 프리셋 벤더로 사용할 수 있습니다. URL(`https://api.venice.ai/api/v1`)과 API 형식(OpenAI Chat)은 자동으로 설정되며 변경할 수 없습니다. `venice.ai/settings/api`에서 **Inference Only** API 키를 사용하고, 에이전트가 잔액을 소진하지 않도록 키에 일일 지출 한도를 설정하세요. 플랫폼 카드에 현재 잔액(USD · DIEM)이 표시됩니다. 편집 폼의 **test key**를 클릭하여 키를 검증하고 표시 잔액을 갱신할 수 있습니다.
+**Venice.ai** — "Venice.ai" 타입을 선택하면 Venice를 프리셋 벤더로 사용할 수 있습니다. URL(`https://api.venice.ai/api/v1`)과 API 형식(OpenAI Chat)은 자동으로 설정되며 변경할 수 없습니다. `venice.ai/settings/api`에서 **Inference Only** API 키를 사용하고, 에이전트가 잔액을 소진하지 않도록 키에 일일 지출 한도를 설정하세요. 플랫폼 카드에 현재 잔액(USD · DIEM)이 표시됩니다. 플랫폼 카드 또는 편집 폼의 **test key**를 클릭하여 키를 검증하고 표시 잔액을 갱신할 수 있습니다.
 
 **Extra body** (OpenAI Chat 플랫폼, Venice.ai 포함) — 매 `/chat/completions` 요청에 병합되는 JSON 객체(Stoa의 필드보다 먼저 적용). 제공자별 파라미터를 전달하는 데 사용합니다. 제약: JSON 객체여야 하며(배열 불가), ≤ 4 KB, Stoa가 제어하는 필드(`model`, `messages`, `tools`, `tool_choice`, `stream`, `stream_options`)는 설정 불가. Venice.ai 기본값:
 
