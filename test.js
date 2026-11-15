@@ -18504,6 +18504,145 @@ async function run() {
     assert.strictEqual(named('platform-api-format').value, 'anthropic', 'a platform saved before the field existed edits as anthropic');
   });
 
+  await test('platform form — venice preset locks url + format, extra body editor validates JSON objects, balance + model tags render as text', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = { cssText: '', display: '' }; this.attrs = {}; this.listeners = {}; this.textContent = ''; this.selected = false; this._value = ''; this.id = ''; this.className = ''; this.readOnly = false; this.disabled = false; }
+      get value() { return this.tagName === 'SELECT' ? (this.children.find(o => o.selected) || this.children[0])?.value : this._value; }
+      set value(v) { if (this.tagName === 'SELECT') this.children.forEach(o => { o.selected = o.value === v; }); else this._value = v; }
+      set innerHTML(v) { this.children = []; this._html = v; }
+      get innerHTML() { return this._html || ''; }
+      insertAdjacentHTML(_, h) { this._html = (this._html || '') + h; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      after(c) { this.parentNode.appendChild(c); }
+      remove() { const p = this.parentNode; if (p) p.children = p.children.filter(c => c !== this); }
+      focus() { this.focused = true; }
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+      fire(t) { (this.listeners[t] || []).forEach(fn => fn({ preventDefault() {} })); }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      querySelectorAll() { return []; }
+    }
+    const list = new El('div'); list.id = 's-platforms-list';
+    const byId = id => (id === 's-platforms-list' ? list : [list, ...list.all()].find(e => e.id === id) || null);
+    const calls = [];
+    const toasts = [];
+    let platforms = [];
+    let health = { status: 'ok', message: 'API key OK', accessPermitted: true, balances: { usd: 12.5, diem: 3.25 }, balances_checked_at: '2026-11-15T03:00:00.000Z' };
+    const ctx = {
+      document: { createElement: t => new El(t), getElementById: byId },
+      showToast: (m, o) => toasts.push([m, !!o?.error]), svgX: () => '', svgPencil: () => '', fetchPlatformModels() {},
+      fjson: async () => platforms,
+      fetch: async (url, opts) => {
+        calls.push([url, opts.method, opts.body ? JSON.parse(opts.body) : null]);
+        if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => health };
+        return { ok: true, json: async () => ({ id: 'venice-ai' }) };
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/platforms.js'), 'utf8'), ctx);
+    const form = () => byId('s-platform-form');
+    const named = n => form().all().find(e => e.name === n);
+    const btn = re => form().all().find(e => e.tagName === 'BUTTON' && re.test(e.textContent));
+    const flush = () => new Promise(r => setImmediate(r));
+    const save = async () => { calls.length = 0; toasts.length = 0; btn(/^(add|update)$/).fire('click'); await flush(); return calls[0]; };
+    const pick = (n, v) => { named(n).value = v; named(n).fire('change'); };
+    const extraRow = () => named('platform-extra-body').parentNode.parentNode;
+
+    // Venice preset: url + format locked, default extra body, name prefilled; switching back restores the custom values.
+    ctx.sShowPlatformForm();
+    assert.strictEqual(extraRow().style.display, 'none', 'anthropic format: no extra body editor');
+    named('platform-base-url').value = 'https://router.example/v1';
+    pick('platform-type', 'venice');
+    assert.deepStrictEqual([named('platform-base-url').value, named('platform-base-url').readOnly, named('platform-api-format').value, named('platform-api-format').disabled, named('platform-name').value],
+      ['https://api.venice.ai/api/v1', true, 'openai_chat', true, 'Venice.ai']);
+    assert.deepStrictEqual(JSON.parse(named('platform-extra-body').value), { venice_parameters: { include_venice_system_prompt: false, enable_web_search: 'off' } });
+    assert.strictEqual(extraRow().style.display, 'flex');
+    assert.strictEqual(btn(/^test key$/).style.display, 'none', 'no test key before the platform exists');
+    let [url, method, body] = await save();
+    assert.deepStrictEqual([url, method, body.vendor, body.base_url, body.api_format, body.extra_body.venice_parameters.include_venice_system_prompt], ['/api/ai/platforms', 'POST', 'venice', 'https://api.venice.ai/api/v1', 'openai_chat', false]);
+
+    ctx.sShowPlatformForm();
+    named('platform-base-url').value = 'https://router.example/v1';
+    pick('platform-type', 'venice');
+    pick('platform-type', 'custom');
+    assert.deepStrictEqual([named('platform-base-url').value, named('platform-base-url').readOnly, named('platform-api-format').value, named('platform-api-format').disabled, named('platform-name').value, named('platform-extra-body').value],
+      ['https://router.example/v1', false, 'anthropic', false, '', ''], 'leaving the preset restores what was typed and drops the untouched default');
+    assert.strictEqual(btn(/^test key$/).style.display, 'none', 'no test key for other platforms');
+
+    // Extra body: invalid JSON / arrays / scalars stay client-side with an inline error; empty = null; anthropic sends none.
+    named('platform-name').value = 'Router';
+    pick('platform-api-format', 'openai_chat');
+    assert.strictEqual(extraRow().style.display, 'flex', 'openai_chat custom platforms get the editor');
+    for (const [raw, re] of [['{ "a": ', /not valid JSON/], ['[1,2]', /must be a JSON object/], ['"x"', /must be a JSON object/], ['null', /must be a JSON object/]]) {
+      named('platform-extra-body').value = raw;
+      calls.length = 0;
+      btn(/^add$/).fire('click'); await flush();
+      const err = extraRow().all().find(e => e.attrs.role === 'alert');
+      assert.deepStrictEqual([calls.length, err.style.display, re.test(err.textContent), named('platform-extra-body').attrs['aria-invalid'], named('platform-extra-body').focused], [0, 'block', true, 'true', true], `rejected: ${raw}`);
+    }
+    named('platform-extra-body').value = '{ "temperature": 0.2, "venice_parameters": { "x": "<b>" } }';
+    [, , body] = await save();
+    assert.deepStrictEqual(body.extra_body, { temperature: 0.2, venice_parameters: { x: '<b>' } });
+    ctx.sShowPlatformForm();
+    named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://r.example';
+    pick('platform-api-format', 'openai_chat');
+    [, , body] = await save();
+    assert.strictEqual(body.extra_body, null, 'empty editor clears the field');
+    ctx.sShowPlatformForm();
+    named('platform-name').value = 'Router'; named('platform-base-url').value = 'https://r.example';
+    named('platform-extra-body').value = 'not json';
+    [, , body] = await save();
+    assert.strictEqual('extra_body' in body, false, 'anthropic platforms never send extra_body (hidden editor is ignored)');
+
+    // Card: venice balance line from the stored health result (local time), test key refreshes it in place.
+    platforms = [
+      { id: 'v1', name: 'Venice.ai', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: { venice_parameters: { enable_web_search: 'off' } }, balances: { usd: 1.5, diem: 0.1234 }, balances_checked_at: '2026-11-15T02:30:00.000Z' },
+      { id: 'v2', name: 'Venice two', vendor: 'venice', base_url: 'https://api.venice.ai/api/v1', api_format: 'openai_chat', api_keys: [], extra_body: null },
+      { id: 'p1', name: 'Router', vendor: 'generic', base_url: 'https://r.example', api_format: 'openai_chat', api_keys: [], extra_body: null },
+    ];
+    await ctx.sLoadPlatformsTab();
+    const when = new Date('2026-11-15T02:30:00.000Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    assert.strictEqual(byId('s-platform-balance-v1').textContent, `USD 1.50 · DIEM 0.1234 · checked ${when}`);
+    assert.match(byId('s-platform-balance-v2').textContent, /not checked yet/);
+    assert.deepStrictEqual([byId('s-platform-p1').children.length, byId('s-platform-balance-p1')], [3, null], 'other platforms: card unchanged');
+    const cardTest = byId('s-platform-v2').all().find(e => e.tagName === 'BUTTON' && e.textContent === 'test key');
+    calls.length = 0; toasts.length = 0;
+    cardTest.fire('click'); await flush(); await flush();
+    assert.deepStrictEqual(calls.map(c => [c[0], c[1]]), [['/api/ai/platforms/v2/health', 'POST']]);
+    const fmt = iso => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    assert.strictEqual(byId('s-platform-balance-v2').textContent, `USD 12.50 · DIEM 3.25 · checked ${fmt('2026-11-15T03:00:00.000Z')}`, 'checked time comes from the server response');
+    assert.deepStrictEqual(toasts, [['API key OK', false]]);
+    health = { status: 'error', message: 'API key rejected by Venice' };
+    toasts.length = 0;
+    cardTest.fire('click'); await flush(); await flush();
+    assert.deepStrictEqual([toasts, cardTest.disabled], [[['API key rejected by Venice', true]], false], 'a rejected key shows the server text as an error toast');
+    assert.match(byId('s-platform-balance-v2').textContent, /^USD 12\.50/, 'a failed test without balances keeps the last balance');
+    health = { status: 'error', message: 'API key has no inference access (no balance or spend limit reached)', accessPermitted: false, balances: { usd: 0, diem: null }, balances_checked_at: '2026-11-15T04:00:00.000Z' };
+    cardTest.fire('click'); await flush(); await flush();
+    assert.strictEqual(byId('s-platform-balance-v2').textContent, `USD 0.00 · DIEM — · checked ${fmt('2026-11-15T04:00:00.000Z')}`, 'no access: the balance that came back is still shown');
+
+    // Edit form: stored extra body prefilled; test key saves the form first, then tests.
+    ctx.sEditPlatform(platforms[0]);
+    assert.deepStrictEqual([JSON.parse(named('platform-extra-body').value), named('platform-base-url').readOnly], [platforms[0].extra_body, true]);
+    assert.strictEqual(btn(/^test key$/).style.display, '', 'saved venice platform: test key offered');
+    health = { status: 'ok', message: 'API key OK', accessPermitted: true, balances: { usd: 2, diem: 0 }, balances_checked_at: '2026-11-15T05:00:00.000Z' };
+    calls.length = 0;
+    btn(/^test key$/).fire('click'); await flush(); await flush();
+    assert.deepStrictEqual(calls.map(c => [c[0], c[1]]), [['/api/ai/platforms/v1', 'PATCH'], ['/api/ai/platforms/v1/health', 'POST']]);
+    assert.deepStrictEqual(calls[0][2].extra_body, platforms[0].extra_body);
+
+    // Model list: uncensored / reasoning as text tags; plain entries untouched.
+    const wrap = new El('div');
+    ctx.sRenderModelChecklist(wrap, [{ model: 'venice-uncensored', tools: true, vision: false, reasoning: false, uncensored: true, context: 32768, local: false }, { model: 'qwen3-<i>', tools: true, vision: true, reasoning: true, uncensored: false, context: 131072, local: false }, 'plain-model'], null);
+    const rows = wrap.all().filter(e => e.tagName === 'LABEL');
+    const tagsOf = r => r.all().filter(e => e.className === 's-plat-tag').map(e => e.textContent);
+    assert.deepStrictEqual(rows.map(tagsOf), [['uncensored'], ['reasoning'], []]);
+    assert.strictEqual(rows[1].children[1].textContent, 'qwen3-<i>', 'model name stays text');
+  });
+
   await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
     const vm = require('vm');
     const fs = require('fs');

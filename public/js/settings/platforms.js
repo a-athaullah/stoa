@@ -187,6 +187,8 @@ function sShowPlatformForm(existing) {
   fmtSel.addEventListener('change', () => { applyFormatHint(); applyExtraVisibility(); });
   applyFormatHint();
   const formatBody = vendor => (vendor === 'ollama' ? {} : { api_format: fmtSel.value, ...extraBodyField() });
+  // The server owns the Venice URL (it may differ from the locked field, e.g. a test override), so it is never sent.
+  const urlBody = vendor => (vendor === 'venice' ? {} : { base_url: vendor === 'ollama' ? '' : urlF.inp.value.trim() });
 
   const extraRow = document.createElement('div');
   extraRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
@@ -361,20 +363,19 @@ function sShowPlatformForm(existing) {
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
     const vendor = typeSel.value;
-    const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
 
     const pending = keyInp.value.trim();
     if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
-    if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+    if (vendor !== 'ollama' && !urlF.inp.value.trim()) { showToast('Base URL is required', { error: true }); return; }
     if (!checkExtraBody()) { extraInp.focus(); return; }
     try {
       let platformId;
       if (existing) {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
+          body: JSON.stringify({ name, api_keys, vendor, ...urlBody(vendor), ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -384,7 +385,7 @@ function sShowPlatformForm(existing) {
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
+          body: JSON.stringify({ name, api_keys, vendor, ...urlBody(vendor), ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -422,12 +423,11 @@ function sShowPlatformForm(existing) {
     let id = existing?.id;
     const name = nameF.inp.value.trim();
     const vendor = typeSel.value;
-    const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
     const pending = keyInp.value.trim();
     if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
-    if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+    if (vendor !== 'ollama' && !urlF.inp.value.trim()) { showToast('Base URL is required', { error: true }); return; }
     if (!checkExtraBody()) { extraInp.focus(); return; }
     healthBtn.disabled = true;
     if (!id) {
@@ -435,7 +435,7 @@ function sShowPlatformForm(existing) {
       try {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
+          body: JSON.stringify({ name, api_keys, vendor, ...urlBody(vendor), ...formatBody(vendor) }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -455,7 +455,7 @@ function sShowPlatformForm(existing) {
       try {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, ...formatBody(vendor) }),
+          body: JSON.stringify({ name, api_keys, vendor, ...urlBody(vendor), ...formatBody(vendor) }),
         });
         if (!resp.ok) { const err = await resp.json().catch(() => ({})); showToast(err.error || 'Failed to save platform', { error: true }); healthBtn.disabled = false; return; }
       } catch { showToast('Failed to save platform', { error: true }); healthBtn.disabled = false; return; }
@@ -537,7 +537,7 @@ function sShowPlatformForm(existing) {
     try {
       const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, base_url: urlF.inp.value.trim(), api_keys: [...keyStore], vendor, ...formatBody(vendor) }),
+        body: JSON.stringify({ name, api_keys: [...keyStore], vendor, ...urlBody(vendor), ...formatBody(vendor) }),
       });
       if (!resp.ok) { const err = await resp.json().catch(() => ({})); showToast(err.error || 'Failed to save platform', { error: true }); return; }
       await sTestPlatformKey(id);
