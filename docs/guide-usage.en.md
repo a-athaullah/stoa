@@ -1531,6 +1531,22 @@ This disables Venice's own system prompt injection and per-call web search billi
 
 **Venice billing errors** — a 402 response from Venice maps to one of three distinct messages: *USD spend limit reached* (raise the key's daily limit at venice.ai), *DIEM spend limit reached* (same), or *account balance empty* (add credits at venice.ai/settings/api).
 
+**Venice image tools** — When an agent's run is on a Venice model, two additional MCP tools become available automatically: `stoa__image_generate` (text-to-image) and `stoa__image_edit` (edit or combine existing images). The server decides which image model and safe mode to use — the agent cannot choose:
+
+| Chat model type | Image model slot | Content filter |
+|---|---|---|
+| Venice, uncensored flag | `generate_uncensored` / `edit_uncensored` | Off |
+| Venice, standard | `generate` / `edit` | On |
+| Any other platform | Tools not visible | — |
+
+Generated and edited images are posted as attachments in the room thread or feed, visible in the chat immediately. The tool returns the image URL and message id.
+
+For `stoa__image_edit`, source images must already be attached to messages in the room session. Use `stoa__messages_read` or `stoa__thread_read` to list messages — each message now includes a `file_urls` field with the `/uploads/<file>` paths the edit tool accepts. A generated image from `stoa__image_generate` is also an attachment and can be passed directly to `stoa__image_edit`.
+
+**Sub-agents** only receive image tools if their own run resolves to the same Venice platform. A sub-agent whose tier uses a different model (e.g., a Claude fallback) does not get image tools.
+
+**Image model slots** — After clicking **discover models** on a Venice platform, four **Image models** slots appear in the platform form (owner only): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Values are prefilled from discovery defaults. Standard slots (`generate`, `edit`) reject models flagged as uncensored. If a slot is empty or its model no longer appears after the most recent discovery, the tool returns a message asking the owner to set a model in **Settings > Platforms**.
+
 **Supported providers** — any provider that exposes an Anthropic Messages or OpenAI Chat Completions endpoint works:
 - **Ollama Cloud** — select the "Ollama Cloud" type (built-in proxy with key rotation, 40+ models up to 480B)
 - **Venice.ai** — select the "Venice.ai" type (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ open-weight models including uncensored variants)

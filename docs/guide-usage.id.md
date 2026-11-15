@@ -1532,6 +1532,22 @@ Ini menonaktifkan injeksi system prompt Venice dan billing web search per-reques
 
 **Error billing Venice** — respons 402 dari Venice dipetakan ke salah satu dari tiga pesan: *Batas belanja USD tercapai* (naikkan batas harian key di venice.ai), *Batas belanja DIEM tercapai* (sama), atau *Saldo akun kosong* (tambahkan kredit di venice.ai/settings/api).
 
+**Tool gambar Venice** — Saat run agent menggunakan model Venice, dua tool MCP tambahan tersedia otomatis: `stoa__image_generate` (teks ke gambar) dan `stoa__image_edit` (edit atau gabungkan gambar yang sudah ada). Server yang menentukan model gambar dan safe mode — agent tidak bisa memilih:
+
+| Tipe model chat | Slot model gambar | Filter konten |
+|---|---|---|
+| Venice, flag uncensored | `generate_uncensored` / `edit_uncensored` | Nonaktif |
+| Venice, standar | `generate` / `edit` | Aktif |
+| Platform lain | Tool tidak terlihat | — |
+
+Gambar yang dihasilkan atau diedit langsung dikirim sebagai attachment di thread atau feed room. Tool mengembalikan URL gambar dan id pesan.
+
+Untuk `stoa__image_edit`, gambar sumber harus sudah ada sebagai attachment di room sesi ini. Gunakan `stoa__messages_read` atau `stoa__thread_read` untuk melihat daftar pesan — setiap pesan kini menyertakan field `file_urls` berisi path `/uploads/<file>` yang diterima tool edit. Gambar hasil `stoa__image_generate` juga menjadi attachment dan bisa langsung dipakai sebagai input edit.
+
+**Sub-agent** hanya menerima tool gambar jika run-nya sendiri menggunakan platform Venice yang sama. Sub-agent dengan tier model berbeda (misalnya fallback ke Claude) tidak mendapatkan tool gambar.
+
+**Slot model gambar** — Setelah klik **discover models** pada platform Venice, empat slot **Image models** muncul di form platform (owner saja): `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. Nilai diisi otomatis dari default discovery. Slot standar (`generate`, `edit`) menolak model yang ditandai uncensored. Jika slot kosong atau model tidak ditemukan lagi saat discovery terakhir, tool akan meminta owner untuk mengatur model di **Settings > Platforms**.
+
 **Provider yang didukung** — provider mana pun yang mengekspos endpoint Anthropic Messages atau OpenAI Chat Completions bisa digunakan:
 - **Ollama Cloud** — pilih tipe "Ollama Cloud" (proxy bawaan dengan rotasi key, 40+ model hingga 480B)
 - **Venice.ai** — pilih tipe "Venice.ai" (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ model open-weight termasuk varian uncensored)

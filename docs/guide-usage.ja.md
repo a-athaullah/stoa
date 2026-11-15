@@ -1527,6 +1527,22 @@ API キーはサーバーに保存され、Settings 編集フォームでのみ�
 
 **Venice の課金エラー** — Venice からの 402 レスポンスは3種類のいずれかに対応します：*USD 利用上限到達*（venice.ai でキーの1日上限を引き上げ）、*DIEM 利用上限到達*（同様）、または*アカウント残高不足*（venice.ai/settings/api でクレジットを追加）。
 
+**Venice の画像ツール** — エージェントの実行が Venice モデルで行われる場合、2つの追加 MCP ツールが自動的に利用可能になります：`stoa__image_generate`（テキストから画像生成）と `stoa__image_edit`（既存画像の編集または結合）。画像モデルとセーフモードはサーバーが決定します — エージェントは選択できません：
+
+| チャットモデルの種類 | 画像モデルスロット | コンテンツフィルター |
+|---|---|---|
+| Venice、uncensored フラグあり | `generate_uncensored` / `edit_uncensored` | オフ |
+| Venice、標準 | `generate` / `edit` | オン |
+| その他のプラットフォーム | ツール非表示 | — |
+
+生成・編集された画像は、ルームのスレッドまたはフィードに添付ファイルとして即時投稿されます。ツールは画像 URL とメッセージ id を返します。
+
+`stoa__image_edit` を使用する場合、ソース画像はそのルームセッションのメッセージに添付済みである必要があります。`stoa__messages_read` や `stoa__thread_read` でメッセージを取得すると、各メッセージに `file_urls` フィールド（編集ツールが受け付ける `/uploads/<file>` パス）が含まれます。`stoa__image_generate` で生成した画像も添付ファイルになるため、そのまま編集入力として使用できます。
+
+**サブエージェント**が画像ツールを受け取るのは、自身の実行が同じ Venice プラットフォームに解決される場合のみです。別のモデル（例：Claude フォールバック）を使用するサブエージェントは画像ツールを取得しません。
+
+**画像モデルスロット** — Venice プラットフォームで **discover models** をクリックすると、プラットフォームフォーム（オーナーのみ）に4つの **Image models** スロットが表示されます：`generate`、`generate_uncensored`、`edit`、`edit_uncensored`。値は検出のデフォルトから自動入力されます。標準スロット（`generate`、`edit`）は uncensored フラグのあるモデルを拒否します。スロットが空、または最新の検出でモデルが見つからない場合、ツールはオーナーに **Settings > Platforms** でモデルを設定するよう案内します。
+
 **対応プロバイダー** — Anthropic Messages または OpenAI Chat Completions エンドポイントを公開しているプロバイダーであればすべて利用可能：
 - **Ollama Cloud** — 「Ollama Cloud」タイプを選択（組み込みプロキシ、キーローテーション付き、40+ モデル、480B まで）
 - **Venice.ai** — 「Venice.ai」タイプを選択（`https://api.venice.ai/api/v1`、OpenAI Chat、50+ のオープンウェイトモデル（無検閲モデル含む））

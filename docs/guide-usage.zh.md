@@ -1527,6 +1527,22 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 
 **Venice 计费错误** — Venice 返回的 402 响应对应以下三种消息之一：*USD 消费限额已达上限*（在 venice.ai 提高密钥每日限额）、*DIEM 消费限额已达上限*（同上），或*账户余额不足*（在 venice.ai/settings/api 添加积分）。
 
+**Venice 图像工具** — 当 Agent 在 Venice 模型上运行时，两个额外的 MCP 工具会自动启用：`stoa__image_generate`（文本生成图像）和 `stoa__image_edit`（编辑或合并现有图像）。图像模型和安全模式由服务器决定 — Agent 无法选择：
+
+| 聊天模型类型 | 图像模型插槽 | 内容过滤器 |
+|---|---|---|
+| Venice，uncensored 标志 | `generate_uncensored` / `edit_uncensored` | 关闭 |
+| Venice，标准 | `generate` / `edit` | 开启 |
+| 其他平台 | 工具不可见 | — |
+
+生成和编辑的图像会立即以附件形式发布到房间线程或动态中。工具返回图像 URL 和消息 id。
+
+使用 `stoa__image_edit` 时，源图像必须已作为附件存在于该房间会话的消息中。通过 `stoa__messages_read` 或 `stoa__thread_read` 获取消息时，每条消息现在包含 `file_urls` 字段，其中包含编辑工具接受的 `/uploads/<file>` 路径。`stoa__image_generate` 生成的图像也会成为附件，可直接用作编辑输入。
+
+**子 Agent** 仅在其自身运行解析到同一 Venice 平台时才能获得图像工具。使用不同模型（例如 Claude 回退层级）的子 Agent 不会获得图像工具。
+
+**图像模型插槽** — 在 Venice 平台上点击 **discover models** 后，平台表单（仅限所有者）会显示四个 **Image models** 插槽：`generate`、`generate_uncensored`、`edit`、`edit_uncensored`。值从发现默认值自动填充。标准插槽（`generate`、`edit`）拒绝带有 uncensored 标志的模型。如果插槽为空或其模型在最近一次发现中不再出现，工具将提示所有者在 **Settings > Platforms** 中配置模型。
+
 **支持的供应商** — 任何提供 Anthropic Messages 或 OpenAI Chat Completions 端点的供应商均可使用：
 - **Ollama Cloud** — 选择"Ollama Cloud"类型（内置代理，支持密钥轮换，40+ 模型，最高 480B）
 - **Venice.ai** — 选择"Venice.ai"类型（`https://api.venice.ai/api/v1`，OpenAI Chat，50+ 开放权重模型（含无审查变体））

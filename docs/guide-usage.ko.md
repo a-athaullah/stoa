@@ -1527,6 +1527,22 @@ API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 �
 
 **Venice 과금 오류** — Venice로부터 받은 402 응답은 다음 세 가지 메시지 중 하나에 해당합니다: *USD 지출 한도 초과* (venice.ai에서 키의 일일 한도 상향), *DIEM 지출 한도 초과* (동일), 또는 *계정 잔액 부족* (venice.ai/settings/api에서 크레딧 추가).
 
+**Venice 이미지 툴** — 에이전트 실행이 Venice 모델에서 이루어지면 두 가지 추가 MCP 툴이 자동으로 활성화됩니다: `stoa__image_generate` (텍스트-이미지 생성)와 `stoa__image_edit` (기존 이미지 편집 또는 결합). 이미지 모델과 안전 모드는 서버가 결정하며, 에이전트는 선택할 수 없습니다:
+
+| 채팅 모델 유형 | 이미지 모델 슬롯 | 콘텐츠 필터 |
+|---|---|---|
+| Venice, uncensored 플래그 | `generate_uncensored` / `edit_uncensored` | 비활성 |
+| Venice, 표준 | `generate` / `edit` | 활성 |
+| 기타 플랫폼 | 툴 표시 안 됨 | — |
+
+생성 및 편집된 이미지는 즉시 룸 스레드 또는 피드에 첨부 파일로 게시됩니다. 툴은 이미지 URL과 메시지 id를 반환합니다.
+
+`stoa__image_edit`를 사용하려면 소스 이미지가 해당 룸 세션의 메시지에 이미 첨부되어 있어야 합니다. `stoa__messages_read`나 `stoa__thread_read`로 메시지를 조회하면 각 메시지에 편집 툴이 허용하는 `/uploads/<file>` 경로를 담은 `file_urls` 필드가 포함됩니다. `stoa__image_generate`로 생성한 이미지도 첨부 파일이 되므로 바로 편집 입력으로 사용할 수 있습니다.
+
+**서브 에이전트**는 자체 실행이 동일한 Venice 플랫폼으로 해석될 때만 이미지 툴을 받습니다. 다른 모델(예: Claude 폴백 티어)을 사용하는 서브 에이전트는 이미지 툴을 받지 못합니다.
+
+**이미지 모델 슬롯** — Venice 플랫폼에서 **discover models**를 클릭하면 플랫폼 폼(오너 전용)에 네 개의 **Image models** 슬롯이 표시됩니다: `generate`, `generate_uncensored`, `edit`, `edit_uncensored`. 탐색 기본값으로 자동 채워집니다. 표준 슬롯(`generate`, `edit`)은 uncensored 플래그가 있는 모델을 거부합니다. 슬롯이 비어 있거나 최근 탐색에서 모델이 없으면, 툴은 오너에게 **Settings > Platforms**에서 모델을 설정하도록 안내합니다.
+
 **지원 제공자** — Anthropic Messages 또는 OpenAI Chat Completions 엔드포인트를 제공하는 모든 제공자를 사용할 수 있습니다:
 - **Ollama Cloud** — "Ollama Cloud" 타입 선택 (내장 프록시, 키 로테이션, 40+ 모델, 최대 480B)
 - **Venice.ai** — "Venice.ai" 타입 선택 (`https://api.venice.ai/api/v1`, OpenAI Chat, 50+ 오픈 웨이트 모델(비검열 모델 포함))
