@@ -2746,6 +2746,88 @@ function runUnitTests() {
       assert.strictEqual(vim.uploadNameOf(bad), null, String(bad));
     }
   });
+  // Venice video (lib/venice-video.js): discovery, the owner's video_settings, duration/resolution ceilings, download_url trust.
+  const vvid = require('./lib/venice-video');
+  const vvSpec = (type, extra = {}, constraints = {}) => ({ offline: false, traits: [], ...extra,
+    constraints: { model_type: type, aspect_ratios: [], resolutions: ['720p'], durations: ['5s', '10s'], audio: false, ...constraints } });
+  const VV_LIST = { data: [
+    { id: 'grok-imagine-1-5-lite-text-to-video', model_spec: vvSpec('text-to-video', {}, { aspect_ratios: ['16:9', '9:16'], resolutions: ['480p', '720p', '1080p'], durations: ['1s', '5s', '10s'], prompt_character_limit: 4096, audio: true }) },
+    { id: 'longcat-distilled-text-to-video', model_spec: vvSpec('text-to-video', { uncensored: true }, { aspect_ratios: ['16:9', '1:1'] }) },
+    { id: 'kling-t2v', model_spec: vvSpec('text-to-video', {}, { resolutions: [], durations: ['5s', '10s'] }) },
+    { id: 'wan-i2v', model_spec: vvSpec('image-to-video', { uncensored: true }, { reference_image_min_short_side_pixels: 300, reference_image_min_aspect_ratio: 0.4, reference_image_max_aspect_ratio: 2.5 }) },
+    { id: 'plain-i2v', model_spec: vvSpec('image-to-video') },
+    { id: 'v2v', model_spec: vvSpec('video', {}, { durations: ['Auto'] }) },
+    { id: 'gone-t2v', model_spec: vvSpec('text-to-video', { offline: true }) },
+    { id: 'auto-only', model_spec: vvSpec('text-to-video', {}, { durations: ['Auto'] }) },
+    { id: 'x:y', model_spec: vvSpec('text-to-video') },
+    null,
+  ] };
+  ut('venice-video parseVeniceVideoModels — t2v / i2v only, constraints kept, offline / video-to-video / no-seconds / ":" dropped', () => {
+    const list = vvid.parseVeniceVideoModels(VV_LIST);
+    assert.deepStrictEqual(list.map(e => [e.model, e.kind, e.uncensored]), [
+      ['grok-imagine-1-5-lite-text-to-video', 't2v', false], ['longcat-distilled-text-to-video', 't2v', true], ['kling-t2v', 't2v', false],
+      ['wan-i2v', 'i2v', true], ['plain-i2v', 'i2v', false],
+    ]);
+    assert.deepStrictEqual(list[0], { model: 'grok-imagine-1-5-lite-text-to-video', kind: 't2v', uncensored: false, prompt_limit: 4096,
+      constraints: { durations: ['1s', '5s', '10s'], resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16'], audio: true } });
+    assert.deepStrictEqual(list[3].constraints, { durations: ['5s', '10s'], resolutions: ['720p'], aspect_ratios: [], audio: false, min_short_side: 300, min_aspect_ratio: 0.4, max_aspect_ratio: 2.5 });
+    assert.deepStrictEqual(vvid.parseVeniceVideoModels(null), []);
+  });
+  ut('venice-video defaultVideoSettings / mergeVideoSettings — preferred defaults, fallback, standard slots refuse uncensored, kinds, scalar limits', () => {
+    const list = vvid.parseVeniceVideoModels(VV_LIST);
+    const d = vvid.defaultVideoSettings(null, list);
+    assert.deepStrictEqual(d, { model: 'grok-imagine-1-5-lite-text-to-video', model_uncensored: 'longcat-distilled-text-to-video', model_i2v: 'plain-i2v', model_i2v_uncensored: 'wan-i2v',
+      duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 }, 'i2v: preferred names absent → first fit (uncensored slot prefers an uncensored model)');
+    const kept = vvid.defaultVideoSettings({ model: 'kling-t2v', model_i2v: 'wan-i2v', duration: '10s', max_usd_per_job: 2 }, list);
+    assert.deepStrictEqual([kept.model, kept.model_i2v, kept.duration, kept.max_usd_per_job], ['kling-t2v', 'plain-i2v', '10s', 2], 'valid choice kept; an uncensored model in a standard slot replaced');
+    assert.deepStrictEqual(vvid.defaultVideoSettings(null, []).model, null);
+    const bad = (patch) => vvid.mergeVideoSettings(d, patch, list).error;
+    assert.match(bad({ model: 'longcat-distilled-text-to-video' }), /uncensored model; pick it for model_uncensored/);
+    assert.match(bad({ model_i2v_uncensored: 'kling-t2v' }), /not a discovered image-to-video model/);
+    assert.match(bad({ model: 'wan-i2v' }), /not a discovered text-to-video model/);
+    assert.match(bad({ model: 'v2v' }), /not a discovered/);
+    assert.match(bad({ safe_mode: false }), /unknown key\(s\) safe_mode/);
+    assert.match(bad({ duration: '5' }), /duration must look like/);
+    assert.match(bad({ resolution: 'huge' }), /resolution must look like/);
+    for (const v of [0, -1, 51, '1', NaN]) assert.match(bad({ max_usd_per_job: v }), /max_usd_per_job/, String(v));
+    for (const v of [0, 11, 1.5, '2']) assert.match(bad({ max_concurrent_per_room: v }), /max_concurrent_per_room/, String(v));
+    assert.match(vvid.mergeVideoSettings(d, [], list).error, /must be an object or null/);
+    const ok = vvid.mergeVideoSettings(d, { model_uncensored: 'kling-t2v', resolution: '4k', max_usd_per_job: 1.25, max_concurrent_per_room: 1 }, list);
+    assert.deepStrictEqual(ok.value, { ...d, model_uncensored: 'kling-t2v', resolution: '4k', max_usd_per_job: 1.25, max_concurrent_per_room: 1 }, 'uncensored slot takes any t2v model; rest kept');
+    assert.deepStrictEqual(vvid.mergeVideoSettings({ ...d, model: 'x' }, null, list).value, d, 'null resets to the defaults');
+    assert.deepStrictEqual(vvid.normalizeVideoSettings({ max_usd_per_job: 999, duration: 7 }), { model: null, model_uncensored: null, model_i2v: null, model_i2v_uncensored: null, duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 });
+  });
+  ut('venice-video videoSize — owner duration / resolution are default and ceiling; model constraints; aspect only for t2v with options', () => {
+    const list = vvid.parseVeniceVideoModels(VV_LIST);
+    const [grok, longcat, kling, wan] = list;
+    const s = vvid.normalizeVideoSettings({ duration: '5s', resolution: '720p' });
+    assert.deepStrictEqual(vvid.videoSize(grok, s, {}), { fields: { duration: '5s', resolution: '720p', aspect_ratio: '16:9' } });
+    assert.deepStrictEqual(vvid.videoSize(grok, s, { duration: '1s', resolution: '480p', aspect_ratio: '9:16' }), { fields: { duration: '1s', resolution: '480p', aspect_ratio: '9:16' } });
+    assert.match(vvid.videoSize(grok, s, { duration: '10s' }).error, /above the owner's limit of 5s/);
+    assert.match(vvid.videoSize(grok, s, { resolution: '1080p' }).error, /above the owner's limit of 720p/);
+    assert.match(vvid.videoSize(grok, s, { duration: '7s' }).error, /does not support duration "7s"; supported: 1s, 5s, 10s/);
+    assert.match(vvid.videoSize(grok, s, { aspect_ratio: '4:3' }).error, /supported: 16:9, 9:16/);
+    assert.deepStrictEqual(vvid.videoSize(longcat, s, {}).fields.aspect_ratio, '16:9');
+    assert.deepStrictEqual(vvid.videoSize(kling, s, {}), { fields: { duration: '5s' } }, 'no resolution list → none sent');
+    assert.match(vvid.videoSize(kling, s, { resolution: '720p' }).error, /has no resolution option/);
+    assert.match(vvid.videoSize(wan, s, { aspect_ratio: '16:9' }).error, /follows the input image/);
+    const big = vvid.normalizeVideoSettings({ duration: '8s', resolution: '1080p' });
+    assert.deepStrictEqual(vvid.videoSize(grok, big, {}).fields, { duration: '5s', resolution: '1080p', aspect_ratio: '16:9' }, 'owner 8s not offered → longest below it');
+    assert.deepStrictEqual(vvid.videoSize(longcat, vvid.normalizeVideoSettings({ resolution: '480p' }), {}).error, 'longcat-distilled-text-to-video has no resolution within the owner\'s limit of 480p; supported: 720p');
+    assert.match(vvid.videoSize(longcat, vvid.normalizeVideoSettings({ duration: '2s' }), {}).error, /no duration within the owner's limit of 2s \(shortest: 5s\)/);
+  });
+  ut('venice-video trustedDownloadUrl / publicJob — only https *.venice.ai (or the API origin under test); no secrets in the public job', () => {
+    const base = 'https://api.venice.ai/api/v1';
+    assert.strictEqual(vvid.trustedDownloadUrl('https://private-share.venice.ai/v1/share/read/abc', base), true);
+    for (const u of ['http://private-share.venice.ai/x', 'https://venice.ai.evil.com/x', 'https://evil.com/venice.ai', 'https://u:p@x.venice.ai/a', 'file:///etc/passwd', 'not a url', 5]) {
+      assert.strictEqual(vvid.trustedDownloadUrl(u, base), false, String(u));
+    }
+    assert.strictEqual(vvid.trustedDownloadUrl('http://127.0.0.1:4567/dl/1', 'http://127.0.0.1:4567/api/v1'), true);
+    assert.strictEqual(vvid.trustedDownloadUrl('http://127.0.0.1:4568/dl/1', 'http://127.0.0.1:4567/api/v1'), false);
+    const pub = vvid.publicJob({ id: 1, platform_id: 'v', room_id: 2, status: 'queued', model: 'm', mode: 'standard', kind: 't2v', duration: '5s', resolution: '720p', quote_usd: 0.1,
+      error: null, created_at: 'c', finished_at: null, upload_url: null, queue_id: 'QID', download_url: 'https://x.venice.ai/s', key_ref: 'abc', thread_id: 3, actor_id: 4 });
+    assert.deepStrictEqual(Object.keys(pub).sort(), ['created_at', 'duration', 'error', 'finished_at', 'id', 'kind', 'mode', 'model', 'platform_id', 'quote_usd', 'resolution', 'room_id', 'status', 'upload_url']);
+  });
   ut('openai estimateTokens — ~4 chars/token over system, text, tool I/O, tools; image counted', () => {
     assert.strictEqual(oat.estimateTokens({ system: 'x'.repeat(40), messages: [{ role: 'user', content: 'y'.repeat(40) }] }), 20);
     const base = oat.estimateTokens({ messages: [{ role: 'user', content: [{ type: 'text', text: 'abcd' }] }] });
@@ -7296,6 +7378,7 @@ function makeTestPng(w, h) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 const VENICE_MOCK_PNG = makeTestPng(512, 384);
+const VENICE_MOCK_MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), crypto.randomBytes(2048)]);
 
 // Mock Venice on the loopback port run-tests.js hands the server (STOA_TEST_VENICE_PORT): venice
 // platforms are pinned to it there. seen gets { method, path, auth, body } per request.
@@ -7304,12 +7387,64 @@ async function startVeniceMock(seen) {
   assert.ok(port > 0, 'STOA_TEST_VENICE_PORT not set — run through .claude/tools/run-tests.js');
   const reply = (rs, status, obj) => { rs.writeHead(status, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify(obj)); };
   const spec = (caps, extra = {}) => ({ availableContextTokens: 131072, capabilities: { supportsFunctionCalling: true, ...caps }, ...extra });
+  // Video jobs by queue_id: { model, prompt, polls, private, deleted }. Prompts pick the behaviour:
+  // refuse-me 422 / broke 402 / huge 413 at queue; slow = PROCESSING forever; busy = one 503 first;
+  // expired = 404; not-video = a non-mp4 body. mock-private-t2v answers with a download_url.
+  const videoJobs = new Map();
+  let videoSeq = 0;
+  const vspec = (type, extra = {}, constraints = {}) => ({ offline: false, traits: [], ...extra,
+    constraints: { model_type: type, aspect_ratios: [], resolutions: ['720p'], durations: ['5s', '10s'], audio: false, ...constraints } });
+  const sendMp4 = (rs, buf = VENICE_MOCK_MP4) => { rs.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(buf.length) }); rs.end(buf); };
   const mock = http.createServer((rq, rs) => {
     let raw = '';
     rq.on('data', c => { raw += c; });
     rq.on('end', () => {
       const body = raw ? JSON.parse(raw) : null;
       seen.push({ method: rq.method, path: rq.url, auth: rq.headers.authorization || null, body });
+      if (rq.method === 'GET' && rq.url === '/api/v1/models?type=video') {
+        return reply(rs, 200, { object: 'list', type: 'video', data: [
+          { id: 'mock-t2v', type: 'video', model_spec: vspec('text-to-video', {}, { aspect_ratios: ['16:9', '9:16'], resolutions: ['480p', '720p', '1080p'], prompt_character_limit: 60 }) },
+          { id: 'longcat-distilled-text-to-video', type: 'video', model_spec: vspec('text-to-video', { uncensored: true }, { aspect_ratios: ['16:9', '1:1'] }) },
+          { id: 'mock-private-t2v', type: 'video', model_spec: vspec('text-to-video', {}, { resolutions: [] }) },
+          { id: 'mock-pricey-t2v', type: 'video', model_spec: vspec('text-to-video') },
+          { id: 'mock-i2v', type: 'video', model_spec: vspec('image-to-video', {}, { reference_image_min_short_side_pixels: 300 }) },
+          { id: 'longcat-distilled-image-to-video', type: 'video', model_spec: vspec('image-to-video', { uncensored: true }) },
+          { id: 'mock-v2v', type: 'video', model_spec: vspec('video', {}, { durations: ['Auto'] }) },
+        ] });
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/video/quote') {
+        const secs = parseInt(body?.duration, 10) || 5;
+        return reply(rs, 200, { quote: body?.model === 'mock-pricey-t2v' ? 3 : Math.round(0.09 * secs / 5 * 100) / 100 });
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/video/queue') {
+        const p = body?.prompt;
+        if (p === 'refuse-me') return reply(rs, 422, { error: 'Your prompt violates the content policy of the model provider', suggested_prompt: 'a calm harbour at dusk' });
+        if (p === 'broke') return reply(rs, 402, { error: 'Insufficient USD or Diem balance to complete request. Visit https://venice.ai/settings/api to add credits.' });
+        if (p === 'huge') return reply(rs, 413, { error: 'Payload too large' });
+        const qid = `vq-${++videoSeq}-${crypto.randomBytes(4).toString('hex')}`;
+        const priv = body.model === 'mock-private-t2v';
+        videoJobs.set(qid, { model: body.model, prompt: p, polls: 0, private: priv, deleted: false });
+        return reply(rs, 200, { model: body.model, queue_id: qid, ...(priv ? { download_url: `http://127.0.0.1:${port}/dl/${qid}` } : {}) });
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/video/retrieve') {
+        const j = videoJobs.get(body?.queue_id);
+        if (!j || j.model !== body.model) return reply(rs, 400, { error: 'Unknown queue id' });
+        j.polls++;
+        if (j.prompt === 'expired') return reply(rs, 404, { error: 'Media not found' });
+        if (j.prompt === 'busy' && j.polls === 1) return reply(rs, 503, { error: 'Model at capacity' });
+        if (j.prompt === 'slow' || (j.prompt === 'hold' && !j.release) || j.polls < (j.prompt === 'busy' ? 3 : 2)) return reply(rs, 200, { status: 'PROCESSING', average_execution_time: 145000, execution_duration: 1000 * j.polls });
+        if (j.private) return reply(rs, 200, { status: 'COMPLETED' });
+        if (j.prompt === 'not-video') { rs.writeHead(200, { 'Content-Type': 'video/mp4' }); return rs.end('<html>nope</html>'); }
+        return sendMp4(rs);
+      }
+      if (rq.method === 'POST' && rq.url === '/api/v1/video/complete') return reply(rs, 200, { success: true });
+      const dl = /^\/dl\/([\w-]+)$/.exec(rq.url);
+      if (dl) {
+        const j = videoJobs.get(dl[1]);
+        if (!j || j.deleted) return reply(rs, 410, { error: 'gone' });
+        if (rq.method === 'DELETE') { j.deleted = true; rs.writeHead(204); return rs.end(); }
+        if (rq.method === 'GET') return sendMp4(rs);
+      }
       if (rq.method === 'GET' && rq.url === '/api/v1/models?type=text') {
         return reply(rs, 200, { object: 'list', type: 'text', data: [
           { id: 'venice-plain', model_spec: spec({ supportsVision: true }) },
@@ -7366,6 +7501,7 @@ async function startVeniceMock(seen) {
     });
   });
   await new Promise((resolve, reject) => { mock.once('error', reject); mock.listen(port, '127.0.0.1', resolve); });
+  mock.videoJobs = videoJobs;
   return mock;
 }
 
@@ -15722,7 +15858,7 @@ async function run() {
         { model: 'venice-unc-reason', tools: true, vision: false, reasoning: true, uncensored: true, context: 131072, local: false },
       ]);
       assert.deepStrictEqual(stored(v.body.id).cached_models, done.usable);
-      assert.deepStrictEqual(seen.map(x => [x.method, x.path]).sort(), [['GET', '/api/v1/models/traits?type=image'], ['GET', '/api/v1/models?type=image'], ['GET', '/api/v1/models?type=inpaint'], ['GET', '/api/v1/models?type=text']],
+      assert.deepStrictEqual(seen.map(x => [x.method, x.path]).sort(), [['GET', '/api/v1/models/traits?type=image'], ['GET', '/api/v1/models?type=image'], ['GET', '/api/v1/models?type=inpaint'], ['GET', '/api/v1/models?type=text'], ['GET', '/api/v1/models?type=video']],
         'only the public model lists, no per-model chat probe (each would be billed)');
       assert.deepStrictEqual(done.image_models, { generate: 'mock-zturbo', generate_uncensored: 'mock-lusty', edit: 'firered-image-edit', edit_uncensored: 'qwen-edit-uncensored' }, 'defaults from /models/traits and the documented edit models');
       assert.deepStrictEqual(stored(v.body.id).cached_image_models.map(e => [e.model, e.kind, e.uncensored]), [
@@ -28466,6 +28602,366 @@ async function run() {
 
       await test('MCP venice images — teardown', async () => {
         setRoomModel(roomA, null, null);
+        if (vMock) vMock.close();
+        if (vPlat) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(vPlat)}`);
+      });
+    }
+
+    // ── Venice video tool (lib/venice-video.js): real triggers decide the run model, real /mcp calls, the
+    // server's own poller against mock Venice (STOA_VIDEO_POLL_MS from run-tests.js), real wakes.
+    {
+      const fs = require('fs');
+      const vSeen = [];
+      let vMock = null, vPlat = null, vTok = null, vThread = null;
+      const vUploads = process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads');
+      const setRoomModel = (roomId, model, platformId, tiers = null) => mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?')
+        .run(model, platformId ? JSON.stringify({ platform_id: platformId }) : null, tiers ? JSON.stringify(tiers) : null, roomId);
+      const hasVideoTool = async (token) => (await listAll(token)).some(t => t.name === 'stoa__video_generate');
+      const callVid = async (token, args) => {
+        const r = await callText(token, 'stoa__video_generate', args);
+        let body = null;
+        try { body = JSON.parse(r.text); } catch { /* denied calls answer in plain text */ }
+        return { ...r, body };
+      };
+      const venCalls = (p) => vSeen.filter(x => x.path === `/api/v1/video/${p}`);
+      const job = (id) => mDb.prepare('SELECT * FROM video_jobs WHERE id=?').get(id);
+      const patchVideo = (video_settings) => req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { video_settings });
+      // Armed before the call (the poller may finish within a few hundred ms): the wake of the next video job
+      // that ends in roomA, finished the way the client would. → the wake trigger.
+      const armWake = (ws = agA.ws, pred = (m) => !m.sub_agent) => {
+        const p = waitForWsMessage(ws, m => m.type === 'agent_trigger' && m.room_id === roomA && typeof m.prompt === 'string'
+          && m.prompt.includes('[video result] Video job #') && pred(m), 20000);
+        p.catch(() => {}); // a test that fails before awaiting it must not leave an unhandled rejection
+        return async (id) => {
+          const m = await p;
+          assert.match(m.prompt, new RegExp(`Video job #${id} `), 'the wake is for this job');
+          await completeRun(ws, roomA, m);
+          return m;
+        };
+      };
+      const attach = async (ag, roomId, buf, ext) => {
+        const file = `vvid-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+        fs.writeFileSync(path.join(vUploads, file), buf);
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomId}/message`, { content: 'input', attachments: [{ url: `/uploads/${file}`, name: file, type: 'image' }] },
+          { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }));
+        assert.strictEqual(r.status, 200, r.raw);
+        return `/uploads/${file}`;
+      };
+      const uploadBytes = (url) => fs.readFileSync(path.join(vUploads, url.slice('/uploads/'.length)));
+
+      await test('MCP venice video — owner setup: discover fills video_settings; slots + limits validated; job list owner-only', async () => {
+        vMock = await startVeniceMock(vSeen);
+        const p = await req('POST', '/api/ai/platforms', { name: '__test-ven-vid__', vendor: 'venice', api_keys: ['v-good'] });
+        assert.strictEqual(p.status, 200);
+        vPlat = p.body.id;
+        const id = encodeURIComponent(vPlat);
+        const d = await streamReq('POST', `/api/ai/platforms/${id}/discover-models`, 15000);
+        const done = d.events.find(e => e.type === 'done');
+        assert.deepStrictEqual(done.video_settings, { model: 'mock-t2v', model_uncensored: 'longcat-distilled-text-to-video', model_i2v: 'mock-i2v',
+          model_i2v_uncensored: 'longcat-distilled-image-to-video', duration: '5s', resolution: '720p', max_usd_per_job: 0.5, max_concurrent_per_room: 2 });
+        assert.deepStrictEqual(done.cached_video_models.map(m => m.model).sort(),
+          ['longcat-distilled-image-to-video', 'longcat-distilled-text-to-video', 'mock-i2v', 'mock-pricey-t2v', 'mock-private-t2v', 'mock-t2v'], 'video-to-video dropped');
+        const bad = await patchVideo({ model: 'longcat-distilled-text-to-video' });
+        assert.deepStrictEqual([bad.status, /uncensored model/.test(bad.body.error)], [400, true], 'standard slot refuses an uncensored model');
+        assert.strictEqual((await patchVideo({ model_i2v: 'mock-t2v' })).status, 400, 'text-to-video model in an i2v slot');
+        assert.strictEqual((await patchVideo({ max_usd_per_job: 1000 })).status, 400);
+        assert.strictEqual((await patchVideo({ safe_mode: false })).status, 400);
+        assert.strictEqual((await req('PATCH', `/api/ai/platforms/${id}`, { vendor: 'generic', video_settings: {} })).status, 400, 'Venice only');
+        const agentHdr = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+        assert.strictEqual((await asAnon(() => req('PATCH', `/api/ai/platforms/${id}`, { video_settings: { max_usd_per_job: 50 } }, agentHdr))).status, 403, 'owner-only');
+        assert.strictEqual((await asAnon(() => req('GET', `/api/ai/platforms/${id}/video-jobs`, null, agentHdr))).status, 403, 'job list owner-only');
+        const g = (await req('GET', '/api/ai/platforms')).body.find(x => x.id === vPlat);
+        assert.deepStrictEqual([g.video_settings.model, g.video_settings.max_usd_per_job, g.cached_video_models.length], ['mock-t2v', 0.5, 6]);
+        assert.deepStrictEqual((await req('GET', `/api/ai/platforms/${id}/video-jobs`)).body, []);
+        for (const q of ['0', '101', 'abc', '1.5']) assert.strictEqual((await req('GET', `/api/ai/platforms/${id}/video-jobs?limit=${q}`)).status, 400, q);
+        assert.strictEqual((await req('GET', '/api/ai/platforms/__nope__/video-jobs')).status, 404);
+      });
+
+      await test('MCP venice video — standard run: quote, queue the standard model, poll, mp4 posted in the thread, agent woken, media cleaned', async () => {
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        const t = await triggerToken(agA, roomA, 'venice video run');
+        vTok = t.token; vThread = t.threadId;
+        assert.strictEqual(await hasVideoTool(vTok), true);
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        const events = [];
+        humanWs.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'video_job_update') events.push(m); });
+        humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
+        await new Promise(res => setTimeout(res, 100));
+        try {
+          vSeen.length = 0;
+          const woken = armWake();
+          const r = await callVid(vTok, { prompt: 'a fox runs through snow' });
+          assert.strictEqual(r.isError, false, r.text);
+          assert.deepStrictEqual({ ...r.body, job_id: 0, note: '' }, { job_id: 0, status: 'queued', model: 'mock-t2v', model_mode: 'standard', kind: 't2v',
+            duration: '5s', resolution: '720p', aspect_ratio: '16:9', quote_usd: 0.09, note: '' });
+          assert.ok(!/vq-|\/dl\//.test(r.text), 'queue id / download URL never reach the agent');
+          assert.deepStrictEqual(venCalls('quote').map(x => [x.auth, x.body]), [['Bearer v-good', { model: 'mock-t2v', duration: '5s', resolution: '720p', aspect_ratio: '16:9' }]]);
+          assert.deepStrictEqual(venCalls('queue').map(x => x.body), [{ model: 'mock-t2v', prompt: 'a fox runs through snow', duration: '5s', resolution: '720p', aspect_ratio: '16:9' }]);
+          const id = r.body.job_id;
+          const w = await woken(id);
+          const row = job(id);
+          assert.deepStrictEqual([row.status, row.mode, row.kind, row.thread_id, row.download_url, row.wake_pending, row.poll_failures], ['completed', 'standard', 't2v', vThread, null, 0, 0]);
+          assert.ok(w.prompt.includes(row.upload_url), 'the wake names the video URL');
+          assert.ok(uploadBytes(row.upload_url).equals(VENICE_MOCK_MP4), 'the mp4 Venice sent is the upload');
+          const msg = mDb.prepare('SELECT m.room_id, m.thread_id, m.file_url, m.file_name, m.sub_agent_id, rp.actor_id FROM messages m JOIN room_participants rp ON rp.id=m.participant_id WHERE m.id=?').get(row.message_id);
+          assert.deepStrictEqual(msg, { room_id: roomA, thread_id: vThread, file_url: row.upload_url, file_name: `venice-video-${id}.mp4`, sub_agent_id: null, actor_id: agA.actorId });
+          assert.ok(venCalls('retrieve').length >= 2 && venCalls('retrieve').every(x => x.auth === 'Bearer v-good'));
+          for (let i = 0; i < 50 && !venCalls('complete').length; i++) await new Promise(res => setTimeout(res, 50));
+          assert.deepStrictEqual(venCalls('complete').at(-1).body, { model: 'mock-t2v', queue_id: venCalls('retrieve')[0].body.queue_id });
+          const list = (await req('GET', `/api/ai/platforms/${encodeURIComponent(vPlat)}/video-jobs`)).body;
+          assert.deepStrictEqual([list.length, list[0].id, list[0].status, list[0].upload_url, list[0].quote_usd], [1, id, 'completed', row.upload_url, 0.09]);
+          assert.ok(!('queue_id' in list[0]) && !('download_url' in list[0]) && !('key_ref' in list[0]));
+          const statuses = events.filter(e => e.job.id === id).map(e => e.job.status);
+          assert.deepStrictEqual([statuses[0], statuses.includes('processing'), statuses.at(-1)], ['queued', true, 'completed']);
+          assert.ok(events.every(e => e.platform_id === vPlat && !JSON.stringify(e).includes('vq-')), 'WS events carry the public job only');
+        } finally { humanWs.close(); }
+      });
+
+      await test('MCP venice video — agent cannot pick model or exceed the owner ceiling; prompt limit; nothing reaches Venice', async () => {
+        vSeen.length = 0;
+        for (const extra of [{ model: 'longcat-distilled-text-to-video' }, { audio: true }, { negative_prompt: 'x' }, { image_url: 'https://evil.example/a.png' }]) {
+          const r = await callVid(vTok, { prompt: 'a fox', ...extra });
+          assert.strictEqual(r.isError, true, JSON.stringify(extra));
+          assert.match(r.text, new RegExp(`unsupported argument\\(s\\): ${Object.keys(extra)[0]}`));
+        }
+        assert.match((await callVid(vTok, { prompt: 'a fox', duration: '10s' })).text, /above the owner's limit of 5s/);
+        assert.match((await callVid(vTok, { prompt: 'a fox', resolution: '1080p' })).text, /above the owner's limit of 720p/);
+        assert.match((await callVid(vTok, { prompt: 'a fox', aspect_ratio: '1:1' })).text, /supported: 16:9, 9:16/);
+        assert.match((await callVid(vTok, { prompt: 'x'.repeat(61) })).text, /61 characters; mock-t2v accepts at most 60/);
+        assert.strictEqual(vSeen.length, 0, 'nothing reached Venice');
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM video_jobs WHERE platform_id=?').get(vPlat).n, 1, 'no job row for a refused call');
+        // A setting written by an older server is re-checked at call time: an uncensored model in the standard slot.
+        const raw = JSON.parse(mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get().value);
+        raw.find(x => x.id === vPlat).video_settings.model = 'longcat-distilled-text-to-video';
+        mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(JSON.stringify(raw));
+        await new Promise(res => setTimeout(res, 1100)); // getParsedSetting cache TTL
+        assert.match((await callVid(vTok, { prompt: 'a fox' })).text, /text-to-video model setting is invalid.*uncensored/);
+        assert.strictEqual(vSeen.length, 0);
+        assert.strictEqual((await patchVideo({ model: 'mock-t2v' })).status, 200);
+      });
+
+      await test('MCP venice video — price guard: quote above max_usd_per_job refused before queue; within a raised limit allowed', async () => {
+        assert.strictEqual((await patchVideo({ model: 'mock-pricey-t2v' })).status, 200);
+        vSeen.length = 0;
+        const r = await callVid(vTok, { prompt: 'an expensive scene' });
+        assert.strictEqual(r.isError, true);
+        assert.match(r.body.error, /would cost \$3\.00, above the owner's limit of \$0\.50 per job/);
+        assert.deepStrictEqual([venCalls('quote').length, venCalls('queue').length, r.body.quote_usd], [1, 0, 3]);
+        assert.deepStrictEqual([job(r.body.job_id).status, job(r.body.job_id).quote_usd, job(r.body.job_id).wake_pending], ['failed', 3, 0], 'kept for the owner, no wake (the agent already has the answer)');
+        assert.strictEqual((await patchVideo({ max_usd_per_job: 5 })).status, 200);
+        const woken = armWake();
+        const ok = await callVid(vTok, { prompt: 'an expensive scene' });
+        assert.deepStrictEqual([ok.isError, ok.body.quote_usd], [false, 3], ok.text);
+        await woken(ok.body.job_id);
+        assert.strictEqual(job(ok.body.job_id).status, 'completed');
+        assert.strictEqual((await patchVideo({ model: 'mock-t2v', max_usd_per_job: 0.5 })).status, 200);
+      });
+
+      await test('MCP venice video — Venice errors: 422 / 402 / 413 at queue reach the agent; 404 while polling fails the job and wakes the agent', async () => {
+        const refused = await callVid(vTok, { prompt: 'refuse-me' });
+        assert.deepStrictEqual([refused.isError, refused.body.status, refused.body.suggested_prompt], [true, 422, 'a calm harbour at dusk']);
+        assert.match(refused.body.error, /refused the video request \(422\): Your prompt violates/);
+        assert.match((await callVid(vTok, { prompt: 'broke' })).body.error, /account balance is insufficient/);
+        const huge = await callVid(vTok, { prompt: 'huge' });
+        assert.deepStrictEqual([huge.body.status, /413/.test(huge.body.error)], [413, true]);
+        assert.ok(!JSON.stringify([refused, huge]).includes('v-good'), 'key never echoed');
+        const woken = armWake();
+        const exp = await callVid(vTok, { prompt: 'expired' });
+        assert.strictEqual(exp.isError, false, exp.text);
+        const w = await woken(exp.body.job_id);
+        assert.match(w.prompt, /failed: the video expired or was deleted at Venice \(404\)/);
+        assert.deepStrictEqual([job(exp.body.job_id).status, job(exp.body.job_id).upload_url], ['failed', null]);
+      });
+
+      await test('MCP venice video — 503 while polling backs off and recovers; a non-mp4 body fails the job', async () => {
+        let woken = armWake();
+        const busy = await callVid(vTok, { prompt: 'busy' });
+        await woken(busy.body.job_id);
+        assert.strictEqual(job(busy.body.job_id).status, 'completed');
+        assert.strictEqual(vMock.videoJobs.get([...vMock.videoJobs.keys()].at(-1)).polls, 3, '503, PROCESSING, mp4');
+        woken = armWake();
+        const junk = await callVid(vTok, { prompt: 'not-video' });
+        const w = await woken(junk.body.job_id);
+        assert.match(w.prompt, /not an mp4 video/);
+        assert.strictEqual(job(junk.body.job_id).upload_url, null);
+      });
+
+      await test('MCP venice video — download_url path: COMPLETED JSON → GET without the key, then DELETE + /video/complete', async () => {
+        assert.strictEqual((await patchVideo({ model: 'mock-private-t2v' })).status, 200);
+        vSeen.length = 0;
+        const woken = armWake();
+        const r = await callVid(vTok, { prompt: 'a private scene' });
+        assert.deepStrictEqual([r.isError, r.body.resolution], [false, undefined], 'model without resolutions: none sent');
+        assert.ok(!r.text.includes('/dl/'));
+        const qid = [...vMock.videoJobs.keys()].at(-1);
+        assert.strictEqual(job(r.body.job_id).download_url, `http://127.0.0.1:${process.env.STOA_TEST_VENICE_PORT}/dl/${qid}`, 'kept server-side until the job ends');
+        await woken(r.body.job_id);
+        const row = job(r.body.job_id);
+        assert.deepStrictEqual([row.status, row.download_url], ['completed', null]);
+        assert.ok(uploadBytes(row.upload_url).equals(VENICE_MOCK_MP4));
+        for (let i = 0; i < 50 && !venCalls('complete').length; i++) await new Promise(res => setTimeout(res, 50));
+        const dl = vSeen.filter(x => x.path === `/dl/${qid}`);
+        assert.deepStrictEqual(dl.map(x => [x.method, x.auth]), [['GET', null], ['DELETE', null]], 'pre-signed URL: no Authorization, revoked after saving');
+        assert.strictEqual(vMock.videoJobs.get(qid).deleted, true);
+        assert.deepStrictEqual(venCalls('complete').map(x => x.body), [{ model: 'mock-private-t2v', queue_id: qid }]);
+        assert.strictEqual((await patchVideo({ model: 'mock-t2v' })).status, 200);
+      });
+
+      await test('MCP venice video — concurrency: at most max_concurrent_per_room active jobs per room', async () => {
+        const a = await callVid(vTok, { prompt: 'slow' });
+        const b = await callVid(vTok, { prompt: 'slow' });
+        assert.deepStrictEqual([a.isError, b.isError], [false, false]);
+        const n = venCalls('quote').length;
+        const c = await callVid(vTok, { prompt: 'slow' });
+        assert.strictEqual(c.isError, true);
+        assert.match(c.body.error, /already has 2 video job\(s\) running/);
+        assert.strictEqual(venCalls('quote').length, n, 'refused before any Venice call');
+        const parallel = await Promise.all([callVid(vTok, { prompt: 'slow' }), callVid(vTok, { prompt: 'slow' })]);
+        assert.ok(parallel.every(x => x.isError), 'parallel calls cannot slip past the limit');
+        mDb.prepare("UPDATE video_jobs SET status='failed', error='test cleanup', finished_at=datetime('now') WHERE id IN (?,?)").run(a.body.job_id, b.body.job_id);
+      });
+
+      await test('MCP venice video — uncensored Venice run gets the uncensored model; image-to-video takes only room attachments', async () => {
+        setRoomModel(roomA, 'venice-unc-reason', vPlat);
+        await triggerToken(agA, roomA, 'venice uncensored video', vThread);
+        vSeen.length = 0;
+        let woken = armWake();
+        const r = await callVid(vTok, { prompt: 'a storm', aspect_ratio: '1:1' });
+        assert.deepStrictEqual([r.isError, r.body.model, r.body.model_mode, r.body.aspect_ratio], [false, 'longcat-distilled-text-to-video', 'uncensored', '1:1'], r.text);
+        await woken(r.body.job_id);
+        const img = await attach(agA, roomA, VENICE_MOCK_PNG, 'png');
+        woken = armWake();
+        const i2v = await callVid(vTok, { prompt: 'the waves move', image: img });
+        assert.deepStrictEqual([i2v.isError, i2v.body.model, i2v.body.kind, i2v.body.aspect_ratio], [false, 'longcat-distilled-image-to-video', 'i2v', undefined], i2v.text);
+        assert.strictEqual(venCalls('queue').at(-1).body.image_url, `data:image/png;base64,${VENICE_MOCK_PNG.toString('base64')}`);
+        await woken(i2v.body.job_id);
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        await triggerToken(agA, roomA, 'venice plain video', vThread);
+        const n = venCalls('queue').length;
+        const otherRoom = await attach(agB, roomB, VENICE_MOCK_PNG, 'png');
+        const small = await attach(agA, roomA, makeTestPng(320, 200), 'png');
+        const cases = [
+          [{ image: '/uploads/../db/stoa.db' }, /use the \/uploads\/<file> URL/],
+          [{ image: otherRoom }, /not an attachment of a message in this room/],
+          [{ image: small }, /mock-i2v needs a short side of at least 300 px/],
+          [{ image: img, aspect_ratio: '16:9' }, /follows the input image/],
+        ];
+        for (const [extra, re] of cases) assert.match((await callVid(vTok, { prompt: 'move', ...extra })).text, re, JSON.stringify(extra));
+        assert.strictEqual(venCalls('queue').length, n, 'nothing reached Venice');
+      });
+
+      await test('MCP venice video — restart: a job left queued by an earlier server process is resumed from the table and delivered', async () => {
+        const qid = `vq-restart-${crypto.randomBytes(4).toString('hex')}`;
+        vMock.videoJobs.set(qid, { model: 'mock-t2v', prompt: 'left over', polls: 1, private: false, deleted: false });
+        const keyRef = crypto.createHash('sha256').update('v-good').digest('hex').slice(0, 16);
+        const woken = armWake();
+        const id = Number(mDb.prepare(`INSERT INTO video_jobs (platform_id, room_id, thread_id, actor_id, kind, mode, model, duration, resolution, quote_usd, queue_id, key_ref, status, next_poll_at, deadline_at)
+          VALUES (?,?,?,?,'t2v','standard','mock-t2v','5s','720p',0.09,?,?,'processing',0,?)`).run(vPlat, roomA, vThread, agA.actorId, qid, keyRef, Date.now() + 600000).lastInsertRowid);
+        await woken(id);
+        assert.deepStrictEqual([job(id).status, uploadBytes(job(id).upload_url).equals(VENICE_MOCK_MP4)], ['completed', true]);
+        // A row the old process reserved but never queued (no queue_id) ends as failed once stale, with no wake.
+        const orphan = Number(mDb.prepare(`INSERT INTO video_jobs (platform_id, room_id, actor_id, kind, mode, model, created_at) VALUES (?,?,?,'t2v','standard','mock-t2v',datetime('now','-11 minutes'))`)
+          .run(vPlat, roomA, agA.actorId).lastInsertRowid);
+        for (let i = 0; i < 60 && job(orphan).status === 'queued'; i++) await new Promise(res => setTimeout(res, 50));
+        assert.deepStrictEqual([job(orphan).status, job(orphan).wake_pending, /before the job reached Venice/.test(job(orphan).error)], ['failed', 0, true]);
+      });
+
+      await test('venice-video poller (isolated DB) — a second instance resumes a job; deadline → timeout; wake waits for the agent, dropped when nobody is left', async () => {
+        const Database = require('better-sqlite3');
+        const db = new Database(':memory:');
+        db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+        const { createVeniceVideo } = require('./lib/venice-video');
+        const tmpUploads = fs.mkdtempSync(path.join(require('os').tmpdir(), 'stoa-vv-'));
+        const plat = { id: 'pv', vendor: 'venice', enabled: true, api_keys: ['k1'] };
+        const calls = [];
+        let clock = 1_000_000;
+        let ready = false;
+        const posted = [], woken = [], states = { 1: 'wait', 2: 'drop' };
+        const mp4 = VENICE_MOCK_MP4;
+        const fetchImpl = async (url, opts) => {
+          const body = opts.body ? JSON.parse(opts.body) : null;
+          calls.push([url.replace('http://v.test/api/v1', ''), body?.queue_id ?? null]);
+          if (url.endsWith('/video/retrieve')) {
+            if (body.queue_id === 'q-done' && ready) return new Response(mp4, { status: 200, headers: { 'Content-Type': 'video/mp4' } });
+            return new Response(JSON.stringify({ status: 'PROCESSING' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+        const mk = () => createVeniceVideo({
+          db, platforms: () => [plat], platformKeys: (p) => p.api_keys, runContext: () => null, uploadsDir: tmpUploads, baseUrl: 'http://v.test/api/v1',
+          fetchImpl, now: () => clock, pollMs: 1000, jobTimeoutMs: 60_000, log: { log() {}, warn() {}, error() {} },
+          postVideo: (job, att) => { posted.push([job.id, att.url]); return { status: 200, body: { message_id: 900 + job.id } }; },
+          canWake: (job) => states[job.id] ?? 'ready', wake: (job) => woken.push([job.id, job.status]),
+        });
+        const keyRef = crypto.createHash('sha256').update('k1').digest('hex').slice(0, 16);
+        const add = (qid, deadline) => db.prepare(`INSERT INTO video_jobs (platform_id, room_id, actor_id, kind, mode, model, duration, queue_id, download_url, key_ref, next_poll_at, deadline_at)
+          VALUES ('pv', 1, 1, 't2v', 'standard', 'm', '5s', ?, NULL, ?, 0, ?)`).run(qid, keyRef, deadline).lastInsertRowid;
+        const a = add('q-done', clock + 60_000), b = add('q-late', clock + 5_000);
+        const first = mk();
+        await first.tick();
+        assert.deepStrictEqual(db.prepare('SELECT status FROM video_jobs ORDER BY id').all().map(r => r.status), ['processing', 'processing']);
+        first.stop(); // "restart": nothing in memory survives, only the table
+        ready = true;
+        clock += 10_000;
+        const second = mk();
+        await second.tick();
+        const rows = db.prepare('SELECT id, status, error, upload_url, message_id, wake_pending FROM video_jobs ORDER BY id').all();
+        assert.deepStrictEqual(rows.map(r => [r.id, r.status, r.wake_pending]), [[a, 'completed', 1], [b, 'timeout', 0]], 'job 1 waits for its agent; job 2 had nobody to wake');
+        assert.match(rows[1].error, /no video after 1 minutes/);
+        assert.deepStrictEqual(posted, [[a, rows[0].upload_url]]);
+        assert.ok(fs.readFileSync(path.join(tmpUploads, rows[0].upload_url.slice('/uploads/'.length))).equals(mp4));
+        assert.deepStrictEqual(calls.filter(c => c[0] === '/video/retrieve').map(c => c[1]), ['q-done', 'q-late', 'q-done'], 'no retrieve for the expired job');
+        assert.deepStrictEqual(calls.filter(c => c[0] === '/video/complete').map(c => c[1]).sort(), ['q-done', 'q-late'], 'media cleaned up for both');
+        assert.deepStrictEqual(woken, []);
+        states[1] = 'ready';
+        await second.tick();
+        assert.deepStrictEqual(woken, [[a, 'completed']]);
+        await second.tick();
+        assert.deepStrictEqual(woken.length, 1, 'woken once');
+        assert.deepStrictEqual(fs.readdirSync(tmpUploads).filter(f => f.endsWith('.part')), [], 'no partial files left');
+        second.stop();
+        fs.rmSync(tmpUploads, { recursive: true, force: true });
+        db.close();
+      });
+
+      await test('MCP venice video — sub-agent on a Venice tier: job posted as the sub-agent, the sub-agent is woken', async () => {
+        setRoomModel(roomA, 'venice-plain', vPlat, { quick: ['venice-plain'] });
+        const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
+        const tr = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub.id, task: 'film something' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+        assert.strictEqual(tr.status, 200, tr.raw);
+        const m = await st;
+        assert.strictEqual(await hasVideoTool(m.mcp_token), true);
+        const woken = armWake(agA.ws, (x) => x.sub_agent?.id === sub.id);
+        const r = await callVid(m.mcp_token, { prompt: 'hold' });
+        assert.strictEqual(r.isError, false, r.text);
+        await completeSubAgentRun(agA.ws, roomA, m);
+        vMock.videoJobs.get([...vMock.videoJobs.keys()].at(-1)).release = true; // finish only once the sub-agent's own run is over
+        const w = await woken(r.body.job_id);
+        assert.strictEqual(w.sub_agent.id, sub.id);
+        assert.strictEqual(mDb.prepare('SELECT sub_agent_id FROM messages WHERE id=?').get(job(r.body.job_id).message_id).sub_agent_id, sub.id);
+        // The finished wake run wakes the parent in turn; finish that too so nothing stays streaming.
+        await waitForWsMessage(agA.ws, x => x.type === 'agent_trigger' && !x.sub_agent && x.room_id === roomA, 5000).then(x => completeRun(agA.ws, roomA, x)).catch(() => {});
+      });
+
+      await test('MCP venice video — non-Venice run or disabled platform: no tool, calls denied', async () => {
+        setRoomModel(roomA, null, null);
+        await triggerToken(agA, roomA, 'back to claude', vThread);
+        assert.strictEqual(await hasVideoTool(vTok), false);
+        const n = vSeen.length;
+        assert.match((await callVid(vTok, { prompt: 'a fox' })).text, /not available in this session/);
+        setRoomModel(roomA, 'venice-plain', vPlat);
+        await triggerToken(agA, roomA, 'venice again', vThread);
+        assert.strictEqual(await hasVideoTool(vTok), true);
+        await req('PATCH', `/api/ai/platforms/${encodeURIComponent(vPlat)}`, { enabled: false });
+        assert.strictEqual(await hasVideoTool(vTok), false, 'owner disabled the platform');
+        assert.match((await callVid(vTok, { prompt: 'a fox' })).text, /not available in this session/);
+        assert.strictEqual(vSeen.length, n);
+      });
+
+      await test('MCP venice video — teardown', async () => {
+        setRoomModel(roomA, null, null);
+        mDb.prepare("UPDATE video_jobs SET status='failed', wake_pending=0, finished_at=datetime('now') WHERE platform_id=? AND status IN ('queued','processing')").run(vPlat);
+        mDb.prepare('DELETE FROM video_jobs WHERE platform_id=?').run(vPlat);
         if (vMock) vMock.close();
         if (vPlat) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(vPlat)}`);
       });
