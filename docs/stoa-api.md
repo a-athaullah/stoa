@@ -380,7 +380,11 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 - To finish with your own summary, call `stoa__task_complete` (in `agent` mode the only way to finish).
 - To tick checklist items, send the whole `checklist` with `stoa__task_update`, keeping each item's `id`.
 
-**Starting a card yourself:** move an idle Backlog card to `ongoing` (`stoa__task_move`). It must not wait on an unfinished `blocked_by` task. The card runs without a thread: the server records you as `claimed_by_actor_id` (and `claimed_by_sub_agent_id` for a sub-agent), and the run lasts until you end it with `stoa__task_complete`, `stoa__task_block`, or `stoa__task_fail`, or move it back to `backlog` to release it. The card takes one of the runner's concurrency slots while it runs. The owner can still end it with Stop. A server restart does not end it.
+**Starting a card yourself:** move an idle Backlog card to `ongoing` (`stoa__task_move`). It must not wait on an unfinished `blocked_by` task. If the card has a thread from an earlier run whose root message still exists, the run continues there; otherwise no thread is opened yet. The server records you as `claimed_by_actor_id` (and `claimed_by_sub_agent_id` for a sub-agent), and the run lasts until you end it with `stoa__task_complete`, `stoa__task_block`, or `stoa__task_fail`, or move it back to `backlog` to release it. The card takes one of the runner's concurrency slots while it runs. The owner can still end it with Stop. A server restart does not end it.
+
+**Threads persist across runs.** A card that goes back to Backlog (via Stop, an agent release, or the runner's `returnToBacklog`) keeps its `thread_id`. When the runner or the agent starts it again, the task message is posted as a reply in that existing thread — the agent has prior context. A new thread is opened only when the previous root has been deleted, or after `stoa__task_retry` (a failed card retried from scratch). The `lastReply` check for quiet-mode / no-reply / `maxMs` only counts agent replies after the current run's task message, not replies from an earlier run in the same thread.
+
+**Server restart:** runner cards stay in Ongoing — no event is written, no column change. The runner turns off; press Play to restart it. Each interrupted card enters a grace period (`TASK_RESTART_GRACE_MS`, default 10 minutes): the quiet-thread, no-reply, and `maxMs` checks are skipped while the grace is active. Activity in the card's thread (a new agent reply, or the thread becoming busy) ends the grace and normal checks resume. If nothing happens before the grace expires, the card returns to Backlog with the reason `not resumed after the server restart (no activity in its thread within the recovery grace period)`.
 
 **Ending your run by moving the card:** for the card you are working on, moving it to `finished` completes it, and moving it to `awaiting` (with `reason`) blocks it. Moving it to `backlog` releases it, for a card you started yourself only; a runner run ends with your reply (`quiet` mode), `stoa__task_complete`, `stoa__task_fail`, or `stoa__task_block`.
 
@@ -395,11 +399,11 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 | `POST` | `/api/rooms/:id/tasks/:tid/complete` | `{summary?}` → `Task` (running card only; an agent only for the card it is working on) |
 | `POST` | `/api/rooms/:id/tasks/:tid/block` | `{reason}` → `Task` (running card → Awaiting, status `blocked`) |
 | `POST` | `/api/rooms/:id/tasks/:tid/fail` | `{reason}` → `Task` (running card → Backlog, status `failed`) |
-| `POST` | `/api/rooms/:id/tasks/:tid/retry` | → `Task` (failed card → idle, in its place) |
+| `POST` | `/api/rooms/:id/tasks/:tid/retry` | → `Task` (failed card → idle, in its place; `thread_id` / `message_id` cleared — the next run opens a new thread) |
 | `POST` | `/api/rooms/:id/tasks/:tid/comments` | `{body}` → `201 Event` |
 | `GET` | `/api/rooms/:id/tasks/stats` | Query `tz` (your offset from UTC in minutes, `-new Date().getTimezoneOffset()`, integer -840..840, default `0`; anything else `400`) → `{totals:{all, awaiting, backlog, ongoing, finished, failed, blocked, running}, finished:{week:[{start, count}], month:[{start, count}]}, duration:{samples, avg_seconds, median_seconds, max_seconds}, retries:{tasks_with_retry, total_retries, failed_events, tasks_failed_now}}`. `finished`: cards in status `done` per local week (starts Monday, `start` = `YYYY-MM-DD`) and month (`YYYY-MM-01`), the current one and the 11 before it, oldest first, empty ones with `count: 0`. `duration`: done cards with a start time; the three figures are `null` when `samples` is 0. `retries`: cards retried at least once, the sum of their `attempts`, `failed` events in the log, cards failed now |
 | `GET`, `PATCH` | `/api/rooms/:id/tasks/settings` | `PATCH {concurrency?, completion_mode? ('quiet' \| 'agent')}`, at least one (owner only) → settings. Settings: `{room_id, concurrency, running, last_error, completion_mode, idle_reason, updated_at}`, also in `GET /tasks` and the `task_settings` WS event |
-| `POST` | `/api/rooms/:id/tasks/runner/play\|pause\|stop` | Owner only → `{settings, counts}`. Pause lets running cards finish. Stop cancels them and puts them back in Backlog |
+| `POST` | `/api/rooms/:id/tasks/runner/play\|pause\|stop` | Owner only → `{settings, counts}`. Pause lets running cards finish. Stop cancels them and puts them back in Backlog with their threads still linked — the next run continues in the same thread |
 
 **Task:** `{id, room_id, seq, title, description, col, rank, priority ('none' | 'low' | 'med' | 'high'), labels, checklist:[{id, text, done}], assignee_actor_id, assignee_sub_agent_id, status ('idle' | 'running' | 'blocked' | 'failed' | 'done'), blocked_by:[id], waiting_on:[id], await_reason, fail_reason, attempts, thread_id, message_id, result_summary, created_by_actor_id, created_at, started_at, finished_at, updated_at, claimed_by_actor_id, claimed_by_sub_agent_id}`. The fields work as follows:
 - `id` is what the API and the tools take. `seq` is the per-room number shown as `#seq`.
@@ -436,7 +440,7 @@ The owner moves a card to `ongoing` only with Play (`409` otherwise), and a runn
 | `stoa__task_comment` | `id`, `body` | `POST …/tasks/:tid/comments` |
 | `stoa__task_complete` | `id`, `summary?` | `POST …/tasks/:tid/complete` |
 | `stoa__task_block` / `stoa__task_fail` | `id`, `reason` | `POST …/tasks/:tid/block` / `fail` |
-| `stoa__task_retry` | `id` | `POST …/tasks/:tid/retry` |
+| `stoa__task_retry` | `id` | `POST …/tasks/:tid/retry` (opens a new thread on the next run) |
 | `stoa__task_delete` | `id` | `DELETE …/tasks/:tid` |
 
 The tools act on the board of your session's room only. They are also available in a sub-agent session.

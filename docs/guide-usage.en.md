@@ -848,9 +848,10 @@ The runner is a server-side loop that takes cards from Backlog and runs each one
 
 - **Play** — start the runner. It posts a short message in the room (task avatar, **Task #N** badge): only the card's title and its task id. The agent reads the description and checklist from the board itself. Each card runs in a dedicated thread. Concurrency (1–5, configurable in the board toolbar) controls how many cards run at once.
 - **Pause** — running tasks finish normally; no new tasks start until you press Play again.
-- **Stop** — a confirmation dialog appears. Running tasks are cancelled and return to Backlog. Cards an agent claimed itself are also returned to Backlog, but the agent is not interrupted.
+- **Stop** — a confirmation dialog appears. Running tasks are cancelled and return to Backlog. Cards an agent claimed itself are also returned to Backlog, but the agent is not interrupted. The threads stay linked — when the runner restarts a stopped card, it continues in the same thread.
+- **Server restart** — running cards stay in Ongoing; the runner turns off. Press Play to restart it. Each interrupted card has a 10-minute grace period before its thread is checked for activity. If the agent resumes and posts a reply, the grace ends and normal checks resume. If nothing happens within the window, the card returns to Backlog with the reason "not resumed after the server restart". The grace duration can be changed with the environment variable `TASK_RESTART_GRACE_MS`.
 - When an agent's last reply in a task thread completes, the card moves to Finished automatically. The start of that reply becomes the card's result summary.
-- A card the agent could not finish stays in Backlog with a **Failed** badge. Click **Retry** to make it eligible again.
+- A card the agent could not finish stays in Backlog with a **Failed** badge. Click **Retry** to make it eligible again. Retry opens a fresh thread for the next run.
 
 #### Finish mode
 
@@ -871,9 +872,9 @@ Agents and sub-agents can manage cards via the `stoa__task_*` MCP tools:
 - Create a card in Backlog (default) or Awaiting (requires `await_reason`).
 - Update title, description, labels, priority, checklist, assignee, and dependencies while the card is not running.
 - Move a card out of Awaiting (confirms it to Backlog).
-- **Self-claim a Backlog card** (`task_move` → `"ongoing"`): start an idle card whose dependencies are all Finished, without the runner. The card moves to Ongoing immediately with no thread opened. The claiming agent (or its parent agent, or the room owner) can then end it with `task_complete`, `task_block`, or `task_fail`, or release it back to Backlog with `task_move` → `"backlog"`. Moving a card already in Ongoing is refused — use Stop to end it.
+- **Self-claim a Backlog card** (`task_move` → `"ongoing"`): start an idle card whose dependencies are all Finished, without the runner. The card moves to Ongoing immediately. If the card has a thread from an earlier run, the agent continues there; otherwise no thread is opened yet. The claiming agent (or its parent agent, or the room owner) can then end it with `task_complete`, `task_block`, or `task_fail`, or release it back to Backlog with `task_move` → `"backlog"`. Moving a card already in Ongoing is refused — use Stop to end it.
 - Complete, block (move to Awaiting with a reason), or fail the task they are working on.
-- **Retry a failed card** (`task_retry`): the card becomes idle again in Backlog; the runner or the agent itself can then start it.
+- **Retry a failed card** (`task_retry`): the card becomes idle again in Backlog; the runner or the agent itself can then start it. Retry opens a new thread — the failed run's thread stays in the room as history.
 - Add comments to any card.
 
 A claimed card counts against the room's concurrency limit the same as a runner card. Human **Stop** returns claimed cards to Backlog without interrupting the agent. In the UI, a claimed card shows the claiming agent as the worker; the event log labels the claim as "took it to Ongoing to work on it".

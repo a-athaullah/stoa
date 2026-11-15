@@ -213,7 +213,7 @@ Each room has a kanban board with four columns: `awaiting`, `backlog`, `ongoing`
    - Switching mode drops the other mode's clock; already-posted task messages keep the old wording. `noReplyMs` applies in both modes.
 4. `pause(roomId, who)` — humanOnly; sets `running=0`; in-flight cards finish naturally.
 5. `stop(roomId, who)` — humanOnly; sets `running=0`; calls `abortThread` for each running card; calls `returnToBacklog` (status cleared).
-6. Reap on server startup: runner cards (`status='running'`, no `claimed_by_actor_id`) are returned to Backlog with reason `server restart`. A card an agent claimed stays running (no server turn carries it); the no-reply / quiet-thread check skips it too. It still takes a concurrency slot.
+6. Reap on server startup: runner cards (`status='running'`, no `claimed_by_actor_id`) stay in Ongoing — no column change, no event written. Each is added to `recovering` with `until = now + restartGraceMs` (`TASK_RESTART_GRACE_MS`, default 10 min). The quiet-thread, no-reply, and `maxMs` checks are skipped for recovering cards. Activity in a card's thread (new agent reply, or thread busy) ends the grace and normal checks resume. If grace expires with no activity → `returnToBacklog` with reason `RESTART_UNRECOVERED`. All runners are turned off (`running=0`); the owner presses Play to restart. A card an agent claimed stays running (no server turn carries it); `recovering` and the no-reply / quiet-thread check skip it too. It still takes a concurrency slot.
 
 ### Scope rules (enforced in lib/room-tasks.js)
 - Agents must be room participants; sub-agents must be linked.
