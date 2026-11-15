@@ -440,7 +440,10 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   thread_id INTEGER,
   sub_agent_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  revoked_at TEXT
+  revoked_at TEXT,
+  -- Platform + chat model of the scope's latest run, only when it ran on a Venice platform (image tools).
+  run_platform_id TEXT,
+  run_model TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_actor ON mcp_tokens(actor_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_sub_agent ON mcp_tokens(sub_agent_id) WHERE sub_agent_id IS NOT NULL;
