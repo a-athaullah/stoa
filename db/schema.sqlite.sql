@@ -685,3 +685,38 @@ CREATE TABLE IF NOT EXISTS room_task_settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_task_id ON messages(task_id) WHERE task_id IS NOT NULL;
+
+-- Venice video jobs (lib/venice-video.js): queue_id + one-time download_url kept for the poller, which
+-- resumes queued/processing rows after a restart. download_url is cleared at the end and never returned.
+CREATE TABLE IF NOT EXISTS video_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform_id TEXT NOT NULL,
+  room_id INTEGER NOT NULL,
+  thread_id INTEGER,
+  actor_id INTEGER NOT NULL,
+  sub_agent_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','processing','completed','failed','timeout')),
+  kind TEXT NOT NULL CHECK(kind IN ('t2v','i2v')),
+  mode TEXT NOT NULL CHECK(mode IN ('standard','uncensored')),
+  model TEXT NOT NULL,
+  duration TEXT,
+  resolution TEXT,
+  aspect_ratio TEXT,
+  quote_usd REAL,
+  queue_id TEXT,
+  download_url TEXT,
+  key_ref TEXT,
+  poll_failures INTEGER NOT NULL DEFAULT 0,
+  next_poll_at INTEGER NOT NULL DEFAULT 0,
+  deadline_at INTEGER,
+  error TEXT,
+  upload_url TEXT,
+  message_id INTEGER,
+  wake_pending INTEGER NOT NULL DEFAULT 0 CHECK(wake_pending IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_video_jobs_active ON video_jobs(status, next_poll_at) WHERE status IN ('queued','processing');
+CREATE INDEX IF NOT EXISTS idx_video_jobs_room_active ON video_jobs(room_id) WHERE status IN ('queued','processing');
+CREATE INDEX IF NOT EXISTS idx_video_jobs_platform ON video_jobs(platform_id, id);
+CREATE INDEX IF NOT EXISTS idx_video_jobs_wake ON video_jobs(id) WHERE wake_pending=1;

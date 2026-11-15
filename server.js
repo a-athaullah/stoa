@@ -1785,6 +1785,7 @@ const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-cr
 const openaiTranslator = require('./lib/openai-translator');
 const venice = require('./lib/venice');
 const { veniceImageTools, parseVeniceImageModels, mergeImageModels, defaultImageModels } = require('./lib/venice-images');
+const { createVeniceVideo, parseVeniceVideoModels, mergeVideoSettings, defaultVideoSettings, normalizeVideoSettings } = require('./lib/venice-video');
 const { createRoomAccess } = require('./lib/room-access');
 const roomAccess = createRoomAccess(db);
 
@@ -1889,6 +1890,41 @@ const slackHistory = createSlackHistory({
   getConnectionRow: (id) => db.prepare('SELECT id, provider, status FROM automation_connections WHERE id=?').get(id),
   getSlackConnection: (id) => connectionManager.getSlackConnection(id),
 });
+// Venice video jobs (lib/venice-video.js): the tool queues, the poller below finishes them, posts the mp4 in
+// the session's thread and wakes that agent (or sub-agent) once it is connected and current.
+const veniceVideoWakeQ = {
+  participant: db.prepare(`SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id JOIN rooms r ON r.id=rp.room_id WHERE rp.room_id=? AND rp.actor_id=? AND r.archived_at IS NULL`),
+  subAgent: db.prepare('SELECT sa.*, a.name AS parent_name FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.id=? AND sa.parent_actor_id=? AND sa.enabled=1'),
+};
+function videoWakePrompt(job) {
+  const what = `Video job #${job.id} (${job.model}, ${job.duration}${job.resolution ? ` ${job.resolution}` : ''})`;
+  return job.status === 'completed'
+    ? `[video result] ${what} is ready: ${job.upload_url} (posted as message ${job.message_id}). Continue the task with it.`
+    : `[video result] ${what} ${job.status === 'timeout' ? 'timed out' : 'failed'}: ${job.error || 'unknown error'}. Tell the user; do not start it again unless asked.`;
+}
+const veniceVideo = createVeniceVideo({
+  db, platforms: () => getParsedSetting('ai_platforms') ?? [], platformKeys: getPlatKeys,
+  runContext: (ident) => mcpGateway.runContext(ident), uploadsDir: UPLOADS_DIR, baseUrl: venice.VENICE_BASE_URL,
+  pollMs: parseInt(process.env.STOA_VIDEO_POLL_MS, 10) || undefined,
+  jobTimeoutMs: parseInt(process.env.STOA_VIDEO_TIMEOUT_MS, 10) || undefined,
+  postVideo: (job, attachment, content) => roomMessages.send(job.room_id, job.actor_id, {
+    content, thread_id: job.thread_id ?? null, attachments: [attachment],
+    ...(job.sub_agent_id != null ? { sub_agent_id: job.sub_agent_id } : {}),
+  }),
+  onJobChange: (job) => broadcastGlobal({ type: 'video_job_update', platform_id: job.platform_id, job }),
+  // 'drop' when nobody is left to wake (room gone or archived, agent left it); 'wait' while the agent is offline or outdated.
+  canWake: (job) => (!veniceVideoWakeQ.participant.get(job.room_id, job.actor_id) ? 'drop' : agentReadyForWake(job.actor_id) ? 'ready' : 'wait'),
+  wake: (job) => {
+    const p = veniceVideoWakeQ.participant.get(job.room_id, job.actor_id);
+    if (!p) return;
+    // A sub-agent deleted or disabled meanwhile: its parent gets the result instead.
+    const sa = job.sub_agent_id != null ? veniceVideoWakeQ.subAgent.get(job.sub_agent_id, job.actor_id) : null;
+    triggerAiResponse(job.room_id, { ...p, sub_agent: sa || null, prompt_outside_history: true, no_skills: true }, videoWakePrompt(job), null, [], null, job.thread_id ?? null)
+      .catch(e => console.error(`[venice-video] job #${job.id} wake error:`, e.message));
+  },
+});
+if (!SMOKE_BOOT) veniceVideo.start();
 const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
@@ -1903,6 +1939,7 @@ const mcpGateway = createMcpGateway({
         ...(ident.subAgentId != null ? { sub_agent_id: ident.subAgentId } : {}),
       }),
     }),
+    ...veniceVideo.tools,
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, slackHistory,
       connectionAllowed: (ident, connId) => agentScopeAllowed(ident.actorId, { scope: 'connection', id: connId }, ident.subAgentId ?? null),
@@ -3847,7 +3884,10 @@ const server = http.createServer(async (req, res) => {
       api_key: undefined,
       api_format: p.api_format || 'anthropic',
       extra_body: p.extra_body ?? null,
-      ...(venice.isVenice(p) ? { image_models: p.image_models ?? null, cached_image_models: p.cached_image_models ?? [] } : {}),
+      ...(venice.isVenice(p) ? {
+        image_models: p.image_models ?? null, cached_image_models: p.cached_image_models ?? [],
+        video_settings: normalizeVideoSettings(p.video_settings), cached_video_models: p.cached_video_models ?? [],
+      } : {}),
     }));
     return json(res, safe);
   }
@@ -3932,10 +3972,28 @@ const server = http.createServer(async (req, res) => {
       if (merged.error) return json(res, { error: merged.error }, 400);
       platforms[idx].image_models = merged.value;
     }
+    if (body.video_settings !== undefined) {
+      if (!toVenice) return json(res, { error: 'video_settings is only for Venice platforms' }, 400);
+      const merged = mergeVideoSettings(platforms[idx].video_settings, body.video_settings, platforms[idx].cached_video_models);
+      if (merged.error) return json(res, { error: merged.error }, 400);
+      platforms[idx].video_settings = merged.value;
+    }
     setSetting('ai_platforms', JSON.stringify(platforms));
-    // enabled / vendor / models decide whether sessions on this platform have the image tools.
+    // enabled / vendor / models decide whether sessions on this platform have the image and video tools.
     mcpGateway.toolsChanged();
     return json(res, platforms[idx]);
+  }
+
+  // Latest Venice video jobs of a platform (owner only: this route is not in lib/agent-scope.js). Never
+  // queue_id / download_url / key_ref: lib/venice-video.js publicJob.
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/video-jobs$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const plat = (getParsedSetting('ai_platforms') ?? []).find(p => p.id === platformId);
+    if (!plat) return json(res, { error: 'not found' }, 404);
+    const rawLimit = url.searchParams.get('limit');
+    const limit = rawLimit === null ? 20 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) return json(res, { error: 'limit must be an integer from 1 to 100' }, 400);
+    return json(res, veniceVideo.listJobs(platformId, limit));
   }
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
@@ -4038,6 +4096,17 @@ const server = http.createServer(async (req, res) => {
     return plat.image_models;
   }
 
+  // Venice video models after a discovery; video_settings slots keep a still-valid choice, else their default. → video_settings
+  function saveVideoModels(platformId, list) {
+    const freshPlatforms = JSON.parse(getSetting('ai_platforms') || '[]');
+    const plat = freshPlatforms.find(p => p.id === platformId);
+    if (!plat) return null;
+    plat.cached_video_models = list;
+    plat.video_settings = defaultVideoSettings(plat.video_settings, list);
+    setSetting('ai_platforms', JSON.stringify(freshPlatforms));
+    return plat.video_settings;
+  }
+
   // Re-read after the network wait (like saveCachedModels) so edits made meanwhile are not overwritten.
   function saveBalances(platformId, balances, checkedAt) {
     const freshPlatforms = JSON.parse(getSetting('ai_platforms') || '[]');
@@ -4087,14 +4156,24 @@ const server = http.createServer(async (req, res) => {
         if (gen.status !== 200 || edit.status !== 200) throw new Error(`Venice image model list failed (HTTP ${gen.status !== 200 ? gen.status : edit.status})`);
         images = parseVeniceImageModels(gen.data, edit.data, traits.status === 200 ? traits.data : null);
       } catch (e) { imageError = e.name === 'AbortError' ? 'Venice image model list timed out' : (e.message || 'Image model discovery failed'); }
+      // Video models: best-effort the same way.
+      let videos = null;
+      let videoError = null;
+      try {
+        const v = await veniceGet('/models?type=video');
+        if (v.status !== 200 || !Array.isArray(v.data?.data)) throw new Error(`Venice video model list failed (HTTP ${v.status})`);
+        videos = parseVeniceVideoModels(v.data);
+      } catch (e) { videoError = e.name === 'AbortError' ? 'Venice video model list timed out' : (e.message || 'Video model discovery failed'); }
       if (res.destroyed) return res.end();
       res.write(JSON.stringify({ type: 'start', total: list.total }) + '\n');
       saveCachedModels(platformId, list.usable);
       const imageModels = images ? saveImageModels(platformId, images) : null;
+      const videoSettings = videos ? saveVideoModels(platformId, videos) : null;
       mcpGateway.toolsChanged();
       res.write(JSON.stringify({
         type: 'done', tested: list.total, usable: list.usable,
         ...(images ? { image_models: imageModels, cached_image_models: images } : { image_error: imageError }),
+        ...(videos ? { video_settings: videoSettings, cached_video_models: videos } : { video_error: videoError }),
       }) + '\n');
       return res.end();
     }
