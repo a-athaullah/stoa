@@ -169,6 +169,50 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 - Auto-update: manifest + file endpoints serve `stoa.js` only from a `dist/stoa.js` bundle that passes `agentBundleStatus()` (checked per request); the agent verifies each download (`node --check`, no unshipped relative requires) before an atomic replace with a `.bak` (known-issues: Known Bugs #6)
 - On connect: unmigrated CLAUDE.md files imported to room system_prompt
 
+### Work Journal (`lib/work-journal.js`)
+
+Tracks which sessions are actively working so a connector restart (self-update, crash, SIGKILL) leaves a recoverable record. Motivation: a self-update restart in November 2026 killed every Claude Code session and nothing knew which work had been interrupted (task card 3/3 reads these entries to recover).
+
+**Location on disk:** `~/.stoa/journal/actor-<actorId>/` (override with `STOA_JOURNAL_DIR`). The parent directory and the per-actor subdirectory are both `0700` and must be real directories (symlinks refused). Each entry file is `0600`, named `<sha256(session_key)[0..32]>.json` — the hash prevents any path value in a session key from escaping the directory.
+
+**Lifecycle:**
+- Entry is created/updated when a turn starts (`state: "turn_running"`).
+- When the turn ends but background tasks are still running, state becomes `"background_only"`.
+- Entry is removed once both the turn and all background tasks are done, or when the session closes/resets.
+- On connector exit (restart, SIGINT, SIGKILL, too-many-errors), entries are **left in place** — that is their purpose. A new process never removes entries written by a previous process.
+
+**Entry schema v1** (no prompt, token, secret, or env stored):
+
+| Field | Type | Description |
+|---|---|---|
+| `v` | 1 | Schema version |
+| `actor_id` | integer | STOA_ACTOR_ID |
+| `session_key` | string | `buildSessionKey()` output (workdir::room::t:thread[::sub:id]) |
+| `room_id` | integer\|null | |
+| `thread_id` | integer\|null | null = main feed |
+| `sub_agent_id` | integer\|null | |
+| `message_id` | integer\|null | Stoa trigger message of the latest turn |
+| `task_id` | integer\|null | Task board card that owns the thread (sent by server in `agent_trigger`) |
+| `resume_session_id` | string\|null | Claude Code `--resume` session id |
+| `harness` | "claude"\|"codex" | |
+| `state` | "turn_running"\|"background_only" | |
+| `cause` | "turn"\|"auto_turn"\|"background" | What started this stretch |
+| `since` | ISO string | When session went from idle to working |
+| `pid` | integer | Connector process id |
+| `updated_at` | ISO string | Last write |
+| `recovered_at` | ISO string\|null | Set by `markRecovered()` (card 3/3) |
+| `recovery_count` | integer ≥ 0 | Incremented by `markRecovered()` |
+
+**Writes are atomic:** temp file (`O_EXCL`, 0600) → `fsync` → `rename` → `fsync` dir. Stale temp files (> 10 min old) are cleaned up by `list()`.
+
+**Corrupt files** are quarantined as `<name>.corrupt-<ms>` without crashing. `list()` returns only valid entries sorted by `since`.
+
+**Best-effort:** every journal I/O is wrapped in try/catch. A journal failure logs one line (deduplicated) and returns; it never fails an agent turn.
+
+**`task_id` delivery:** `triggerAiResponse` in `server.js` looks up the task card for the room+thread and sends its id in the `agent_trigger` WS event. For the first run of a runner card (before the thread is attached to the card), the server also accepts a card that is `running`, has no `thread_id` yet, and whose id is stamped on the thread's root message via `messages.task_id`. The connector stores it in the journal entry.
+
+**API:** `createWorkJournal({baseDir, actorId})` → `{ dir, upsert, remove, get, list, markRecovered, fileFor }`. `markRecovered()` is used by task card 3/3 recovery flow.
+
 ## Security Model
 
 ### Authentication
