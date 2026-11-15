@@ -196,12 +196,12 @@ function platformServesModel(plat, model) {
 
 // A sub-agent's model pinned to an AI platform (sub_agents.model_platform_id): checked when it is saved
 // (lib/sub-agents.js) and again on every run, since the platform can be disabled or edited later.
-// → { plat } or { error } (an English sentence for the API and the run's error message).
+// → { plat } or { error, missing? } (an English sentence for the API; missing = the id is no longer in Settings).
 function subAgentPlatformCheck(platformId, model) {
   let platforms;
   try { platforms = getParsedSetting('ai_platforms'); } catch { platforms = null; }
   const plat = Array.isArray(platforms) ? platforms.find(p => p.id === platformId) : null;
-  if (!plat) return { error: `AI platform "${platformId}" not found` };
+  if (!plat) return { error: `AI platform "${platformId}" not found`, missing: true };
   const name = plat.name || plat.id;
   if (!plat.enabled) return { error: `AI platform "${name}" is disabled` };
   if (!platformServesModel(plat, model)) return { error: `model "${model}" is not available on AI platform "${name}"` };
@@ -8509,7 +8509,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     const chk = subAgentPlatformCheck(subPlatformId, effectiveModel);
     if (!chk.error) usePlatform(chk.plat, effectiveModel);
     if (chk.error || !modelBaseUrl) {
-      failRun(`⚠ Sub-agent "${subAgent.label}" tidak bisa jalan dengan model "${effectiveModel}": ${chk.error || 'AI platform-nya tidak punya base URL'}. Ubah model sub-agent ini di Settings.`);
+      const reason = chk.missing ? `AI platform yang dipin untuk model ini sudah dihapus (id "${subPlatformId}")`
+        : (chk.error || 'AI platform-nya tidak punya base URL');
+      failRun(`⚠ Sub-agent "${subAgent.label}" tidak bisa jalan dengan model "${effectiveModel}": ${reason}. Pilih model lain di Settings → sub-agent.`);
       return;
     }
   } else {
