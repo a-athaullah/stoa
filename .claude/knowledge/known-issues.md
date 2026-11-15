@@ -335,6 +335,26 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 ---
 
+### 11. Task Board — Restart Keeps Running Cards in Ongoing; Threads Persist Across Runs
+**Decision (2026-11-16, task #26):** Server restart no longer returns runner cards to Backlog. Cards stay in Ongoing with their column, status, `thread_id`, and `message_id` unchanged; no event is written. The runner turns off; the owner presses Play to restart it.
+
+**Why:** Returning cards to Backlog on restart lost their thread context and caused double-work if the agent had already finished the task (the restart just missed the final reply). Keeping them in place lets the agent's self-healing recovery (card 3/3) continue in the same thread, and if recovery never comes the grace period catches it cleanly.
+
+**Grace period (`restartGraceMs`, env `TASK_RESTART_GRACE_MS`, default 10 min):** while recovering, the quiet-thread / no-reply / `maxMs` checks are skipped. Activity in the thread (a new agent reply, or the thread becoming busy) ends the grace. No activity before the grace expires — behavior is mode-dependent (completion mode read live at expiry):
+- `quiet` mode → `returnToBacklog(RESTART_UNRECOVERED)`: the card goes back to Backlog, idle, with the reason in a `stopped` event; its thread stays linked.
+- `agent` mode → card removed from `recovering`, stays in Ongoing; the `AGENT_UNDECIDED` / `maxMs` clock starts from that point. Rationale: in agent mode the thread may be intentionally quiet for a long time (agent waiting on a background job or deploy on another machine — exactly the incident thread 71454). Sending it to Backlog would interrupt valid in-progress work; the existing `AGENT_UNDECIDED` safety net catches true abandonment.
+
+**Thread persistence across runs (`KEEP_THREAD` SQL, `lib/room-tasks.js`):** `runStart` and `claim` keep `thread_id` / `message_id` when the root message still exists (checked with a subquery). The runner's `dispatch` now takes a `threadId` and posts the task message as a reply there (`server.js handleHumanMessage`), so the agent has prior context. `runAttach` only writes `thread_id` / `message_id` when the card started without one (condition: `thread_id IS NULL`). `lastReply` only counts agent replies after the current run's task message (the latest `messages.id` with `task_id` in the card's thread), preventing a quiet-mode finish from the previous run's reply.
+
+**New thread only when:** (a) the root message was deleted (KEEP_THREAD check fails → NULL), or (b) `stoa__task_retry` was called (clears `thread_id` / `message_id` explicitly in `retry()`).
+
+**Not a finding:**
+- `returnToBacklog(roomId, taskId, reason)` on the runner validates `reason` (string, 1–1000 chars, trimmed): returns 400 for empty/too-long, 409 if the card is not running or belongs to another room. It does not abort a running turn — callers use it only when the thread is idle.
+- Grace is in-memory only: a second restart before the first grace expires resets it (`reap()` runs again, `until` is refreshed). No persistent state needed; a double-restart is treated as a new interruption.
+- A card whose root was deleted gets a new thread on the next run. That is consistent with `task_retry` and expected: the old thread no longer exists in the room.
+
+---
+
 ### 8. Task Rank Uses Fractional Indexing — Not Integers
 **Decision:** Card order in Backlog/Awaiting uses a floating-point `rank` column. `placeRank` computes midpoints; a rebalance runs when gaps collapse to < 1e-10.
 

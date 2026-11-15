@@ -1865,7 +1865,7 @@ const roomTasks = createRoomTasks({
 // defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
 const roomTasksRunner = createRoomTasksRunner({
   db, tasks: roomTasks,
-  dispatch: (roomId, text, automation) => handleHumanMessage(roomId, text, null, null, null, null, null, automation),
+  dispatch: (roomId, text, automation, threadId) => handleHumanMessage(roomId, text, null, null, null, null, threadId, automation),
   threadBusy: taskThreadBusy,
   abortThread: abortThreadRuns,
   agentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
@@ -1874,6 +1874,7 @@ const roomTasksRunner = createRoomTasksRunner({
   settleMs: parseInt(process.env.TASK_SETTLE_MS, 10) || 3000,
   noReplyMs: parseInt(process.env.TASK_NO_REPLY_MS, 10) || 120000,
   maxMs: parseInt(process.env.TASK_DECIDE_MAX_MS, 10) || 10800000,
+  restartGraceMs: parseInt(process.env.TASK_RESTART_GRACE_MS, 10) || 600000,
 });
 // Poll: ends runs whose thread went quiet and retries runners waiting on a thread slot or an agent.
 // Same gate as the scheduler loop.
@@ -8064,7 +8065,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   // R28: if a sequence is already running, apply busy_input_mode before triggering agents
   const busyMode = getSetting('busy_input_mode', roomId) || 'interrupt';
   const seqKey = threadId ? `${roomId}:${threadId}` : String(roomId);
-  // A task-board run is a new thread of its own: never queued behind or steered into the main feed's run.
+  // A task-board run (a new thread, or the kept thread of an interrupted run) starts its own turn: never
+  // queued behind or steered into another run.
   if (busyMode !== 'interrupt' && autoProvider !== 'task' && activeSequences.has(seqKey)) {
     if (busyMode === 'queue') {
       const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
@@ -9147,11 +9149,11 @@ server.listen(PORT, () => {
   const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
   if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
 
-  // Task board: no turn survives a restart, so runner cards go back to Backlog and runners stay off
-  // (a card an agent started itself stays running: no server turn carries it).
+  // Task board: runners stay off; running cards keep their column, status and thread, in a restart grace
+  // until their work resumes (lib/room-tasks-runner.js header).
   try {
     const reaped = roomTasksRunner.reap();
-    if (reaped.returned || reaped.runnersOff) console.log(`[tasks] startup: ${reaped.returned} running task(s) back to Backlog, ${reaped.runnersOff} runner(s) off`);
+    if (reaped.interrupted || reaped.runnersOff) console.log(`[tasks] startup: ${reaped.interrupted} running task(s) kept in Ongoing awaiting recovery, ${reaped.runnersOff} runner(s) off`);
   } catch (e) { console.error('[tasks] startup reaper failed:', e.message); }
 
   console.log(`Stoa running → http://localhost:${PORT}`);

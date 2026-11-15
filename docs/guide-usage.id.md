@@ -849,9 +849,10 @@ Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan 
 
 - **Play** — mulai runner. Runner memposting pesan singkat di room (avatar task, badge **Task #N**): hanya judul card dan task id-nya. Agent membaca deskripsi dan checklist langsung dari board. Setiap card berjalan di thread tersendiri. Konkurensi (1–5, dapat diatur di toolbar board) mengontrol berapa card yang berjalan bersamaan.
 - **Pause** — task yang berjalan selesai secara normal; task baru tidak dimulai sampai kamu menekan Play lagi.
-- **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan kembali ke Backlog. Card yang diklaim agent juga dikembalikan ke Backlog, tapi agent tidak diinterupsi.
+- **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan kembali ke Backlog. Card yang diklaim agent juga dikembalikan ke Backlog, tapi agent tidak diinterupsi. Thread tetap terhubung — saat runner menjalankan card yang di-Stop, ia melanjutkan di thread yang sama.
+- **Restart server** — card yang sedang berjalan tetap di Ongoing; runner mati. Tekan Play untuk menyalakannya kembali. Setiap card yang terganggu punya masa tenggang 10 menit (`TASK_RESTART_GRACE_MS`). Jika agent melanjutkan dan membalas, masa tenggang berakhir dan pemeriksaan normal dilanjutkan. Jika tidak ada aktivitas dalam jangka waktu itu: di mode **When quiet**, card kembali ke Backlog dengan alasan "not resumed after the server restart"; di mode **Agent decides**, card tetap di Ongoing dan waktu habis "agen tidak memutuskan" mulai berjalan dari titik itu.
 - Saat balasan terakhir agent di thread task selesai, card otomatis pindah ke Finished. Awal balasan itu menjadi ringkasan hasil card.
-- Card yang tidak bisa diselesaikan agent tetap di Backlog dengan badge **Failed**. Klik **Retry** untuk membuatnya bisa dijalankan kembali.
+- Card yang tidak bisa diselesaikan agent tetap di Backlog dengan badge **Failed**. Klik **Retry** untuk membuatnya bisa dijalankan kembali. Retry membuka thread baru untuk run berikutnya.
 
 #### Mode Penyelesaian
 
@@ -872,9 +873,9 @@ Agent dan sub-agent bisa mengelola card melalui tool MCP `stoa__task_*`:
 - Buat card di Backlog (default) atau Awaiting (memerlukan `await_reason`).
 - Perbarui judul, deskripsi, label, prioritas, checklist, assignee, dan dependensi saat card tidak sedang berjalan.
 - Pindahkan card keluar dari Awaiting (konfirmasi ke Backlog).
-- **Klaim sendiri card Backlog** (`task_move` → `"ongoing"`): mulai card idle yang dependensinya sudah selesai semua, tanpa runner. Card langsung pindah ke Ongoing tanpa membuka thread. Agent yang mengklaim (atau induknya, atau pemilik room) bisa mengakhirinya dengan `task_complete`, `task_block`, atau `task_fail`, atau melepasnya kembali ke Backlog dengan `task_move` → `"backlog"`. Memindahkan card yang sudah di Ongoing akan ditolak — gunakan Stop untuk mengakhirinya.
+- **Klaim sendiri card Backlog** (`task_move` → `"ongoing"`): mulai card idle yang dependensinya sudah selesai semua, tanpa runner. Card langsung pindah ke Ongoing. Jika card punya thread dari run sebelumnya, agent melanjutkan di sana; jika tidak, belum ada thread yang dibuka. Agent yang mengklaim (atau induknya, atau pemilik room) bisa mengakhirinya dengan `task_complete`, `task_block`, atau `task_fail`, atau melepasnya kembali ke Backlog dengan `task_move` → `"backlog"`. Memindahkan card yang sudah di Ongoing akan ditolak — gunakan Stop untuk mengakhirinya.
 - Selesaikan, blokir (pindah ke Awaiting dengan alasan), atau gagalkan task yang sedang dikerjakan.
-- **Retry card yang gagal** (`task_retry`): card menjadi idle kembali di Backlog; runner atau agent itu sendiri kemudian bisa memulainya.
+- **Retry card yang gagal** (`task_retry`): card menjadi idle kembali di Backlog; runner atau agent itu sendiri kemudian bisa memulainya. Retry membuka thread baru — thread run yang gagal tetap ada di room sebagai riwayat.
 - Tambahkan komentar ke card mana pun.
 
 Card yang diklaim terhitung dalam batas konkurensi room seperti card runner. **Stop** oleh manusia mengembalikan card klaiman ke Backlog tanpa menginterupsi agent. Di UI, card klaiman menampilkan agent pengklaim sebagai pengerja; log event menandai klaim sebagai "took it to Ongoing to work on it".
