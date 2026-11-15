@@ -19502,10 +19502,16 @@ async function run() {
 
     // Invalid caps stay inline, no PATCH, form open; editing clears the message.
     for (const [slot, val, msg] of [
-      ['max_usd_per_job', '', 'Max USD per job must be a number of 0 or more'],
-      ['max_usd_per_job', '-1', 'Max USD per job must be a number of 0 or more'],
-      ['max_concurrent_per_room', '1.5', 'Max jobs per room must be a whole number of at least 1'],
-      ['max_concurrent_per_room', '0', 'Max jobs per room must be a whole number of at least 1'],
+      ['max_usd_per_job', '', 'Max USD per job must be a number above 0 and at most 50'],
+      ['max_usd_per_job', '-1', 'Max USD per job must be a number above 0 and at most 50'],
+      ['max_usd_per_job', '0', 'Max USD per job must be a number above 0 and at most 50'],
+      ['max_usd_per_job', '50.01', 'Max USD per job must be a number above 0 and at most 50'],
+      ['max_usd_per_job', '1001', 'Max USD per job must be a number above 0 and at most 50'],
+      ['max_concurrent_per_room', '', 'Max jobs per room must be a whole number from 1 to 10'],
+      ['max_concurrent_per_room', '1.5', 'Max jobs per room must be a whole number from 1 to 10'],
+      ['max_concurrent_per_room', '0', 'Max jobs per room must be a whole number from 1 to 10'],
+      ['max_concurrent_per_room', '11', 'Max jobs per room must be a whole number from 1 to 10'],
+      ['max_concurrent_per_room', '99', 'Max jobs per room must be a whole number from 1 to 10'],
     ]) {
       ctx.sEditPlatform(v1); await flush();
       named('platform-video-' + slot).value = val;
@@ -19515,6 +19521,15 @@ async function run() {
       named('platform-video-' + slot).fire('input');
       assert.strictEqual(alertEl().style.display, 'none');
     }
+
+    // The server's upper bounds themselves are accepted; the inputs carry the same min/max.
+    ctx.sEditPlatform(v1); await flush();
+    assert.deepStrictEqual(['max_usd_per_job', 'max_concurrent_per_room'].map(k => [named('platform-video-' + k).min, named('platform-video-' + k).max]), [['0.01', '50'], ['1', '10']]);
+    named('platform-video-max_usd_per_job').value = '50';
+    named('platform-video-max_concurrent_per_room').value = '10';
+    calls.length = 0;
+    btn(/^update$/).fire('click'); await flush();
+    assert.deepStrictEqual(videoCalls(), [['/api/ai/platforms/v1', 'PATCH', { video_settings: { ...settings, max_usd_per_job: 50, max_concurrent_per_room: 10 } }]]);
 
     // Server 400 inline as text; 500 without message gets the generic text.
     ctx.sEditPlatform(v1); await flush();

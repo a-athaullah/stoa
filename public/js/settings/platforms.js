@@ -713,6 +713,9 @@ const S_VIDEO_SLOTS = [
   ['model_i2v', 'image-to-video', 'i2v', false],
   ['model_i2v_uncensored', 'image-to-video (uncensored)', 'i2v', true],
 ];
+// Same caps as USD_PER_JOB_MAX / CONCURRENT_MAX in lib/venice-video.js; the server re-checks on save.
+const S_VIDEO_USD_MAX = 50;
+const S_VIDEO_CONCURRENT_MAX = 10;
 let sVideoJobListener = null;
 
 // Owner-only `video_job_update` from the global socket; only the open Venice form listens.
@@ -786,11 +789,12 @@ function sVideoSettingsSection(container, platform) {
     sel.value = current || '';
   }
 
-  function makeNumber(min, step) {
+  function makeNumber(min, max, step) {
     const inp = document.createElement('input');
     inp.type = 'number';
     inp.className = 's-server-input s-plat-video-num';
     inp.min = String(min);
+    inp.max = String(max);
     inp.step = step;
     inp.inputMode = step === '1' ? 'numeric' : 'decimal';
     return inp;
@@ -825,8 +829,8 @@ function sVideoSettingsSection(container, platform) {
       }
       const durSel = makeSelect();
       const resSel = makeSelect();
-      const usdInp = makeNumber(0, '0.01');
-      const concInp = makeNumber(1, '1');
+      const usdInp = makeNumber(0.01, S_VIDEO_USD_MAX, '0.01');
+      const concInp = makeNumber(1, S_VIDEO_CONCURRENT_MAX, '1');
       usdInp.value = numText(pick('max_usd_per_job'));
       concInp.value = numText(pick('max_concurrent_per_room'));
       fields = { slotSels, durSel, resSel, usdInp, concInp };
@@ -992,12 +996,15 @@ function sVideoSettingsSection(container, platform) {
     async save(id) {
       if (!Object.keys(dirtyKeys()).length) return true;
       const video_settings = values();
-      for (const [k, label] of [['max_usd_per_job', 'Max USD per job'], ['max_concurrent_per_room', 'Max jobs per room']]) {
-        const n = video_settings[k];
-        if (n === null || !isFinite(n) || n < 0 || (k === 'max_concurrent_per_room' && (!Number.isInteger(n) || n < 1))) {
-          setError(`${label} must be ${k === 'max_concurrent_per_room' ? 'a whole number of at least 1' : 'a number of 0 or more'}`);
-          return false;
-        }
+      const usd = video_settings.max_usd_per_job;
+      if (usd === null || !isFinite(usd) || usd <= 0 || usd > S_VIDEO_USD_MAX) {
+        setError(`Max USD per job must be a number above 0 and at most ${S_VIDEO_USD_MAX}`);
+        return false;
+      }
+      const conc = video_settings.max_concurrent_per_room;
+      if (!Number.isInteger(conc) || conc < 1 || conc > S_VIDEO_CONCURRENT_MAX) {
+        setError(`Max jobs per room must be a whole number from 1 to ${S_VIDEO_CONCURRENT_MAX}`);
+        return false;
       }
       try {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
