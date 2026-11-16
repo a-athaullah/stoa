@@ -260,7 +260,15 @@ function setThreadCompleted(rootId, completed) {
 }
 
 // A new message in a thread reopens it (the server derives the same from the newest reply id).
-function noteThreadReply(rootId) {
+// A system notice (compacted, config, agent offline) is not a reply and keeps the thread complete,
+// unless it is escalated to the room feed (broadcast_reason) — same rule as THREAD_COMPLETED in
+// lib/room-messages.js.
+function threadReplyReopens(m) {
+  return !m || m.state !== 'system_event' || !!m.broadcast_reason;
+}
+
+function noteThreadReply(rootId, m) {
+  if (!threadReplyReopens(m)) return;
   setThreadCompleted(rootId, false);
 }
 

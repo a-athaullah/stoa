@@ -175,7 +175,7 @@ function handleWsMessage(msg, raw) {
           if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
         });
       }
-      if (typeof noteThreadReply === 'function') noteThreadReply(tId);
+      if (typeof noteThreadReply === 'function') noteThreadReply(tId, m);
       // Also show in room feed if flagged for broadcast
       if (m.broadcast_reason && typeof appendFeedBroadcastRow === 'function') {
         appendFeedBroadcastRow(m);
@@ -191,6 +191,9 @@ function handleWsMessage(msg, raw) {
 
   if (msg.type === 'message_broadcast') {
     if (typeof upsertFeedBroadcastRow === 'function') upsertFeedBroadcastRow(msg.message);
+    // A system notice escalated after it was posted (broadcast_reason set later) now reopens its thread.
+    // Runs are not touched here: a run reopened the thread when it was posted (message_new / run state).
+    if (msg.message?.thread_id && msg.message.state === 'system_event' && typeof noteThreadReply === 'function') noteThreadReply(msg.message.thread_id, msg.message);
     return;
   }
 
