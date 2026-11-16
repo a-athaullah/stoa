@@ -634,7 +634,7 @@ Agent secara otomatis:
 
 Saat sesi agent sedang aktif berjalan — giliran sedang diproses atau background task masih berjalan — konektor menulis entri jurnal ke disk. Jika konektor restart (crash, restart manual, atau self-update), server memeriksa entri jurnal yang belum selesai dan secara otomatis melanjutkannya di thread semula, mengirim pesan sistem:
 
-> `[pemulihan otomatis 1/3]` Konektor restart pada \<waktu\> (sebab: update konektor). Giliranmu terhenti … Task #N masih ongoing. …
+> `[pemulihan otomatis 1/3]` Konektor/server restart pada \<waktu\> (sebab: update konektor). Giliranmu terhenti dan prosesnya sudah mati. Task #N masih ongoing. …
 
 Sesi yang dilanjutkan menggunakan konteks sesi Claude yang sudah ada. Jika sesi tidak bisa dilanjutkan (misalnya file sesi sudah tidak ada), sesi baru dibuka di thread yang sama.
 
@@ -645,13 +645,13 @@ Sesi yang dilanjutkan menggunakan konteks sesi Claude yang sudah ada. Jika sesi 
 
 **Pengaman:**
 - Setiap entri jurnal dipulihkan paling banyak satu kali per restart.
-- **Maks pemulihan otomatis per thread** (default 3) — jika sebuah thread dipulihkan sebanyak ini secara berturut-turut, pemulihan dihentikan dan pesan dikirim ke thread. Kartu kembali ke Backlog dengan alasan.
-- **Umur maksimum pekerjaan terputus** (default 24 jam) — entri yang lebih tua dari ini dibuang, tidak dilanjutkan.
+- **recovery limit** (default 3) — jika sebuah thread dipulihkan sebanyak ini secara berturut-turut, pemulihan dihentikan dan pesan dikirim ke thread. Kartu kembali ke Backlog dengan alasan.
+- **recovery max age** (default 24 jam) — entri yang lebih tua dari ini dibuang, tidak dilanjutkan.
 - Pemulihan mengikuti batas **Concurrent Sessions** room — sesi yang dipulihkan antre di belakang trigger normal.
 
 **Kartu task** tetap di Ongoing selama grace period restart (10 menit). Kartu baru kembali ke Backlog jika pemulihan gagal, batas berturut-turut terlewat, atau tidak ada pemulihan dalam grace period.
 
-Kedua pengaturan bisa dikonfigurasi di **Settings > Server** di sebelah Concurrent Sessions.
+Kedua pengaturan ada di halaman **Server**, kartu **configuration**, di bawah **concurrent sessions**.
 
 ### Re-autentikasi Agent
 
@@ -1482,8 +1482,8 @@ Panel detail mencakup:
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
 - **Concurrent Sessions** — berapa thread yang bisa dijalankan agent secara bersamaan (default: 1; rekomendasi: 3). Paralel *antar* thread; selalu serial *dalam* satu thread. Langsung diterapkan, tanpa restart. **Risiko:** dengan nilai di atas 1, thread yang berbagi workdir yang sama bisa mengedit file atau menjalankan git bersamaan — tidak ada kunci yang mencegah ini. Biarkan di 1 untuk room yang agentnya mengedit kode bersama, atau berikan workdir terpisah untuk setiap thread.
-- **Maks pemulihan otomatis per thread** (default 3, rentang 1–20) — berapa kali sesi di satu thread bisa dipulihkan otomatis secara berturut-turut setelah restart konektor sebelum pemulihan dihentikan. Setelah batas tercapai, pesan dikirim ke thread dan kartu kembali ke Backlog.
-- **Umur maksimum pekerjaan terputus** (default 24 jam, rentang 1–168 jam) — entri jurnal yang lebih tua dari ini dibuang, tidak dilanjutkan. Naikkan untuk grace period yang lebih panjang pada task besar; turunkan untuk menghindari melanjutkan sesi lama yang sudah tidak relevan.
+- **recovery limit** (default 3, rentang 1–20) — berapa kali sesi di satu thread bisa dipulihkan otomatis secara berturut-turut setelah restart konektor sebelum pemulihan dihentikan. Setelah batas tercapai, pesan dikirim ke thread dan kartu kembali ke Backlog.
+- **recovery max age** (default 24 jam, rentang 1–168 jam) — entri jurnal yang lebih tua dari ini dibuang, tidak dilanjutkan. Naikkan untuk grace period yang lebih panjang pada task besar; turunkan untuk menghindari melanjutkan sesi lama yang sudah tidak relevan.
 - **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)

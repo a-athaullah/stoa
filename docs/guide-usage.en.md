@@ -633,7 +633,7 @@ Agents automatically:
 
 When an agent session is actively running — a turn in progress or a background task still running — the connector writes a journal entry to disk. If the connector restarts (crash, manual restart, or self-update), the server checks for unfinished journal entries and automatically resumes each one in its original thread, posting a system message:
 
-> `[auto-recovery 1/3]` Connector restarted at \<time\> (reason: connector update). Your turn was interrupted … Task #N is still ongoing. …
+> `[automatic recovery 1/3]` The connector/server restarted at \<time\> (cause: connector self-update). Your turn stopped and its process is gone. Task #N is still ongoing. …
 
 The resumed session uses the existing Claude session context. If the session cannot be resumed (e.g., the session file no longer exists), a new session is opened in the same thread.
 
@@ -644,13 +644,13 @@ The resumed session uses the existing Claude session context. If the session can
 
 **Safeguards:**
 - Each journal entry is recovered at most once per restart.
-- **Max auto-recoveries per thread** (default 3) — if a thread is recovered this many times consecutively, recovery stops and a message is posted in the thread. The card returns to Backlog with a reason.
-- **Max age of interrupted work** (default 24 h) — entries older than this are discarded, not resumed.
+- **recovery limit** (default 3) — if a thread is recovered this many times consecutively, recovery stops and a message is posted in the thread. The card returns to Backlog with a reason.
+- **recovery max age** (default 24 h) — entries older than this are discarded, not resumed.
 - Recovery respects the room's **Concurrent Sessions** limit — recovered sessions queue behind normal triggers.
 
 **Task cards** stay in Ongoing during the restart grace period (10 minutes). A card returns to Backlog only if recovery fails, the consecutive limit is exceeded, or no recovery arrives within the grace period.
 
-Both settings are configurable in **Settings > Server** next to Concurrent Sessions.
+Both settings are on the **Server** page, **configuration** card, below **concurrent sessions**.
 
 ### Agent Re-authentication
 
@@ -1481,8 +1481,8 @@ The detail panel includes:
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
 - **Concurrent Sessions** — how many threads an agent can run at the same time (default: 1; recommended: 3). Parallel *between* threads; always serial *within* a single thread. Applied instantly, no restart needed. **Risk:** with a value above 1, threads that share the same workdir can edit files or run git simultaneously — nothing prevents this. Keep it at 1 for rooms where the agent works on shared code, or give each thread a separate workdir.
-- **Max auto-recoveries per thread** (default 3, range 1–20) — how many consecutive times a session in one thread can be automatically recovered after a connector restart before recovery stops. After the limit is reached, a message is posted in the thread and the card returns to Backlog.
-- **Max age of interrupted work** (default 24 h, range 1–168 h) — journal entries older than this are discarded rather than resumed. Increase it for longer grace periods on large tasks; decrease it to avoid recovering very old unfinished sessions.
+- **recovery limit** (default 3, range 1–20) — how many consecutive times a session in one thread can be automatically recovered after a connector restart before recovery stops. After the limit is reached, a message is posted in the thread and the card returns to Backlog.
+- **recovery max age** (default 24 h, range 1–168 h) — journal entries older than this are discarded rather than resumed. Increase it for longer grace periods on large tasks; decrease it to avoid recovering very old unfinished sessions.
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
