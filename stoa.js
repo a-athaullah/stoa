@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.6.0";
+var CLIENT_VERSION = "0.7.0";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -489,6 +489,9 @@ function forceRestartIfStalled(now) {
   return true;
 }
 var _restartOverride = null;
+// What the next exit is, for the work journal's exit record (recovery tells the agent why its work
+// stopped): "update" unless the owner asked for a plain restart.
+var restartKind = "update";
 function doRestart() {
   // Exiting mid-install can leave a half-replaced CLI (npm rewrites files in place): finish first.
   if (harnessUpdateProcs > 0) {
@@ -497,6 +500,7 @@ function doRestart() {
     return;
   }
   journalFrozen = true;
+  workJournal?.markExit(restartKind);
   if (_restartOverride) return _restartOverride();
   console.log("[stoa:update] restarting to apply...");
   clearInterval(keepAlive);
@@ -524,6 +528,9 @@ var JOURNAL_RECONCILE_MS = 30 * 1e3;
 // report it. Its entry is held this long so that turn continues the same stretch of work (same
 // since/cause) and a restart in between still finds the unreported result.
 var JOURNAL_BG_SETTLE_MS = 5 * 1e3;
+// An unchanged entry is rewritten this often, so its updated_at says when the work was last seen
+// alive (the server drops entries older than its recovery max age, measured from updated_at).
+var JOURNAL_HEARTBEAT_MS = 10 * 60 * 1e3;
 var workJournal = null;
 // Exit paths (restart, SIGINT) shut sessions down on purpose: their entries must survive that.
 var journalFrozen = false;
@@ -614,8 +621,10 @@ function journalSync(sessionKey, { settled = false } = {}) {
       since: stretch.since
     };
     const fingerprint = JSON.stringify(fields);
-    if (journalWritten.get(sessionKey)?.fingerprint === fingerprint) return;
-    if (workJournal.upsert(sessionKey, fields)) journalWritten.set(sessionKey, { fingerprint, state: work.state });
+    const written = journalWritten.get(sessionKey);
+    if (written?.fingerprint === fingerprint && Date.now() - written.at < JOURNAL_HEARTBEAT_MS) return;
+    // A recovery run carries the count of the entry it continues (see processTrigger).
+    if (workJournal.upsert(sessionKey, { ...fields, recovery_count: facts.recovery_count ?? 0 })) journalWritten.set(sessionKey, { fingerprint, state: work.state, at: Date.now() });
   } catch (e) {
     console.warn(`[journal] sync failed: ${e.message}`);
   }
@@ -625,6 +634,59 @@ function reconcileJournal() {
   const keys = new Set([...sessionPool.keys(), ...journalWritten.keys()]);
   for (const t of activeTriggers.values()) if (t.sessionKey) keys.add(t.sessionKey);
   for (const key of keys) journalSync(key);
+}
+// Recovery (self-healing 3/3). The server asks for it in agent_ready (recover_journal) once this
+// agent is current; it validates every entry (ownership, age, per-session limit) and re-triggers
+// the accepted ones through its normal trigger path, answering with recovery_result.
+// Reported: entries another process wrote (this process's own entries are live work, never
+// "recovered"), once per process (journalReported; a reconnect after a server restart does not
+// report them again). Each is marked (recovered_at, recovery_count + 1) BEFORE it is sent: an entry
+// that cannot be marked is not reported, so a recovery that crashes the connector again is still
+// counted and the server's limit always ends a loop.
+var JOURNAL_REPORT_MAX = 50;
+var journalReported = /* @__PURE__ */ new Set();
+var PROCESS_STARTED_AT = (/* @__PURE__ */ new Date()).toISOString();
+var RECOVERY_SESSION_KEY_MAX = 4096;
+function journalRecoveryOf(msg) {
+  const r = msg?.recovery;
+  if (!r || typeof r.session_key !== "string" || !r.session_key || r.session_key.length > RECOVERY_SESSION_KEY_MAX) return null;
+  return { session_key: r.session_key, recovery_count: Number.isSafeInteger(r.recovery_count) && r.recovery_count > 0 ? r.recovery_count : 0 };
+}
+function reportJournalForRecovery() {
+  if (!workJournal) return 0;
+  const exit = workJournal.readExit();
+  const entries = [];
+  for (const e of workJournal.list()) {
+    if (entries.length >= JOURNAL_REPORT_MAX) break;
+    if (e.pid === process.pid || journalReported.has(e.session_key)) continue;
+    const marked = workJournal.markRecovered(e.session_key);
+    if (!marked) {
+      console.warn(`[recovery] ${e.session_key}: could not be marked, not reported`);
+      continue;
+    }
+    journalReported.add(e.session_key);
+    entries.push({
+      session_key: marked.session_key, room_id: marked.room_id, thread_id: marked.thread_id, sub_agent_id: marked.sub_agent_id,
+      message_id: marked.message_id, task_id: marked.task_id, resume_session_id: marked.resume_session_id, harness: marked.harness,
+      state: marked.state, cause: marked.cause, since: marked.since, updated_at: marked.updated_at, recovery_count: marked.recovery_count,
+      exit: exit && exit.pid === marked.pid ? exit.reason : "crash"
+    });
+  }
+  console.log(`[recovery] restart: ${entries.length} journal entr${entries.length === 1 ? "y" : "ies"} reported to the server`);
+  send({ type: "recovery_report", restarted_at: PROCESS_STARTED_AT, entries });
+  return entries.length;
+}
+// The server's verdict per reported entry. Everything but "recover" ends the entry here: skipped,
+// discarded and stopped work is not reported again. A recovered entry stays until its run rewrites it.
+function handleRecoveryResult(msg) {
+  const results = Array.isArray(msg.results) ? msg.results.slice(0, JOURNAL_REPORT_MAX) : [];
+  for (const r of results) {
+    if (!r || typeof r.session_key !== "string" || !journalReported.has(r.session_key)) continue;
+    const reason = typeof r.reason === "string" ? r.reason.slice(0, 200) : "";
+    console.log(`[recovery] ${r.action}: ${r.session_key}${reason ? ` \u2014 ${reason}` : ""}`);
+    if (r.action === "recover") continue;
+    if (workJournal && workJournal.get(r.session_key)?.pid !== process.pid) workJournal.remove(r.session_key);
+  }
 }
 function watchSessionActivity(session, sessionKey) {
   if (typeof session?.on !== "function") return;
@@ -1299,6 +1361,13 @@ async function handleAgentMessage(msg) {
     consecutiveFailures = 0;
     setOutboxReady(true);
     console.log("[stoa] Ready, waiting for triggers...");
+    if (msg.recover_journal === true) {
+      try {
+        reportJournalForRecovery();
+      } catch (e) {
+        console.warn(`[recovery] report failed: ${e.message}`);
+      }
+    }
     (async () => {
       try {
         const scanResult = scanForWorkdirs();
@@ -1342,6 +1411,10 @@ async function handleAgentMessage(msg) {
     pendingSteerMessages.get(key).push({ content: msg.content, message_id: msg.message_id });
     console.log(`[stoa] steer queued for room ${msg.room_id} thread=${msg.thread_id || 0} msg=${msg.message_id}`);
   }
+  if (msg.type === "recovery_result") {
+    handleRecoveryResult(msg);
+    return;
+  }
   if (msg.type === "force_update") {
     console.log("[stoa] Force update requested");
     checkForUpdates();
@@ -1376,6 +1449,7 @@ async function handleAgentMessage(msg) {
     // Owner asked for it and was warned: stop now, don't wait for idle. doRestart shuts the
     // sessions down; the server marks this agent's in-flight messages as interrupted on disconnect.
     console.log(`[stoa] Restart requested from UI \u2014 stopping ${activeTriggers.size} active, ${triggerQueue.length} queued trigger(s)`);
+    restartKind = "restart";
     sendThenRestart({ type: "restart_status", state: "restarting", active: activeTriggers.size, queued: triggerQueue.length });
     return;
   }
@@ -1837,8 +1911,12 @@ async function processTrigger(msg) {
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
   const entry = { workdir, session: null, sessionKey, room_id, harness: msg.harness || "claude", model: null, thirdParty: !!msg.base_url, startedAt: Date.now(), lastActivity: Date.now() };
   activeTriggers.set(message_id, entry);
-  journalNote(sessionKey, { room_id, thread_id: threadId || null, sub_agent_id: subAgent?.id ?? null, message_id, task_id: msg.task_id ?? null, harness: entry.harness, resume_session_id: msg.claude_session_id || null });
+  const recovery = journalRecoveryOf(msg);
+  journalNote(sessionKey, { room_id, thread_id: threadId || null, sub_agent_id: subAgent?.id ?? null, message_id, task_id: msg.task_id ?? null, harness: entry.harness, resume_session_id: msg.claude_session_id || null, recovery_count: recovery?.recovery_count ?? 0 });
   journalSync(sessionKey);
+  // The recovered entry was written under another key (the workdir changed since): its count now
+  // lives in this session's entry, so the old one would only be reported again.
+  if (recovery && recovery.session_key !== sessionKey && workJournal?.get(recovery.session_key)?.pid !== process.pid) workJournal?.remove(recovery.session_key);
   let sessionRef = null;
   let statusHandler = null;
   let hangWatchdog = null;
@@ -3075,6 +3153,7 @@ if (require.main === module) {
 process.on("SIGINT", () => {
   clearTimeout(reconnectTimer);
   journalFrozen = true;
+  workJournal?.markExit("restart");
   for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
@@ -3124,6 +3203,7 @@ function __setDeps(overrides) {
   if (overrides.skillsDir) SKILLS_DIR = overrides.skillsDir;
   if (overrides.journalDir) workJournal = openWorkJournal(overrides.journalDir);
   if (overrides.JOURNAL_BG_SETTLE_MS != null) JOURNAL_BG_SETTLE_MS = overrides.JOURNAL_BG_SETTLE_MS;
+  if (overrides.JOURNAL_HEARTBEAT_MS != null) JOURNAL_HEARTBEAT_MS = overrides.JOURNAL_HEARTBEAT_MS;
 }
 function __resetDeps() {
   _sendOverride = null;
@@ -3139,7 +3219,10 @@ function __resetDeps() {
   journalWritten.clear();
   for (const t of journalSettleTimers.values()) clearTimeout(t);
   journalSettleTimers.clear();
+  journalReported.clear();
+  restartKind = "update";
   JOURNAL_BG_SETTLE_MS = 5 * 1e3;
+  JOURNAL_HEARTBEAT_MS = 10 * 60 * 1e3;
   SESSION_IDLE_TTL = 5;
   BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
   FETCH_TIMEOUT_MS = 60000;
@@ -3153,4 +3236,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, reportJournalForRecovery, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };

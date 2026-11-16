@@ -2987,6 +2987,9 @@ function runUnitTests() {
 // ── Async Unit Tests (no server required, properly awaited) ──────────────
 async function runAsyncUnitTests() {
   let p = 0, f = 0;
+  // Some tests await a promise settled only by an unref'd timer (mcp-gateway approval timeout): without a
+  // ref'd handle of its own, the process exits mid-suite (exit 0, no output) once no stray handle is left.
+  const keepAlive = setInterval(() => {}, 1 << 30);
   async function uta(name, fn) {
     try { await fn(); console.log(`  ✓ ${name}`); p++; }
     catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
@@ -4956,7 +4959,8 @@ async function runAsyncUnitTests() {
   // stoa.js end to end: a fake `claude` CLI (stream-json over stdin/stdout) on PATH behind the real
   // getSession → ClaudeSession → journal path. Prompts steer it (each control file is consumed): HOLD
   // waits for <ctl>/release before answering; BG starts a background task that ends when <ctl>/bg-done appears, followed by
-  // an autonomous turn that waits for <ctl>/auto-done.
+  // an autonomous turn that waits for <ctl>/auto-done. Every start is logged to <dir>/calls.log; a --resume of an
+// id starting with "bogus" fails like the real CLI ("No conversation found").
   const fakeStreamClaude = () => {
     const fs = require('fs'), os = require('os');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-wj-cli-'));
@@ -4965,6 +4969,9 @@ async function runAsyncUnitTests() {
     fs.writeFileSync(path.join(dir, 'claude'), `#!${process.execPath}
 const fs = require('fs'), path = require('path');
 const ctl = process.env.FAKE_CLAUDE_CTL;
+fs.appendFileSync(path.join(path.dirname(ctl), 'calls.log'), JSON.stringify(process.argv.slice(2)) + '\\n');
+const ri = process.argv.indexOf('--resume');
+if (ri !== -1 && String(process.argv[ri + 1]).startsWith('bogus')) { process.stderr.write('No conversation found with session ID: ' + process.argv[ri + 1] + '\\n'); process.exit(1); }
 const out = (e) => process.stdout.write(JSON.stringify({ session_id: 'fake-sid-1', ...e }) + '\\n');
 const waitFor = (f, cb) => { const t = setInterval(() => { try { fs.unlinkSync(path.join(ctl, f)); } catch { return; } clearInterval(t); cb(); }, 15); };
 const turn = (text, cb) => { out({ type: 'system', subtype: 'status', status: 'requesting' }); cb(() => { out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } }); out({ type: 'result', subtype: 'success', result: text }); }); };
@@ -5220,6 +5227,182 @@ process.stdin.on('end', () => process.exit(0));
       fs.rmSync(base, { recursive: true, force: true });
       fs.rmSync(workdir, { recursive: true, force: true });
     }
+  });
+
+  // ── Recovery, connector side (task #28): what a restarted connector reports from its journal.
+  const recActorId = parseInt(process.env.STOA_ACTOR_ID || '1');
+  await uta('stoa.js recovery — agent_ready(recover_journal) reports only entries of a dead process, each marked before it is sent, once per process; recovery_result ends all but recover', async () => {
+    const fs = require('fs');
+    const stoa = require('./stoa.js');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    const sent = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    try {
+      stoa.__setDeps({ send: (m) => sent.push(m), journalDir: base });
+      const old = createWorkJournal({ baseDir: base, actorId: recActorId, pid: 424242, log: wjQuiet() });
+      const mine = createWorkJournal({ baseDir: base, actorId: recActorId, pid: process.pid, log: wjQuiet() });
+      old.upsert('/w::10::t:1', { room_id: 10, thread_id: 1, task_id: 5, message_id: 77, state: 'turn_running', cause: 'turn', resume_session_id: 'sid-a' });
+      old.upsert('/w::10::t:2', { room_id: 10, thread_id: 2, state: 'background_only', cause: 'background' });
+      mine.upsert('/w::10::t:3', { room_id: 10, thread_id: 3, state: 'turn_running', cause: 'turn' });
+      old.markExit('update');
+      const reports = () => sent.filter(m => m.type === 'recovery_report');
+      await stoa.handleAgentMessage({ type: 'agent_ready' });
+      assert.strictEqual(reports().length, 0, 'an older server (no recover_journal) gets no report');
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true });
+      const rep = reports()[0];
+      assert.ok(rep && !Number.isNaN(Date.parse(rep.restarted_at)));
+      const byKey = Object.fromEntries(rep.entries.map(e => [e.session_key, e]));
+      assert.deepStrictEqual(Object.keys(byKey).sort(), ['/w::10::t:1', '/w::10::t:2'], 'own live entry (this pid) is never reported');
+      const e1 = byKey['/w::10::t:1'];
+      assert.deepStrictEqual([e1.room_id, e1.thread_id, e1.task_id, e1.message_id, e1.state, e1.resume_session_id, e1.recovery_count, e1.exit],
+        [10, 1, 5, 77, 'turn_running', 'sid-a', 1, 'update']);
+      assert.deepStrictEqual([byKey['/w::10::t:2'].state, byKey['/w::10::t:2'].recovery_count], ['background_only', 1]);
+      // Marked on disk before it was sent.
+      assert.deepStrictEqual([old.get('/w::10::t:1').recovery_count, !!old.get('/w::10::t:1').recovered_at], [1, true]);
+      assert.strictEqual(mine.get('/w::10::t:3').recovery_count, 0);
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true }); // reconnect after a server restart
+      assert.deepStrictEqual(reports()[1].entries, [], 'not reported twice by the same process');
+      assert.strictEqual(old.get('/w::10::t:1').recovery_count, 1, 'and not counted twice');
+      await stoa.handleAgentMessage({ type: 'recovery_result', results: [
+        { session_key: '/w::10::t:1', action: 'recover' }, { session_key: '/w::10::t:2', action: 'discard', reason: 'too old' },
+        { session_key: '/w::10::t:3', action: 'discard' }, { session_key: '../../etc', action: 'discard' }, 'junk', null] });
+      assert.ok(old.get('/w::10::t:1'), 'recover: kept until its run rewrites it');
+      assert.strictEqual(old.get('/w::10::t:2'), null, 'discarded: removed');
+      assert.ok(mine.get('/w::10::t:3'), 'an entry this process did not report is untouched');
+      // The next process (a restart again): no exit record for the dead pid → crash; the count goes on.
+      stoa.__resetDeps();
+      stoa.__setDeps({ send: (m) => sent.push(m), journalDir: base });
+      createWorkJournal({ baseDir: base, actorId: recActorId, pid: 999, log: wjQuiet() }).markExit('restart');
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true });
+      const e1b = reports()[2].entries.find(e => e.session_key === '/w::10::t:1');
+      assert.deepStrictEqual([e1b.recovery_count, e1b.exit], [2, 'crash']);
+    } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js recovery — SIGKILL mid-turn: the next connector process reports the entry (crash); a planned restart reports "restart"; each restart counts once', async () => {
+    const fs = require('fs');
+    const cp = require('child_process');
+    const cli = fakeStreamClaude();
+    const base = wjMkBase();
+    const workdir = fs.realpathSync(wjMkBase());
+    const stoaPath = JSON.stringify(path.join(__dirname, 'stoa.js'));
+    const env = { ...process.env, STOA_ACTOR_ID: '32' };
+    const dir = path.join(base, 'actor-32');
+    // The entry of this run (its message id) is on disk: the connector has journaled the turn.
+    const hasEntry = (messageId) => fs.existsSync(dir) && fs.readdirSync(dir).some(f => {
+      if (!/^[0-9a-f]{32}\.json$/.test(f)) return false;
+      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).message_id === messageId; } catch { return false; }
+    });
+    // A connector holding a turn; killed (SIGKILL) or asked to restart (manual) once its entry is on disk.
+    const runHolding = async (kill, messageId) => {
+      const script = `
+        const stoa = require(${stoaPath});
+        console.log = () => {}; console.warn = () => {};
+        stoa.__setDeps({ send: () => {}, journalDir: ${JSON.stringify(base)} });
+        stoa.handleAgentMessage({ type: 'agent_trigger', room_id: 4503, message_id: ${messageId}, thread_id: 5, task_id: 33, prompt: 'HOLD forever', workdir: ${JSON.stringify(workdir)} });
+        process.on('message', () => stoa.handleAgentMessage({ type: 'restart', reason: 'manual' }));
+        setInterval(() => {}, 1000);`;
+      const child = cp.spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env });
+      const exited = new Promise(r => child.once('exit', (c, s) => r(s || c)));
+      const end = Date.now() + 10000;
+      while (Date.now() < end && !hasEntry(messageId)) await new Promise(r => setTimeout(r, 25));
+      if (kill) child.kill('SIGKILL'); else child.send('restart');
+      return { pid: child.pid, how: await exited };
+    };
+    // A fresh connector process connecting: what it sends after agent_ready(recover_journal).
+    const nextProcess = () => {
+      const script = `
+        const stoa = require(${stoaPath});
+        console.log = () => {}; console.warn = () => {};
+        const out = [];
+        stoa.__setDeps({ send: (m) => out.push(m), journalDir: ${JSON.stringify(base)} });
+        stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true }).then(() => {
+          process.stdout.write(JSON.stringify(out.filter(m => m.type === 'recovery_report')));
+          process.exit(0);
+        });`;
+      return JSON.parse(cp.execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf8', timeout: 15000 }))[0];
+    };
+    try {
+      const killed = await runHolding(true, 81040);
+      assert.strictEqual(killed.how, 'SIGKILL');
+      let rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.room_id, e.thread_id, e.task_id, e.message_id, e.state, e.exit, e.recovery_count]),
+        [[4503, 5, 33, 81040, 'turn_running', 'crash', 1]]);
+      rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.exit, e.recovery_count]), [['crash', 2]], 'restart again before it settled: counted, not reset');
+      // A planned (owner) restart of a connector running the same session: exit record → "restart".
+      const planned = await runHolding(false, 81041);
+      assert.strictEqual(planned.how, 0);
+      rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.message_id, e.exit, e.recovery_count]), [[81041, 'restart', 3]],
+        'the run rewrote the entry (new pid) and kept the count');
+    } finally {
+      cli.restore();
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js recovery — the recovery run carries the count into its entry (another workdir: old entry removed); the count resets once the work settles', async () => {
+    await withJournalAgent(async ({ cli, entries, until, trigger, done, base, workdir }) => {
+      const { createWorkJournal } = require('./lib/work-journal');
+      const old = createWorkJournal({ baseDir: base, actorId: recActorId, pid: 777, log: wjQuiet() });
+      const oldKey = '/gone/workdir::4501::t:71988';
+      old.upsert(oldKey, { room_id: 4501, thread_id: 71988, state: 'turn_running', cause: 'turn' });
+      old.markRecovered(oldKey); old.markRecovered(oldKey);
+      await trigger(81050, 'HOLD recovered', { recovery: { session_key: oldKey, recovery_count: 2 } });
+      const key = `${workdir}::4501::t:71988`;
+      await until(() => entries().length === 1 && entries()[0].session_key === key, 'only the new entry');
+      assert.deepStrictEqual([entries()[0].recovery_count, entries()[0].pid, !!entries()[0].recovered_at], [2, process.pid, true]);
+      cli.signal('release');
+      await until(() => done(81050), 'recovery run done');
+      await until(() => entries().length === 0, 'settled: entry gone');
+      await trigger(81051, 'HOLD fresh work');
+      await until(() => entries().length === 1, 'new stretch');
+      assert.strictEqual(entries()[0].recovery_count, 0, 'consecutive count starts over');
+      cli.signal('release');
+      await until(() => done(81051), 'done');
+    });
+  });
+
+  await uta('stoa.js recovery — the resume id cannot be resumed: a fresh session answers in the same thread', async () => {
+    await withJournalAgent(async ({ cli, stoa, until, trigger, done, workdir }) => {
+      const fs = require('fs');
+      await trigger(81060, 'plain question after restart', { claude_session_id: 'bogus-sid-1', recovery: { session_key: 'k', recovery_count: 1 } });
+      await until(() => done(81060), 'answered', 20000);
+      const c = done(81060);
+      assert.deepStrictEqual([c.content, c.claude_session_id], ['ok', 'fake-sid-1'], 'answered by a new session');
+      const calls = fs.readFileSync(path.join(cli.dir, 'calls.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      assert.ok(calls[0].includes('--resume') && calls[0][calls[0].indexOf('--resume') + 1] === 'bogus-sid-1', 'first tried to resume');
+      assert.ok(calls.length >= 2 && !calls.at(-1).includes('--resume'), 'then started without --resume');
+      const s = stoa.sessionPool.get(`${workdir}::4501::t:71988`);
+      assert.ok(s, 'the session of the same thread');
+      assert.strictEqual(s.resumeId, null);
+    });
+  });
+
+  await uta('stoa.js recovery — an unchanged working entry is rewritten every JOURNAL_HEARTBEAT_MS (updated_at = last seen alive, the server\'s max age)', async () => {
+    await withJournalAgent(async ({ stoa, cli, entries, until, trigger, done }) => {
+      stoa.__setDeps({ JOURNAL_HEARTBEAT_MS: 60_000 });
+      await trigger(81070, 'HOLD long turn');
+      await until(() => entries().length === 1, 'entry');
+      const first = entries()[0].updated_at;
+      await new Promise(r => setTimeout(r, 30));
+      stoa.reconcileJournal();
+      assert.strictEqual(entries()[0].updated_at, first, 'within the heartbeat: not rewritten');
+      stoa.__setDeps({ JOURNAL_HEARTBEAT_MS: 20 });
+      await new Promise(r => setTimeout(r, 40));
+      stoa.reconcileJournal();
+      assert.ok(entries()[0].updated_at > first, 'past the heartbeat: rewritten');
+      cli.signal('release');
+      await until(() => done(81070), 'done');
+    });
   });
 
   await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
@@ -7977,6 +8160,7 @@ process.stdin.on('end', () => process.exit(0));
     });
   }
 
+  clearInterval(keepAlive);
   return { p, f };
 }
 
