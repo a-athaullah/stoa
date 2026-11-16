@@ -28416,6 +28416,26 @@ async function run() {
       assert.strictEqual((await put(root, { completed: true }, 99999999)).status, 404, 'unknown room');
       assert.strictEqual((await asAnon(() => put(root, { completed: true }))).status, 401, 'no session');
 
+      // A system notice in the thread (session compacted, config, agent offline) is not a reply: still complete
+      // on every read path. One escalated to the room feed (broadcast_reason) reopens it like an error.
+      const sysPart = mDb.prepare('SELECT participant_id AS p FROM messages WHERE id=?').get(root).p;
+      const sysEvent = (content, reason = null) => mDb.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, broadcast_reason) VALUES (?,?,?,'system_event',?,?)")
+        .run(roomA, sysPart, content, root, reason).lastInsertRowid;
+      const sysIds = [sysEvent('Agent · session compacted'), sysEvent('Agent · config'), sysEvent('Agent is offline')];
+      const statusAll = async () => [(await listed()).completed, !!(await listed('completed')), !!(await listed('open')),
+        (await req('GET', `/api/rooms/${roomA}/threads/${root}`)).body.root.completed,
+        (await req('GET', `/api/rooms/${roomA}/messages?before=${bare + 1}&limit=10`)).body.find(m => m.id === root).thread.completed,
+        (await joinedRoot()).thread.completed,
+        (await stoaOk(tokA, 'thread_read', { thread_id: root })).completed,
+        (await stoaOk(tokA, 'threads_list', { state: 'completed' })).threads.some(t => t.id === root)];
+      assert.deepStrictEqual(await statusAll(), [true, true, false, true, true, true, true, true], 'system notices keep the thread complete');
+      assert.strictEqual((await listed()).completed_at, doneAt());
+      assert.strictEqual(marker().thread_completed_through, reply, 'mark untouched');
+      sysEvent('trigger 1 tidak terproses — butuh manusia', 'error');
+      assert.deepStrictEqual(await statusAll(), [false, false, true, false, false, false, false, false], 'an escalated notice reopens');
+      assert.strictEqual((await put(root, { completed: true })).body.completed, true, 'marked again through the escalated notice');
+      assert.ok(marker().thread_completed_through > Math.max(...sysIds.map(Number)));
+
       // A reply after the mark reopens it on every read, with the marker left in place.
       await post({ content: 'more work in the thread', thread_id: root });
       assert.ok(marker().thread_completed_at, 'marker kept; status is derived');
