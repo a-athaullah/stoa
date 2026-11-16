@@ -630,6 +630,29 @@ Agent secara otomatis:
 - **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Update hanya dipasang setelah lolos pemeriksaan: server tidak pernah menawarkan bundle agent yang hilang, kosong, atau rusak (agent tetap di versi sekarang), dan agent memeriksa sintaks tiap unduhan sebelum mengganti dirinya sendiri, menyimpan file sebelumnya sebagai `<name>.bak`. Selama ada tool call yang berjalan, **tidak ada watchdog** (idle setelah token pertama: 5 menit, idle sebelum token pertama: 10 menit, stale sweep, maupun restart update) yang akan memotong run sampai 30 menit tanpa progres. Tanpa tool call aktif, batas normal berlaku: watchdog idle 5 menit (10 menit sebelum token pertama), dan 3 menit untuk restart update.
 - **Antrean retrigger** — jika trigger datang saat agent sedang mengunduh update, trigger disimpan secara durable dan dikirim ulang otomatis setelah agent terhubung kembali dengan versi terbaru. Urutan dalam tiap thread dipertahankan (FIFO); trigger duplikat dihapus. Jika pengiriman gagal 3 kali atau trigger sudah lebih dari 30 menit, trigger dibuang dan notifikasi sistem dikirim ke thread dan room feed.
 
+### Pemulihan Sesi Setelah Restart
+
+Saat sesi agent sedang aktif berjalan — giliran sedang diproses atau background task masih berjalan — konektor menulis entri jurnal ke disk. Jika konektor restart (crash, restart manual, atau self-update), server memeriksa entri jurnal yang belum selesai dan secara otomatis melanjutkannya di thread semula, mengirim pesan sistem:
+
+> `[pemulihan otomatis 1/3]` Konektor restart pada \<waktu\> (sebab: update konektor). Giliranmu terhenti … Task #N masih ongoing. …
+
+Sesi yang dilanjutkan menggunakan konteks sesi Claude yang sudah ada. Jika sesi tidak bisa dilanjutkan (misalnya file sesi sudah tidak ada), sesi baru dibuka di thread yang sama.
+
+**Yang tidak dipulihkan:**
+- Sesi yang idle (tidak ada giliran yang berjalan saat restart terjadi).
+- Sesi yang thread atau kartunya sudah tidak bisa diakses (room diarsipkan, thread selesai, kartu dihapus, dll.).
+- Server restart saat konektor tetap online tidak memicu pemulihan — run tersebut dilanjutkan lewat jalur active-session biasa.
+
+**Pengaman:**
+- Setiap entri jurnal dipulihkan paling banyak satu kali per restart.
+- **Maks pemulihan otomatis per thread** (default 3) — jika sebuah thread dipulihkan sebanyak ini secara berturut-turut, pemulihan dihentikan dan pesan dikirim ke thread. Kartu kembali ke Backlog dengan alasan.
+- **Umur maksimum pekerjaan terputus** (default 24 jam) — entri yang lebih tua dari ini dibuang, tidak dilanjutkan.
+- Pemulihan mengikuti batas **Concurrent Sessions** room — sesi yang dipulihkan antre di belakang trigger normal.
+
+**Kartu task** tetap di Ongoing selama grace period restart (10 menit). Kartu baru kembali ke Backlog jika pemulihan gagal, batas berturut-turut terlewat, atau tidak ada pemulihan dalam grace period.
+
+Kedua pengaturan bisa dikonfigurasi di **Settings > Server** di sebelah Concurrent Sessions.
+
 ### Re-autentikasi Agent
 
 Jika kredensial Claude agent kedaluwarsa, agent akan membalas dengan "Not logged in · Please run `/reauth`". Kamu bisa melakukan re-autentikasi dari jarak jauh melalui Stoa tanpa perlu menyentuh mesin agent:
@@ -1459,6 +1482,8 @@ Panel detail mencakup:
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
 - **Concurrent Sessions** — berapa thread yang bisa dijalankan agent secara bersamaan (default: 1; rekomendasi: 3). Paralel *antar* thread; selalu serial *dalam* satu thread. Langsung diterapkan, tanpa restart. **Risiko:** dengan nilai di atas 1, thread yang berbagi workdir yang sama bisa mengedit file atau menjalankan git bersamaan — tidak ada kunci yang mencegah ini. Biarkan di 1 untuk room yang agentnya mengedit kode bersama, atau berikan workdir terpisah untuk setiap thread.
+- **Maks pemulihan otomatis per thread** (default 3, rentang 1–20) — berapa kali sesi di satu thread bisa dipulihkan otomatis secara berturut-turut setelah restart konektor sebelum pemulihan dihentikan. Setelah batas tercapai, pesan dikirim ke thread dan kartu kembali ke Backlog.
+- **Umur maksimum pekerjaan terputus** (default 24 jam, rentang 1–168 jam) — entri jurnal yang lebih tua dari ini dibuang, tidak dilanjutkan. Naikkan untuk grace period yang lebih panjang pada task besar; turunkan untuk menghindari melanjutkan sesi lama yang sudah tidak relevan.
 - **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
