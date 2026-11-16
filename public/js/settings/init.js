@@ -251,6 +251,15 @@ function initSettings() {
     if (!val || val < 1 || val > 10) return;
     sSaveSetting('max_concurrent', val, 's-max-concurrent-saved');
   });
+  document.getElementById('s-recovery-max-save').addEventListener('click', () => {
+    sSaveIntSetting('s-recovery-max-input', 'recovery_max_per_thread', 1, 20, 's-recovery-max-saved', 'Recovery limit');
+  });
+  document.getElementById('s-recovery-age-save').addEventListener('click', () => {
+    sSaveIntSetting('s-recovery-age-input', 'recovery_max_age_hours', 1, 168, 's-recovery-age-saved', 'Recovery max age');
+  });
+  for (const id of ['s-recovery-max-input', 's-recovery-age-input']) {
+    document.getElementById(id).addEventListener('input', e => e.target.removeAttribute('aria-invalid'));
+  }
   document.getElementById('s-session-idle-ttl-save').addEventListener('click', () => {
     const val = parseInt(document.getElementById('s-session-idle-ttl-input').value);
     if (!val || val < 1 || val > 60) return;
@@ -276,7 +285,7 @@ function initSettings() {
     if (!val || val < 1 || val > 20) return;
     sSaveSetting("max_pinned_rooms", val, "s-max-pinned-saved");
   });
-  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-session-idle-ttl-input', 's-cleanup-hour-input', 's-cleanup-age-input', 's-max-pinned-input'].forEach(id => {
+  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-recovery-max-input', 's-recovery-age-input', 's-session-idle-ttl-input', 's-cleanup-hour-input', 's-cleanup-age-input', 's-max-pinned-input'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter') e.target.closest('.s-server-field').querySelector('.s-server-save').click();
     });

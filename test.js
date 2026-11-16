@@ -20973,6 +20973,72 @@ async function run() {
     assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
   });
 
+  await test('settings — recovery limit / max age fields: bounds match the server, invalid input never PATCHes, server error shown as text', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8');
+    const init = fs.readFileSync(path.join(__dirname, 'public/js/settings/init.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const fields = [['s-recovery-max', 'recovery_max_per_thread', 1, 20, 3], ['s-recovery-age', 'recovery_max_age_hours', 1, 168, 24]];
+    for (const [id, key, min, max] of fields) {
+      const tag = new RegExp(`<input[^>]*id="${id}-input"[^>]*>`).exec(html)?.[0] || '';
+      assert.deepStrictEqual([/min="(\d+)"/.exec(tag)?.[1], /max="(\d+)"/.exec(tag)?.[1]], [String(min), String(max)], `${id} input bounds`);
+      assert.ok(new RegExp(`<label class="s-server-field-label" for="${id}-input">`).test(html), `${id} has a real label`);
+      assert.ok(new RegExp(`body\\.${key}\\);\\s*if \\(val >= ${min} && val <= ${max}\\)`).test(srv), `server range for ${key} is ${min}-${max}`);
+      assert.ok(init.includes(`sSaveIntSetting('${id}-input', '${key}', ${min}, ${max}, '${id}-saved'`), `${id} save button uses the same bounds`);
+      assert.ok(new RegExp(`'${id}-input'[^\\]]*\\]\\.forEach\\(id => \\{\\s*document\\.getElementById\\(id\\)\\.addEventListener\\('keydown'`).test(init), `${id} saves on Enter`);
+    }
+    const order = ['s-max-concurrent-input', 's-recovery-max-input', 's-recovery-age-input', 's-session-idle-ttl-input'].map(id => html.indexOf(`id="${id}"`));
+    assert.deepStrictEqual([...order].sort((a, b) => a - b), order, 'placed right after concurrent sessions');
+
+    const els = {};
+    const el = id => els[id] || (els[id] = { id, value: '', attrs: {}, focused: 0, classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); } },
+      setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, focus() { this.focused++; } });
+    const toasts = [], patches = [];
+    let respond = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    const ctx = { document: { getElementById: el }, setTimeout: () => 0, showToast: (msg, o) => toasts.push([msg, !!o?.error]),
+      fetch: async (url, o) => { patches.push([url, o.method, JSON.parse(o.body)]); return respond(); } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/account.js'), 'utf8'), ctx);
+    const save = (id, key, min, max) => ctx.sSaveIntSetting(`${id}-input`, key, min, max, `${id}-saved`, 'Recovery limit');
+
+    const [id, key, min, max] = fields[0];
+    for (const bad of ['0', '21', '1.5', '', ' ', 'abc', '-3', '1e1']) {
+      el(`${id}-input`).value = bad;
+      await save(id, key, min, max);
+      assert.deepStrictEqual(toasts.pop(), ['Recovery limit must be a whole number from 1 to 20', true], `rejects ${JSON.stringify(bad)}`);
+      assert.strictEqual(el(`${id}-input`).attrs['aria-invalid'], 'true');
+    }
+    assert.deepStrictEqual(patches, [], 'invalid values never reach the server (it would ignore them and still answer 200)');
+
+    el(`${id}-input`).value = ' 7 ';
+    await save(id, key, min, max);
+    assert.deepStrictEqual(patches.pop(), ['/api/settings', 'PATCH', { recovery_max_per_thread: 7 }]);
+    assert.deepStrictEqual([el(`${id}-input`).attrs['aria-invalid'], el(`${id}-input`).value, el(`${id}-saved`).classList.set.has('visible'), toasts.length], [undefined, '7', true, 0]);
+    for (const v of ['1', '168']) {
+      el('s-recovery-age-input').value = v;
+      await save(...fields[1]);
+      assert.deepStrictEqual(patches.pop()[2], { recovery_max_age_hours: Number(v) }, `age ${v} is in range`);
+    }
+
+    el(`${id}-saved`).classList.set.clear();
+    respond = () => ({ ok: false, status: 400, json: async () => ({ error: '<img src=x onerror=alert(1)>' + 'x'.repeat(400) }) });
+    el(`${id}-input`).value = '5';
+    await save(id, key, min, max);
+    const [msg, isErr] = toasts.pop();
+    assert.ok(isErr && msg.startsWith('Failed to save setting: <img src=x onerror=alert(1)>') && msg.length === 'Failed to save setting: '.length + 200, 'server error text shown (truncated) — showToast renders it via textContent');
+    assert.strictEqual(el(`${id}-saved`).classList.set.has('visible'), false, 'no "saved" on failure');
+    respond = () => ({ ok: false, status: 500, json: async () => { throw new Error('not json'); } });
+    await save(id, key, min, max);
+    assert.deepStrictEqual(toasts.pop(), ['Failed to save setting', true], 'non-JSON error body falls back to the generic message');
+    ctx.fetch = async () => { throw new Error('offline'); };
+    await save(id, key, min, max);
+    assert.deepStrictEqual(toasts.pop(), ['Failed to save setting', true]);
+    const core = fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8');
+    const toastFn = core.slice(core.indexOf('function showToast('), core.indexOf('\n}\n', core.indexOf('function showToast(')));
+    assert.ok(toastFn.includes('el.textContent = msg;') && !/innerHTML/.test(toastFn), 'toast renders as text');
+  });
+
   await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip and hint name the platform', () => {
     const vm = require('vm');
     const fs = require('fs');
