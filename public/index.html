@@ -289,6 +289,20 @@
             <span class="s-server-value-hint">max parallel sessions per agent — applied instantly</span>
           </div>
           <div class="s-server-field">
+            <label class="s-server-field-label" for="s-recovery-max-input">recovery limit</label>
+            <input class="s-server-input" id="s-recovery-max-input" type="number" min="1" max="20" step="1" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-recovery-max-saved">saved</span>
+            <button class="s-server-save" id="s-recovery-max-save">save</button>
+            <span class="s-server-value-hint">auto-recoveries in a row per thread after a restart — past it, the card returns to backlog</span>
+          </div>
+          <div class="s-server-field">
+            <label class="s-server-field-label" for="s-recovery-age-input">recovery max age</label>
+            <input class="s-server-input" id="s-recovery-age-input" type="number" min="1" max="168" step="1" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-recovery-age-saved">saved</span>
+            <button class="s-server-save" id="s-recovery-age-save">save</button>
+            <span class="s-server-value-hint">hours — older interrupted work is dropped, not resumed</span>
+          </div>
+          <div class="s-server-field">
             <span class="s-server-field-label">session idle TTL</span>
             <input class="s-server-input" id="s-session-idle-ttl-input" type="number" min="1" max="60" style="width:70px" autocomplete="off">
             <span class="s-server-saved" id="s-session-idle-ttl-saved">saved</span>

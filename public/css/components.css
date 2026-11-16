@@ -304,6 +304,7 @@
   font-family: var(--h-sans); outline: none; transition: border-color .15s;
 }
 .s-server-input:focus { border-color: var(--h-ink-mute); }
+.s-server-input[aria-invalid="true"] { border-color: var(--h-red); }
 .s-server-save {
   background: var(--h-ink); color: var(--h-bg); border: none; border-radius: 8px;
   padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: var(--h-sans);
@@ -392,6 +393,10 @@
 .s-update-dlg .s-update-note { padding: 0; border: none; }
 .s-update-dlg-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 @media (max-width: 560px) {
+  .s-server-field:has(> .s-server-value-hint) { flex-wrap: wrap; gap: 8px 14px; }
+  .s-server-value-hint { flex-basis: 100%; margin-left: 0; }
+  .s-server-field:has(> .s-server-value-hint) .s-server-input { flex: 0 1 auto; min-width: 0; }
+  .s-server-field:has(> .s-server-value-hint) .s-server-save { margin-left: auto; }
   .s-update-dlg { padding: 16px 16px 14px; }
   #s-update-card .s-server-field { flex-wrap: wrap; gap: 8px 14px; }
   #s-update-card .s-server-field-label { width: 92px; }

@@ -82,6 +82,8 @@ async function sLoadServerTab() {
   document.getElementById('s-port-input').value = port;
   document.getElementById('s-max-ai-turns-input').value = data.max_ai_turns || 15;
   document.getElementById('s-max-concurrent-input').value = data.max_concurrent || 1;
+  document.getElementById('s-recovery-max-input').value = data.recovery_max_per_thread || 3;
+  document.getElementById('s-recovery-age-input').value = data.recovery_max_age_hours || 24;
   document.getElementById('s-session-idle-ttl-input').value = data.session_idle_ttl || 5;
   document.getElementById('s-compact-threshold-input').value = data.auto_compact_threshold_kb || 500;
   document.getElementById('s-cleanup-hour-input').value = data.cleanup_cron_hour ?? 10;
@@ -121,10 +123,33 @@ async function sRestartServer() {
   }
 }
 
+async function sSaveIntSetting(inputId, key, min, max, savedId, label) {
+  const input = document.getElementById(inputId);
+  const raw = input.value.trim();
+  const val = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!(val >= min && val <= max)) {
+    input.setAttribute('aria-invalid', 'true');
+    showToast(`${label} must be a whole number from ${min} to ${max}`, { error: true });
+    input.focus();
+    return;
+  }
+  input.removeAttribute('aria-invalid');
+  input.value = String(val);
+  await sSaveSetting(key, val, savedId);
+}
+
 async function sSaveSetting(key, value, savedId) {
   const body = {};
   body[key] = value;
-  try { const r = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) { showToast('Failed to save setting', { error: true }); return; } } catch { showToast('Failed to save setting', { error: true }); return; }
+  try {
+    const r = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => null);
+      const detail = typeof d?.error === 'string' && d.error.trim() ? d.error.trim().slice(0, 200) : '';
+      showToast(detail ? `Failed to save setting: ${detail}` : 'Failed to save setting', { error: true });
+      return;
+    }
+  } catch { showToast('Failed to save setting', { error: true }); return; }
   const el = document.getElementById(savedId);
   if (el) { el.classList.add('visible'); setTimeout(() => el.classList.remove('visible'), 2000); }
   if (key === 'human_name') {

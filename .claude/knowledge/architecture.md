@@ -211,7 +211,29 @@ Tracks which sessions are actively working so a connector restart (self-update, 
 
 **`task_id` delivery:** `triggerAiResponse` in `server.js` looks up the task card for the room+thread and sends its id in the `agent_trigger` WS event. For the first run of a runner card (before the thread is attached to the card), the server also accepts a card that is `running`, has no `thread_id` yet, and whose id is stamped on the thread's root message via `messages.task_id`. The connector stores it in the journal entry.
 
-**API:** `createWorkJournal({baseDir, actorId})` → `{ dir, upsert, remove, get, list, markRecovered, fileFor }`. `markRecovered()` is used by task card 3/3 recovery flow.
+**API:** `createWorkJournal({baseDir, actorId})` → `{ dir, upsert, remove, get, list, markRecovered, markExit, readExit, fileFor }`.
+
+**Exit record:** `exit.json` in the actor dir (`{ v, pid, reason: "update" | "restart", at }`), written by a planned exit (`doRestart`: self-update / server-requested restart = `update`, owner restart from the UI and SIGINT = `restart`). An entry whose pid has no exit record died unplanned (`crash`: crash, SIGKILL, OOM, reboot).
+
+**Heartbeat:** an unchanged working entry is rewritten every `JOURNAL_HEARTBEAT_MS` (10 min), so `updated_at` ≈ last seen alive.
+
+### Session Recovery (`lib/session-recovery.js`, self-healing 3/3)
+
+After a connector process dies mid-work, its journal entries are recovered once the agent is back:
+
+1. `agent_connect` → `agent_ready { recover_journal: true }` (only when the agent is current; an outdated agent updates first and its next process reports).
+2. The connector sends `recovery_report { restarted_at, entries[] }`: entries **another** process wrote (own pid = live work, never reported), max 50, once per process. Each entry is `markRecovered()` (count + 1) **before** it is sent; an entry that cannot be marked is not reported.
+3. The server (`sessionRecovery.report`) decides per entry, one report per connection: **discard** (not a participant, room archived, thread not a root of that room, sub-agent not owned/linked, malformed, `updated_at` older than `RECOVERY_MAX_AGE_HOURS`), **skip** (thread marked complete, a run in flight, a queued retrigger, an interrupted sub-agent run whose parent is woken via `pending_wakes`), **limit** (`recovery_count > RECOVERY_MAX_PER_THREAD`: system_event in the thread + running card → `returnToBacklog` with the reason), **recover** (row in `pending_recoveries`). It answers `recovery_result`; the connector removes every entry except `recover`.
+4. `drainOne` (on report and on every `agent_connect`, only to a ready agent): claims (deletes) the row, posts the recovery notice as a system_event, then `triggerAiResponse` in the same thread (same queue, `max_concurrent`, outdated/offline handling). The card is looked up by thread on the server, never from the entry. The session resumes from `ai_sessions`, else the journal's `resume_session_id`; an id the CLI cannot resume falls back to a fresh session in the same thread (`claude-session.js`, "No conversation found"). `agent_trigger.recovery { session_key, recovery_count }` carries the count into the run's entry.
+5. Failure: the recovery run ends with `agent_error` → card to Backlog (`recovery failed: <error>`); interrupted again (disconnect/timeout) → nothing, the journal reports it again (counted); a row not drained within 30 min (sweep) → card to Backlog (`recovery failed: the agent was not ready within 30 minutes`).
+
+**Consecutive count** lives in the journal entry (agent disk): survives connector and server restarts, resets when the session's work settles (entry removed). A crash-looping connector reaches the limit.
+
+**A server restart alone recovers nothing:** the connector keeps running, its runs are revived on reconnect (`active_message_ids`), its entries carry its own pid.
+
+**Card grace:** besides the server-start `reap()`, `roomTasksRunner.holdThreads()` gives the running cards of the agent's interrupted threads the restart grace on disconnect / reconnect cleanup, so a connector-only restart no longer lets the quiet check finish a card from the `(interrupted …)` reply before the recovery arrives.
+
+**Logs** (`[recovery]`): `restart: N sesi akan dipulihkan (Actor #X, M entri dilaporkan)`, then one line per entry: `dipulihkan` / `dilewati` / `dibuang` / `dihentikan` with the reason; `trigger:`, `terputus:`, `gagal:` while draining. The connector logs `restart: N journal entries reported` and one line per verdict.
 
 ## Security Model
 

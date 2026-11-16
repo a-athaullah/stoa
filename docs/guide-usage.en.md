@@ -629,6 +629,29 @@ Agents automatically:
 - **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). An update is installed only after it passes checks: the server never offers an agent bundle that is missing, empty or broken (agents then stay on their current version), and the agent syntax-checks each download before replacing itself, keeping the previous file as `<name>.bak`. While any tool call is running, **no watchdog** (idle after first token: 5 min, idle before first token: 10 min, stale sweep, or update restart) will cut it until 30 minutes without progress. Without an active tool call, the normal limits apply: 5-minute idle watchdog (10 minutes before the first token), 3-minute restart cap.
 - **Retrigger queue** — if a trigger arrives while the agent is downloading an update, it is saved durably and re-delivered automatically once the agent reconnects with the current version. Order within each thread is preserved (FIFO); duplicate triggers are deduplicated. If delivery fails 3 times or the trigger is older than 30 minutes, it is discarded and a system notice is posted in the thread and in the room feed.
 
+### Session Recovery After Restart
+
+When an agent session is actively running — a turn in progress or a background task still running — the connector writes a journal entry to disk. If the connector restarts (crash, manual restart, or self-update), the server checks for unfinished journal entries and automatically resumes each one in its original thread, posting a system message:
+
+> `[automatic recovery 1/3]` The connector/server restarted at \<time\> (cause: connector self-update). Your turn stopped and its process is gone. Task #N is still ongoing. …
+
+The resumed session uses the existing Claude session context. If the session cannot be resumed (e.g., the session file no longer exists), a new session is opened in the same thread.
+
+**What is not recovered:**
+- Idle sessions (no turn was running when the restart occurred).
+- Sessions whose thread or card is no longer accessible (archived room, completed thread, deleted card, etc.).
+- A server restart while the connector stays online does not trigger recovery — those runs are continued via the normal active-session path.
+
+**Safeguards:**
+- Each journal entry is recovered at most once per restart.
+- **recovery limit** (default 3) — if a thread is recovered this many times consecutively, recovery stops and a message is posted in the thread. The card returns to Backlog with a reason.
+- **recovery max age** (default 24 h) — entries older than this are discarded, not resumed.
+- Recovery respects the room's **Concurrent Sessions** limit — recovered sessions queue behind normal triggers.
+
+**Task cards** stay in Ongoing during the restart grace period (10 minutes). A card returns to Backlog only if recovery fails, the consecutive limit is exceeded, or no recovery arrives within the grace period.
+
+Both settings are on the **Server** page, **configuration** card, below **concurrent sessions**.
+
 ### Agent Re-authentication
 
 If an agent's Claude credentials expire, it will reply with "Not logged in · Please run `/reauth`". You can re-authenticate the agent remotely from Stoa without touching the agent's machine:
@@ -1458,6 +1481,8 @@ The detail panel includes:
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
 - **Concurrent Sessions** — how many threads an agent can run at the same time (default: 1; recommended: 3). Parallel *between* threads; always serial *within* a single thread. Applied instantly, no restart needed. **Risk:** with a value above 1, threads that share the same workdir can edit files or run git simultaneously — nothing prevents this. Keep it at 1 for rooms where the agent works on shared code, or give each thread a separate workdir.
+- **recovery limit** (default 3, range 1–20) — how many consecutive times a session in one thread can be automatically recovered after a connector restart before recovery stops. After the limit is reached, a message is posted in the thread and the card returns to Backlog.
+- **recovery max age** (default 24 h, range 1–168 h) — journal entries older than this are discarded rather than resumed. Increase it for longer grace periods on large tasks; decrease it to avoid recovering very old unfinished sessions.
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)

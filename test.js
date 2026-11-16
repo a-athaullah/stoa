@@ -2987,6 +2987,9 @@ function runUnitTests() {
 // ── Async Unit Tests (no server required, properly awaited) ──────────────
 async function runAsyncUnitTests() {
   let p = 0, f = 0;
+  // Some tests await a promise settled only by an unref'd timer (mcp-gateway approval timeout): without a
+  // ref'd handle of its own, the process exits mid-suite (exit 0, no output) once no stray handle is left.
+  const keepAlive = setInterval(() => {}, 1 << 30);
   async function uta(name, fn) {
     try { await fn(); console.log(`  ✓ ${name}`); p++; }
     catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
@@ -4956,7 +4959,8 @@ async function runAsyncUnitTests() {
   // stoa.js end to end: a fake `claude` CLI (stream-json over stdin/stdout) on PATH behind the real
   // getSession → ClaudeSession → journal path. Prompts steer it (each control file is consumed): HOLD
   // waits for <ctl>/release before answering; BG starts a background task that ends when <ctl>/bg-done appears, followed by
-  // an autonomous turn that waits for <ctl>/auto-done.
+  // an autonomous turn that waits for <ctl>/auto-done. Every start is logged to <dir>/calls.log; a --resume of an
+// id starting with "bogus" fails like the real CLI ("No conversation found").
   const fakeStreamClaude = () => {
     const fs = require('fs'), os = require('os');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-wj-cli-'));
@@ -4965,6 +4969,9 @@ async function runAsyncUnitTests() {
     fs.writeFileSync(path.join(dir, 'claude'), `#!${process.execPath}
 const fs = require('fs'), path = require('path');
 const ctl = process.env.FAKE_CLAUDE_CTL;
+fs.appendFileSync(path.join(path.dirname(ctl), 'calls.log'), JSON.stringify(process.argv.slice(2)) + '\\n');
+const ri = process.argv.indexOf('--resume');
+if (ri !== -1 && String(process.argv[ri + 1]).startsWith('bogus')) { process.stderr.write('No conversation found with session ID: ' + process.argv[ri + 1] + '\\n'); process.exit(1); }
 const out = (e) => process.stdout.write(JSON.stringify({ session_id: 'fake-sid-1', ...e }) + '\\n');
 const waitFor = (f, cb) => { const t = setInterval(() => { try { fs.unlinkSync(path.join(ctl, f)); } catch { return; } clearInterval(t); cb(); }, 15); };
 const turn = (text, cb) => { out({ type: 'system', subtype: 'status', status: 'requesting' }); cb(() => { out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } }); out({ type: 'result', subtype: 'success', result: text }); }); };
@@ -5220,6 +5227,182 @@ process.stdin.on('end', () => process.exit(0));
       fs.rmSync(base, { recursive: true, force: true });
       fs.rmSync(workdir, { recursive: true, force: true });
     }
+  });
+
+  // ── Recovery, connector side (task #28): what a restarted connector reports from its journal.
+  const recActorId = parseInt(process.env.STOA_ACTOR_ID || '1');
+  await uta('stoa.js recovery — agent_ready(recover_journal) reports only entries of a dead process, each marked before it is sent, once per process; recovery_result ends all but recover', async () => {
+    const fs = require('fs');
+    const stoa = require('./stoa.js');
+    const { createWorkJournal } = require('./lib/work-journal');
+    const base = wjMkBase();
+    const sent = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    try {
+      stoa.__setDeps({ send: (m) => sent.push(m), journalDir: base });
+      const old = createWorkJournal({ baseDir: base, actorId: recActorId, pid: 424242, log: wjQuiet() });
+      const mine = createWorkJournal({ baseDir: base, actorId: recActorId, pid: process.pid, log: wjQuiet() });
+      old.upsert('/w::10::t:1', { room_id: 10, thread_id: 1, task_id: 5, message_id: 77, state: 'turn_running', cause: 'turn', resume_session_id: 'sid-a' });
+      old.upsert('/w::10::t:2', { room_id: 10, thread_id: 2, state: 'background_only', cause: 'background' });
+      mine.upsert('/w::10::t:3', { room_id: 10, thread_id: 3, state: 'turn_running', cause: 'turn' });
+      old.markExit('update');
+      const reports = () => sent.filter(m => m.type === 'recovery_report');
+      await stoa.handleAgentMessage({ type: 'agent_ready' });
+      assert.strictEqual(reports().length, 0, 'an older server (no recover_journal) gets no report');
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true });
+      const rep = reports()[0];
+      assert.ok(rep && !Number.isNaN(Date.parse(rep.restarted_at)));
+      const byKey = Object.fromEntries(rep.entries.map(e => [e.session_key, e]));
+      assert.deepStrictEqual(Object.keys(byKey).sort(), ['/w::10::t:1', '/w::10::t:2'], 'own live entry (this pid) is never reported');
+      const e1 = byKey['/w::10::t:1'];
+      assert.deepStrictEqual([e1.room_id, e1.thread_id, e1.task_id, e1.message_id, e1.state, e1.resume_session_id, e1.recovery_count, e1.exit],
+        [10, 1, 5, 77, 'turn_running', 'sid-a', 1, 'update']);
+      assert.deepStrictEqual([byKey['/w::10::t:2'].state, byKey['/w::10::t:2'].recovery_count], ['background_only', 1]);
+      // Marked on disk before it was sent.
+      assert.deepStrictEqual([old.get('/w::10::t:1').recovery_count, !!old.get('/w::10::t:1').recovered_at], [1, true]);
+      assert.strictEqual(mine.get('/w::10::t:3').recovery_count, 0);
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true }); // reconnect after a server restart
+      assert.deepStrictEqual(reports()[1].entries, [], 'not reported twice by the same process');
+      assert.strictEqual(old.get('/w::10::t:1').recovery_count, 1, 'and not counted twice');
+      await stoa.handleAgentMessage({ type: 'recovery_result', results: [
+        { session_key: '/w::10::t:1', action: 'recover' }, { session_key: '/w::10::t:2', action: 'discard', reason: 'too old' },
+        { session_key: '/w::10::t:3', action: 'discard' }, { session_key: '../../etc', action: 'discard' }, 'junk', null] });
+      assert.ok(old.get('/w::10::t:1'), 'recover: kept until its run rewrites it');
+      assert.strictEqual(old.get('/w::10::t:2'), null, 'discarded: removed');
+      assert.ok(mine.get('/w::10::t:3'), 'an entry this process did not report is untouched');
+      // The next process (a restart again): no exit record for the dead pid → crash; the count goes on.
+      stoa.__resetDeps();
+      stoa.__setDeps({ send: (m) => sent.push(m), journalDir: base });
+      createWorkJournal({ baseDir: base, actorId: recActorId, pid: 999, log: wjQuiet() }).markExit('restart');
+      await stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true });
+      const e1b = reports()[2].entries.find(e => e.session_key === '/w::10::t:1');
+      assert.deepStrictEqual([e1b.recovery_count, e1b.exit], [2, 'crash']);
+    } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js recovery — SIGKILL mid-turn: the next connector process reports the entry (crash); a planned restart reports "restart"; each restart counts once', async () => {
+    const fs = require('fs');
+    const cp = require('child_process');
+    const cli = fakeStreamClaude();
+    const base = wjMkBase();
+    const workdir = fs.realpathSync(wjMkBase());
+    const stoaPath = JSON.stringify(path.join(__dirname, 'stoa.js'));
+    const env = { ...process.env, STOA_ACTOR_ID: '32' };
+    const dir = path.join(base, 'actor-32');
+    // The entry of this run (its message id) is on disk: the connector has journaled the turn.
+    const hasEntry = (messageId) => fs.existsSync(dir) && fs.readdirSync(dir).some(f => {
+      if (!/^[0-9a-f]{32}\.json$/.test(f)) return false;
+      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).message_id === messageId; } catch { return false; }
+    });
+    // A connector holding a turn; killed (SIGKILL) or asked to restart (manual) once its entry is on disk.
+    const runHolding = async (kill, messageId) => {
+      const script = `
+        const stoa = require(${stoaPath});
+        console.log = () => {}; console.warn = () => {};
+        stoa.__setDeps({ send: () => {}, journalDir: ${JSON.stringify(base)} });
+        stoa.handleAgentMessage({ type: 'agent_trigger', room_id: 4503, message_id: ${messageId}, thread_id: 5, task_id: 33, prompt: 'HOLD forever', workdir: ${JSON.stringify(workdir)} });
+        process.on('message', () => stoa.handleAgentMessage({ type: 'restart', reason: 'manual' }));
+        setInterval(() => {}, 1000);`;
+      const child = cp.spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env });
+      const exited = new Promise(r => child.once('exit', (c, s) => r(s || c)));
+      const end = Date.now() + 10000;
+      while (Date.now() < end && !hasEntry(messageId)) await new Promise(r => setTimeout(r, 25));
+      if (kill) child.kill('SIGKILL'); else child.send('restart');
+      return { pid: child.pid, how: await exited };
+    };
+    // A fresh connector process connecting: what it sends after agent_ready(recover_journal).
+    const nextProcess = () => {
+      const script = `
+        const stoa = require(${stoaPath});
+        console.log = () => {}; console.warn = () => {};
+        const out = [];
+        stoa.__setDeps({ send: (m) => out.push(m), journalDir: ${JSON.stringify(base)} });
+        stoa.handleAgentMessage({ type: 'agent_ready', recover_journal: true }).then(() => {
+          process.stdout.write(JSON.stringify(out.filter(m => m.type === 'recovery_report')));
+          process.exit(0);
+        });`;
+      return JSON.parse(cp.execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf8', timeout: 15000 }))[0];
+    };
+    try {
+      const killed = await runHolding(true, 81040);
+      assert.strictEqual(killed.how, 'SIGKILL');
+      let rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.room_id, e.thread_id, e.task_id, e.message_id, e.state, e.exit, e.recovery_count]),
+        [[4503, 5, 33, 81040, 'turn_running', 'crash', 1]]);
+      rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.exit, e.recovery_count]), [['crash', 2]], 'restart again before it settled: counted, not reset');
+      // A planned (owner) restart of a connector running the same session: exit record → "restart".
+      const planned = await runHolding(false, 81041);
+      assert.strictEqual(planned.how, 0);
+      rep = nextProcess();
+      assert.deepStrictEqual(rep.entries.map(e => [e.message_id, e.exit, e.recovery_count]), [[81041, 'restart', 3]],
+        'the run rewrote the entry (new pid) and kept the count');
+    } finally {
+      cli.restore();
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js recovery — the recovery run carries the count into its entry (another workdir: old entry removed); the count resets once the work settles', async () => {
+    await withJournalAgent(async ({ cli, entries, until, trigger, done, base, workdir }) => {
+      const { createWorkJournal } = require('./lib/work-journal');
+      const old = createWorkJournal({ baseDir: base, actorId: recActorId, pid: 777, log: wjQuiet() });
+      const oldKey = '/gone/workdir::4501::t:71988';
+      old.upsert(oldKey, { room_id: 4501, thread_id: 71988, state: 'turn_running', cause: 'turn' });
+      old.markRecovered(oldKey); old.markRecovered(oldKey);
+      await trigger(81050, 'HOLD recovered', { recovery: { session_key: oldKey, recovery_count: 2 } });
+      const key = `${workdir}::4501::t:71988`;
+      await until(() => entries().length === 1 && entries()[0].session_key === key, 'only the new entry');
+      assert.deepStrictEqual([entries()[0].recovery_count, entries()[0].pid, !!entries()[0].recovered_at], [2, process.pid, true]);
+      cli.signal('release');
+      await until(() => done(81050), 'recovery run done');
+      await until(() => entries().length === 0, 'settled: entry gone');
+      await trigger(81051, 'HOLD fresh work');
+      await until(() => entries().length === 1, 'new stretch');
+      assert.strictEqual(entries()[0].recovery_count, 0, 'consecutive count starts over');
+      cli.signal('release');
+      await until(() => done(81051), 'done');
+    });
+  });
+
+  await uta('stoa.js recovery — the resume id cannot be resumed: a fresh session answers in the same thread', async () => {
+    await withJournalAgent(async ({ cli, stoa, until, trigger, done, workdir }) => {
+      const fs = require('fs');
+      await trigger(81060, 'plain question after restart', { claude_session_id: 'bogus-sid-1', recovery: { session_key: 'k', recovery_count: 1 } });
+      await until(() => done(81060), 'answered', 20000);
+      const c = done(81060);
+      assert.deepStrictEqual([c.content, c.claude_session_id], ['ok', 'fake-sid-1'], 'answered by a new session');
+      const calls = fs.readFileSync(path.join(cli.dir, 'calls.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      assert.ok(calls[0].includes('--resume') && calls[0][calls[0].indexOf('--resume') + 1] === 'bogus-sid-1', 'first tried to resume');
+      assert.ok(calls.length >= 2 && !calls.at(-1).includes('--resume'), 'then started without --resume');
+      const s = stoa.sessionPool.get(`${workdir}::4501::t:71988`);
+      assert.ok(s, 'the session of the same thread');
+      assert.strictEqual(s.resumeId, null);
+    });
+  });
+
+  await uta('stoa.js recovery — an unchanged working entry is rewritten every JOURNAL_HEARTBEAT_MS (updated_at = last seen alive, the server\'s max age)', async () => {
+    await withJournalAgent(async ({ stoa, cli, entries, until, trigger, done }) => {
+      stoa.__setDeps({ JOURNAL_HEARTBEAT_MS: 60_000 });
+      await trigger(81070, 'HOLD long turn');
+      await until(() => entries().length === 1, 'entry');
+      const first = entries()[0].updated_at;
+      await new Promise(r => setTimeout(r, 30));
+      stoa.reconcileJournal();
+      assert.strictEqual(entries()[0].updated_at, first, 'within the heartbeat: not rewritten');
+      stoa.__setDeps({ JOURNAL_HEARTBEAT_MS: 20 });
+      await new Promise(r => setTimeout(r, 40));
+      stoa.reconcileJournal();
+      assert.ok(entries()[0].updated_at > first, 'past the heartbeat: rewritten');
+      cli.signal('release');
+      await until(() => done(81070), 'done');
+    });
   });
 
   await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
@@ -7605,6 +7788,34 @@ process.stdin.on('end', () => process.exit(0));
       } finally { w.close(); }
     });
 
+    await uta('Tasks runner — holdThreads (agent restart alone): the interrupted reply does not finish the card; activity ends the hold; no recovery → Backlog with RESTART_UNRECOVERED', async () => {
+      const w = world({ restartGraceMs: 80 });
+      try {
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        const ta = w.tasks.get(10, a.id).body, tb = w.tasks.get(10, b.id).body;
+        // The agent's connector died: the disconnect cleanup stamped both runs interrupted.
+        for (const t of [ta, tb]) {
+          w.db.prepare(`INSERT INTO messages (room_id, participant_id, content, state, thread_id, result_meta)
+            VALUES (10, (SELECT id FROM room_participants WHERE room_id=10 AND actor_id=2), '(interrupted — agent disconnected)', 'error', ?, '{"exit_reason":"interrupted"}')`).run(t.thread_id);
+        }
+        assert.strictEqual(w.runner.holdThreads([{ room_id: 10, thread_id: ta.thread_id }, { room_id: 10, thread_id: tb.thread_id }, { room_id: 10, thread_id: ta.thread_id }, null, { room_id: 10 }]), 2);
+        for (let i = 0; i < 3; i++) w.runner.checkRuns();
+        assert.deepStrictEqual([a, b].map(t => w.tasks.get(10, t.id).body.status), ['running', 'running'], 'not finished from the interrupted reply');
+        w.deps.busy.add(tb.thread_id); // B's recovery is queued / running
+        w.runner.checkRuns();
+        w.deps.busy.delete(tb.thread_id);
+        w.reply(b.id, 2, 'recovered and done');
+        await sleepT(100);
+        w.runner.checkRuns(); w.runner.checkRuns();
+        const ra = w.tasks.get(10, a.id).body, rb = w.tasks.get(10, b.id).body;
+        assert.deepStrictEqual([rb.col, rb.status, rb.result_summary], ['finished', 'done', 'recovered and done'], 'B: normal checks after its recovery');
+        assert.deepStrictEqual([ra.col, ra.status, ra.thread_id, ra.events.at(-1).meta.reason], ['backlog', 'idle', ta.thread_id, RESTART_UNRECOVERED], 'A: never recovered');
+      } finally { w.close(); }
+    });
+
     await uta('Tasks runner — returnToBacklog: validated reason, event names it, thread kept, 409 when not running', async () => {
       const w = world();
       try {
@@ -7977,6 +8188,7 @@ process.stdin.on('end', () => process.exit(0));
     });
   }
 
+  clearInterval(keepAlive);
   return { p, f };
 }
 
@@ -11715,6 +11927,353 @@ async function run() {
         await req('DELETE', `/api/actors/${ag.actorId}`);
         orphanActorIds = orphanActorIds.filter(x => x !== ag.actorId);
       }
+    });
+  }
+
+  // ── Session recovery after a restart (lib/session-recovery.js, task #28). A fake agent socket plays the
+  // restarted connector: it reconnects and sends the recovery_report a real connector builds from its work
+  // journal (the connector side has its own tests above, with the real stoa.js).
+  console.log('\n[Session recovery]');
+  {
+    const rDb = require('./db');
+    let ag = null, other = null, roomId = null, otherRoomId = null, humanWs = null, sub = null, unlinked = null;
+    const frames = [];
+    const waitFor = async (fn, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      for (;;) {
+        const v = fn();
+        if (v) return v;
+        if (Date.now() > end) return null;
+        await new Promise(r => setTimeout(r, 50));
+      }
+    };
+    const sleepR = (ms) => new Promise(r => setTimeout(r, ms));
+    const ready = () => !!(ag && roomId && humanWs && sub);
+    const tasks = () => `/api/rooms/${roomId}/tasks`;
+    const card = (id) => rDb.prepare('SELECT * FROM room_tasks WHERE id=?').get(id);
+    const iso = (agoMs = 0) => new Date(Date.now() - agoMs).toISOString();
+    const keyOf = (thread, subId = null) => `/tmp/stoa-test-rec::${roomId}::t:${thread}${subId ? `::sub:${subId}` : ''}`;
+    const entry = (thread, over = {}) => ({
+      session_key: keyOf(thread, over.sub_agent_id), room_id: roomId, thread_id: thread, sub_agent_id: null, message_id: null, task_id: null,
+      resume_session_id: 'sid-journal-1', harness: 'claude', state: 'turn_running', cause: 'turn', since: iso(60_000), updated_at: iso(5_000),
+      recovery_count: 1, exit: 'update', ...over,
+    });
+    // The connector restarts: old socket gone (the server stamps its runs interrupted), a new process connects.
+    const restartAgent = async (a) => {
+      if (a.ws && a.ws.readyState === 1) {
+        const closed = new Promise(r => a.ws.once('close', r));
+        a.ws.close();
+        await closed;
+        await sleepR(150);
+      }
+      a.ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const rdy = waitForWsMessage(a.ws, m => m.type === 'agent_ready', 5000);
+      a.ws.send(JSON.stringify({ type: 'agent_connect', actor_id: a.actorId, secret: a.secret }));
+      a.ready = await rdy;
+      return a;
+    };
+    const report = (a, entries, restartedAt = iso(2_000)) => {
+      const res = waitForWsMessage(a.ws, m => m.type === 'recovery_result', 5000);
+      a.ws.send(JSON.stringify({ type: 'recovery_report', restarted_at: restartedAt, entries }));
+      return res;
+    };
+    const verdicts = (res) => Object.fromEntries(res.results.map(r => [r.session_key, r.action]));
+    const sysEvents = (thread) => rDb.prepare("SELECT content FROM messages WHERE room_id=? AND thread_id=? AND state='system_event' ORDER BY id").all(roomId, thread).map(r => r.content);
+    // A thread of its own: a human root and one completed agent run in it.
+    const newThread = async (text, sid = null) => {
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content: text }));
+      const m = await trig;
+      if (sid) {
+        ag.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomId, message_id: m.message_id, content: 'done', claude_session_id: sid }));
+        assert.ok(await waitFor(() => rDb.prepare('SELECT state FROM messages WHERE id=?').get(m.message_id).state === 'complete'));
+      } else {
+        await completeRun(ag.ws, roomId, m);
+      }
+      return m.thread_id;
+    };
+    const noTrigger = (a, ms = 700) => waitForWsMessage(a.ws, m => m.type === 'agent_trigger', ms).then(m => m, () => null);
+    // Starts a card through the runner and returns { task, trigger } with the run still in flight.
+    const runCard = async (title) => {
+      const t = (await req('POST', tasks(), { title })).body;
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === roomId, 8000);
+      assert.strictEqual((await req('POST', `${tasks()}/runner/play`)).status, 200);
+      const m = await trig;
+      const c = await waitFor(() => { const x = card(t.id); return x.thread_id ? x : null; });
+      assert.ok(c, 'card got its thread');
+      return { task: c, trigger: m };
+    };
+
+    await test('Recovery — setup: agent with a linked sub-agent, a second agent in another room, owner socket', async () => {
+      ag = await createOnlineTestAgent('__test-recovery-a', '/tmp/stoa-test-rec');
+      other = await createOnlineTestAgent('__test-recovery-o', '/tmp/stoa-test-rec-o');
+      assert.ok(ag?.workdirId && other?.workdirId, 'agent setup failed');
+      const r = await req('POST', '/api/rooms', { title: '__recovery-room__', workdir_id: ag.workdirId, participant_ids: [ag.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      roomId = r.body.id;
+      const o = await req('POST', '/api/rooms', { title: '__recovery-other__', workdir_id: other.workdirId, participant_ids: [other.actorId] });
+      assert.strictEqual(o.status, 200);
+      otherRoomId = o.body.id;
+      sub = (await req('POST', `/api/actors/${ag.actorId}/sub-agents`, { label: 'recoverer', tier: 'quick' })).body;
+      unlinked = (await req('POST', `/api/actors/${ag.actorId}/sub-agents`, { label: 'notlinked', tier: 'quick' })).body;
+      assert.ok(sub?.id && unlinked?.id);
+      assert.strictEqual((await req('POST', `/api/rooms/${roomId}/sub-agents`, { sub_agent_id: sub.id })).status, 200);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await hist;
+      humanWs.on('message', (d) => { try { frames.push(JSON.parse(d.toString())); } catch {} });
+      assert.ok(rDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_recoveries'").get(), 'migration applied');
+    });
+
+    await test('Recovery — agent_ready asks a current agent for its journal (recover_journal); one report per connection', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      await restartAgent(ag);
+      assert.strictEqual(ag.ready.recover_journal, true);
+      const first = await report(ag, []);
+      assert.deepStrictEqual(first.results, []);
+      const again = waitForWsMessage(ag.ws, m => m.type === 'recovery_result', 700).then(() => 'answered', () => 'ignored');
+      ag.ws.send(JSON.stringify({ type: 'recovery_report', entries: [entry(1)] }));
+      assert.strictEqual(await again, 'ignored', 'a second report on the same connection is dropped');
+      // A browser socket is not an agent: the message is refused before it reaches the handler.
+      const res = waitForWsMessage(humanWs, m => m.type === 'recovery_result', 700).then(() => 'answered', () => 'ignored');
+      humanWs.send(JSON.stringify({ type: 'recovery_report', entries: [entry(1)] }));
+      assert.strictEqual(await res, 'ignored');
+    });
+
+    await test('Recovery — connector restart mid-turn on a running card: grace keeps it, the report resumes the session in its thread with the task id, card unchanged', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const { task, trigger } = await runCard('Ship the build');
+      try {
+        const before = card(task.id);
+        // The connector dies (self-update): the server stamps the run interrupted. Without the grace the quiet
+        // check would finish the card from that reply after TASK_SETTLE_MS (300 ms here).
+        await restartAgent(ag);
+        assert.strictEqual(rDb.prepare("SELECT json_extract(result_meta, '$.exit_reason') AS r FROM messages WHERE id=?").get(trigger.message_id).r, 'interrupted');
+        await sleepR(1200);
+        const held = card(task.id);
+        assert.deepStrictEqual([held.col, held.status, held.thread_id, held.message_id], ['ongoing', 'running', before.thread_id, before.message_id], 'held in the grace');
+        const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.thread_id === before.thread_id, 5000);
+        const res = await report(ag, [entry(before.thread_id, { task_id: 987654321, message_id: trigger.message_id })]);
+        assert.deepStrictEqual(res.results.map(r => r.action), ['recover']);
+        const m = await trig;
+        assert.deepStrictEqual([m.room_id, m.thread_id, m.task_id, m.sub_agent], [roomId, before.thread_id, task.id, undefined], 'same thread; the card comes from the server, not the entry');
+        assert.deepStrictEqual(m.recovery, { session_key: keyOf(before.thread_id), recovery_count: 1 });
+        assert.strictEqual(m.claude_session_id, 'sid-journal-1', 'no server session yet (first turn cut off): the journal\'s session is resumed');
+        assert.match(m.prompt, new RegExp(`\\[automatic recovery 1/3\\] The connector/server restarted at \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC \\(cause: connector self-update\\)\\. Your turn stopped and its process is gone\\. Task #${task.seq} is still ongoing\\.`));
+        const ev = sysEvents(before.thread_id).find(c => c.startsWith('[automatic recovery'));
+        assert.ok(ev && ev.includes(`Task #${task.seq} is still ongoing`), 'the thread shows the recovery notice');
+        const now = card(task.id);
+        assert.deepStrictEqual([now.col, now.status, now.thread_id, now.message_id], ['ongoing', 'running', before.thread_id, before.message_id]);
+        assert.strictEqual(rDb.prepare('SELECT COUNT(*) AS c FROM pending_recoveries WHERE actor_id=?').get(ag.actorId).c, 0, 'claimed before the trigger');
+        assert.ok(!(await req('GET', `${tasks()}/${task.id}`)).body.events.some(e => e.kind === 'stopped'), 'no stopped event');
+        // The recovered run ends the normal way: the card finishes from its reply.
+        ag.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomId, message_id: m.message_id, content: 'resumed and done', claude_session_id: 'sid-after' }));
+        assert.ok(await waitFor(() => card(task.id).col === 'finished'), 'finished after the recovered run');
+      } finally {
+        await req('POST', `${tasks()}/runner/stop`);
+        await req('DELETE', `${tasks()}/${task.id}`);
+      }
+    });
+
+    await test('Recovery — background_only is recovered too; the server session wins over the journal\'s; restarted_at in the future is clamped', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const thread = await newThread('recovery: background job', 'sid-server-bg');
+      const serverSid = rDb.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=(SELECT id FROM room_participants WHERE room_id=? AND actor_id=?) AND thread_id=? AND sub_agent_id IS NULL').get(roomId, ag.actorId, thread)?.claude_session_id ?? null;
+      await restartAgent(ag);
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.thread_id === thread, 5000);
+      const res = await report(ag, [entry(thread, { state: 'background_only', cause: 'background', exit: 'crash' })], new Date(Date.now() + 86_400_000).toISOString());
+      assert.deepStrictEqual(res.results.map(r => r.action), ['recover']);
+      const m = await trig;
+      assert.match(m.prompt, /\(cause: connector crash or forced kill\)\. Your background work stopped and its process is gone\. Check the state/);
+      assert.ok(!/Task #/.test(m.prompt), 'no card in this thread');
+      const at = m.prompt.match(/restarted at (\S+ \S+) UTC/)[1];
+      assert.ok(Date.parse(at.replace(' ', 'T') + 'Z') <= Date.now(), 'a future restart time is clamped to now');
+      assert.deepStrictEqual([serverSid, m.claude_session_id], ['sid-server-bg', 'sid-server-bg'], 'the server\'s own session id is preferred');
+      assert.strictEqual(await noTrigger(ag), null, 'exactly one recovery run');
+      await completeRun(ag.ws, roomId, m);
+    });
+
+    await test('Recovery — untrusted entries: other room, foreign / missing thread, unlinked sub-agent, malformed, too old → discarded; nothing posted or run', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const thread = await newThread('recovery: ownership');
+      const otherRoot = Number(rDb.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=?), 'x', 'complete')")
+        .run(otherRoomId, otherRoomId, other.actorId).lastInsertRowid);
+      const reply = Number(rDb.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=?), 'r', 'complete', ?)")
+        .run(roomId, roomId, ag.actorId, thread).lastInsertRowid);
+      const sysBefore = rDb.prepare("SELECT COUNT(*) AS c FROM messages WHERE state='system_event' AND room_id IN (?,?)").get(roomId, otherRoomId).c;
+      await restartAgent(ag);
+      const k = (s) => `/tmp/stoa-test-rec::${s}`;
+      const res = await report(ag, [
+        { ...entry(otherRoot), session_key: k('other-room'), room_id: otherRoomId },
+        { ...entry(otherRoot), session_key: k('foreign-thread') },
+        { ...entry(reply), session_key: k('not-a-root') },
+        { ...entry(thread, { sub_agent_id: unlinked.id }), session_key: k('unlinked-sub') },
+        { ...entry(thread, { sub_agent_id: 999999999 }), session_key: k('missing-sub') },
+        { ...entry(thread), session_key: k('no-thread'), thread_id: null },
+        { ...entry(thread), session_key: k('bad-state'), state: 'sleeping' },
+        { ...entry(thread), session_key: k('bad-count'), recovery_count: 0 },
+        { ...entry(thread), session_key: k('bad-room'), room_id: '1 OR 1=1' },
+        { ...entry(thread), session_key: k('too-old'), updated_at: iso(25 * 3600_000) },
+        'not an object', null,
+      ]);
+      const v = Object.fromEntries(res.results.map(r => [r.session_key.split('::')[1], [r.action, r.reason]]));
+      assert.deepStrictEqual(Object.fromEntries(Object.entries(v).map(([key, [a]]) => [key, a])), {
+        'other-room': 'discard', 'foreign-thread': 'discard', 'not-a-root': 'discard', 'unlinked-sub': 'discard', 'missing-sub': 'discard',
+        'no-thread': 'discard', 'bad-state': 'discard', 'bad-count': 'discard', 'bad-room': 'discard', 'too-old': 'discard',
+      });
+      assert.match(v['other-room'][1], /not a participant/);
+      assert.match(v['foreign-thread'][1], /thread not found/);
+      assert.match(v['unlinked-sub'][1], /sub-agent/);
+      assert.match(v['too-old'][1], /older than the max age \(24 h\)/);
+      assert.strictEqual(await noTrigger(ag), null, 'nothing triggered');
+      assert.strictEqual(rDb.prepare("SELECT COUNT(*) AS c FROM messages WHERE state='system_event' AND room_id IN (?,?)").get(roomId, otherRoomId).c, sysBefore, 'nothing posted');
+      assert.strictEqual(rDb.prepare('SELECT COUNT(*) AS c FROM pending_recoveries').get().c, 0);
+    });
+
+    await test('Recovery — handled elsewhere: run in flight, queued retrigger, completed thread, interrupted sub-agent (parent wake) → skipped', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const busy = await newThread('recovery: busy');
+      const queued = await newThread('recovery: retrigger');
+      const done = await newThread('recovery: completed');
+      const subThread = await newThread('recovery: sub-agent');
+      const pid = rDb.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, ag.actorId).id;
+      await restartAgent(ag);
+      const inflight = Number(rDb.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,'','streaming',?)").run(roomId, pid, busy).lastInsertRowid);
+      rDb.prepare("INSERT INTO pending_retriggers (room_id, participant_id, thread_id, prompt) VALUES (?,?,?,'replay me')").run(roomId, pid, queued);
+      rDb.prepare("UPDATE messages SET thread_completed_at=datetime('now') WHERE id=?").run(done);
+      rDb.prepare(`INSERT INTO messages (room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label, result_meta)
+        VALUES (?,?,'(interrupted — agent disconnected)','error',?,?,'recoverer','{"exit_reason":"interrupted"}')`).run(roomId, pid, subThread, sub.id);
+      try {
+        const res = await report(ag, [entry(busy), entry(queued), entry(done), entry(subThread, { sub_agent_id: sub.id })]);
+        assert.deepStrictEqual(res.results.map(r => [r.action, r.reason]), [
+          ['skip', 'a run is in flight in the thread'], ['skip', 'a queued retrigger continues the thread'],
+          ['skip', 'thread is marked complete'], ['skip', 'the parent is woken for the interrupted sub-agent run'],
+        ]);
+        assert.strictEqual(await noTrigger(ag), null);
+      } finally {
+        rDb.prepare("UPDATE messages SET state='error' WHERE id=?").run(inflight);
+        rDb.prepare('DELETE FROM pending_retriggers WHERE room_id=?').run(roomId);
+      }
+    });
+
+    await test('Recovery — a sub-agent session whose run had ended (background work) is recovered as that sub-agent', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const thread = await newThread('recovery: sub-agent background');
+      await restartAgent(ag);
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.thread_id === thread, 5000);
+      const res = await report(ag, [entry(thread, { sub_agent_id: sub.id, state: 'background_only' })]);
+      assert.deepStrictEqual(res.results.map(r => r.action), ['recover']);
+      const m = await trig;
+      assert.deepStrictEqual([m.sub_agent?.id, m.recovery.session_key], [sub.id, keyOf(thread, sub.id)]);
+      ag.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomId, message_id: m.message_id, content: 'sub done' }));
+      // The finished sub-agent run wakes its parent like any other sub-agent run.
+      const wake = await waitForWsMessage(ag.ws, w => w.type === 'agent_trigger' && !w.sub_agent && w.thread_id === thread, 5000);
+      await completeRun(ag.ws, roomId, wake);
+    });
+
+    await test('Recovery — limit passed (count > RECOVERY_MAX_PER_THREAD): stopped, thread told, card back to Backlog with the reason, thread kept; setting is live', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const g = await req('GET', '/api/settings');
+      assert.deepStrictEqual([g.body.recovery_max_per_thread, g.body.recovery_max_age_hours], [3, 24]);
+      const { task } = await runCard('Flaky deploy');
+      await req('POST', `${tasks()}/runner/pause`); // a card back in Backlog must not be picked up again here
+      try {
+        assert.strictEqual((await req('PATCH', '/api/settings', { recovery_max_per_thread: 2 })).status, 200);
+        for (const bad of [0, 21, 'x']) await req('PATCH', '/api/settings', { recovery_max_per_thread: bad, recovery_max_age_hours: bad === 21 ? 169 : bad });
+        const g2 = (await req('GET', '/api/settings')).body;
+        assert.deepStrictEqual([g2.recovery_max_per_thread, g2.recovery_max_age_hours], [2, 24], 'out-of-range values are ignored');
+        await restartAgent(ag);
+        const res = await report(ag, [entry(task.thread_id, { recovery_count: 3 })]);
+        assert.deepStrictEqual(res.results.map(r => [r.action, r.reason]), [['limit', 'recovered 2× in a row (limit 2)']]);
+        assert.strictEqual(await noTrigger(ag), null, 'no recovery run past the limit');
+        const c = card(task.id);
+        assert.deepStrictEqual([c.col, c.status, c.thread_id, c.message_id], ['backlog', 'idle', task.thread_id, task.message_id]);
+        const ev = (await req('GET', `${tasks()}/${task.id}`)).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.actor_kind, ev.meta.reason], ['stopped', 'system', 'automatic recovery stopped after 2 consecutive recoveries (limit 2)']);
+        assert.ok(sysEvents(task.thread_id).some(t => t === `Automatic recovery stopped: this session was recovered 2 times in a row (limit 2) and its work was cut off again. Task #${task.seq} went back to Backlog. A human needs to pick it up.`));
+        // At the limit itself it still recovers.
+        const thread = await newThread('recovery: at the limit');
+        await restartAgent(ag);
+        const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.thread_id === thread, 5000);
+        assert.deepStrictEqual((await report(ag, [entry(thread, { recovery_count: 2 })])).results.map(r => r.action), ['recover']);
+        const m = await trig;
+        assert.match(m.prompt, /\[automatic recovery 2\/2\] The connector\/server restarted/);
+        await completeRun(ag.ws, roomId, m);
+      } finally {
+        await req('PATCH', '/api/settings', { recovery_max_per_thread: 3 });
+        await req('DELETE', `${tasks()}/${task.id}`);
+      }
+    });
+
+    await test('Recovery — a recovery run that fails (agent_error) sends its card to Backlog with the reason; an interrupted one does not', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const { task } = await runCard('Fragile job');
+      await req('POST', `${tasks()}/runner/pause`);
+      try {
+        await restartAgent(ag);
+        let trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.thread_id === task.thread_id, 5000);
+        await report(ag, [entry(task.thread_id)]);
+        let m = await trig;
+        // Cut off again (connector died during the recovery run): the card waits for the next report.
+        await restartAgent(ag);
+        await sleepR(600);
+        assert.deepStrictEqual([card(task.id).col, card(task.id).status], ['ongoing', 'running'], 'interrupted recovery: card kept');
+        trig = waitForWsMessage(ag.ws, m2 => m2.type === 'agent_trigger' && m2.thread_id === task.thread_id, 5000);
+        await report(ag, [entry(task.thread_id, { recovery_count: 2 })]);
+        m = await trig;
+        assert.strictEqual(m.recovery.recovery_count, 2);
+        ag.ws.send(JSON.stringify({ type: 'agent_error', room_id: roomId, message_id: m.message_id, error: 'workdir vanished' }));
+        assert.ok(await waitFor(() => card(task.id).col === 'backlog'), 'failed recovery → Backlog');
+        const c = card(task.id);
+        assert.deepStrictEqual([c.status, c.thread_id], ['idle', task.thread_id]);
+        const ev = (await req('GET', `${tasks()}/${task.id}`)).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.meta.reason], ['stopped', 'recovery failed: workdir vanished']);
+        assert.ok(sysEvents(task.thread_id).includes(`Automatic recovery failed (workdir vanished). Task #${task.seq} went back to Backlog.`));
+      } finally {
+        await req('DELETE', `${tasks()}/${task.id}`);
+      }
+    });
+
+    await test('Recovery — a queued recovery the agent never picks up holds the card (thread busy) and is given up after 30 min: card to Backlog with the reason', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const { task } = await runCard('Waits for its agent');
+      await req('POST', `${tasks()}/runner/pause`);
+      try {
+        const pid = rDb.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, ag.actorId).id;
+        const closed = new Promise(r => ag.ws.once('close', r));
+        ag.ws.close(); await closed; // agent offline: the row cannot be drained
+        await sleepR(200);
+        const ins = (created) => rDb.prepare(`INSERT INTO pending_recoveries (actor_id, room_id, participant_id, thread_id, session_key, state, exit_reason, restarted_at, recovery_count, created_at)
+          VALUES (?,?,?,?,?,'turn_running','update',?,1,datetime('now', ?))`).run(ag.actorId, roomId, pid, task.thread_id, keyOf(task.thread_id), iso(), created);
+        ins('-1 minutes');
+        await sleepR(1500);
+        assert.deepStrictEqual([card(task.id).col, card(task.id).status], ['ongoing', 'running'], 'queued recovery: the card is held');
+        assert.strictEqual(rDb.prepare('SELECT COUNT(*) AS c FROM pending_recoveries WHERE thread_id=?').get(task.thread_id).c, 1, 'still queued while offline');
+        rDb.prepare("UPDATE pending_recoveries SET created_at=datetime('now','-31 minutes') WHERE thread_id=?").run(task.thread_id);
+        assert.ok(await waitFor(() => card(task.id).col === 'backlog'), 'given up by the sweep');
+        const ev = (await req('GET', `${tasks()}/${task.id}`)).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.meta.reason], ['stopped', 'recovery failed: the agent was not ready within 30 minutes']);
+        assert.strictEqual(rDb.prepare('SELECT COUNT(*) AS c FROM pending_recoveries').get().c, 0);
+      } finally {
+        await restartAgent(ag);
+        await req('DELETE', `${tasks()}/${task.id}`);
+      }
+    });
+
+    await test('Recovery — cleanup', async () => {
+      for (const w of [humanWs, ag?.ws, other?.ws]) { try { w?.close(); } catch {} }
+      for (const rid of [roomId, otherRoomId]) {
+        if (!rid) continue;
+        await req('PATCH', `/api/rooms/${rid}`, { archived: true });
+        await req('DELETE', `/api/rooms/${rid}`);
+      }
+      for (const a of [ag, other]) {
+        if (!a) continue;
+        await req('DELETE', `/api/actors/${a.actorId}`);
+        orphanActorIds = orphanActorIds.filter(x => x !== a.actorId);
+      }
+      assert.strictEqual(rDb.prepare('SELECT COUNT(*) AS c FROM pending_recoveries').get().c, 0);
     });
   }
 
@@ -20412,6 +20971,72 @@ async function run() {
     assert.strictEqual(new Set(all).size, new Set(fallbackIds.concat(ids)).size, 'every Claude model ID gets its own label');
     const sidebar = fs.readFileSync(path.join(__dirname, 'public/js/rooms/room-sidebar.js'), 'utf8');
     assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
+  });
+
+  await test('settings — recovery limit / max age fields: bounds match the server, invalid input never PATCHes, server error shown as text', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8');
+    const init = fs.readFileSync(path.join(__dirname, 'public/js/settings/init.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const fields = [['s-recovery-max', 'recovery_max_per_thread', 1, 20, 3], ['s-recovery-age', 'recovery_max_age_hours', 1, 168, 24]];
+    for (const [id, key, min, max] of fields) {
+      const tag = new RegExp(`<input[^>]*id="${id}-input"[^>]*>`).exec(html)?.[0] || '';
+      assert.deepStrictEqual([/min="(\d+)"/.exec(tag)?.[1], /max="(\d+)"/.exec(tag)?.[1]], [String(min), String(max)], `${id} input bounds`);
+      assert.ok(new RegExp(`<label class="s-server-field-label" for="${id}-input">`).test(html), `${id} has a real label`);
+      assert.ok(new RegExp(`body\\.${key}\\);\\s*if \\(val >= ${min} && val <= ${max}\\)`).test(srv), `server range for ${key} is ${min}-${max}`);
+      assert.ok(init.includes(`sSaveIntSetting('${id}-input', '${key}', ${min}, ${max}, '${id}-saved'`), `${id} save button uses the same bounds`);
+      assert.ok(new RegExp(`'${id}-input'[^\\]]*\\]\\.forEach\\(id => \\{\\s*document\\.getElementById\\(id\\)\\.addEventListener\\('keydown'`).test(init), `${id} saves on Enter`);
+    }
+    const order = ['s-max-concurrent-input', 's-recovery-max-input', 's-recovery-age-input', 's-session-idle-ttl-input'].map(id => html.indexOf(`id="${id}"`));
+    assert.deepStrictEqual([...order].sort((a, b) => a - b), order, 'placed right after concurrent sessions');
+
+    const els = {};
+    const el = id => els[id] || (els[id] = { id, value: '', attrs: {}, focused: 0, classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); } },
+      setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, focus() { this.focused++; } });
+    const toasts = [], patches = [];
+    let respond = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    const ctx = { document: { getElementById: el }, setTimeout: () => 0, showToast: (msg, o) => toasts.push([msg, !!o?.error]),
+      fetch: async (url, o) => { patches.push([url, o.method, JSON.parse(o.body)]); return respond(); } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/account.js'), 'utf8'), ctx);
+    const save = (id, key, min, max) => ctx.sSaveIntSetting(`${id}-input`, key, min, max, `${id}-saved`, 'Recovery limit');
+
+    const [id, key, min, max] = fields[0];
+    for (const bad of ['0', '21', '1.5', '', ' ', 'abc', '-3', '1e1']) {
+      el(`${id}-input`).value = bad;
+      await save(id, key, min, max);
+      assert.deepStrictEqual(toasts.pop(), ['Recovery limit must be a whole number from 1 to 20', true], `rejects ${JSON.stringify(bad)}`);
+      assert.strictEqual(el(`${id}-input`).attrs['aria-invalid'], 'true');
+    }
+    assert.deepStrictEqual(patches, [], 'invalid values never reach the server (it would ignore them and still answer 200)');
+
+    el(`${id}-input`).value = ' 7 ';
+    await save(id, key, min, max);
+    assert.deepStrictEqual(patches.pop(), ['/api/settings', 'PATCH', { recovery_max_per_thread: 7 }]);
+    assert.deepStrictEqual([el(`${id}-input`).attrs['aria-invalid'], el(`${id}-input`).value, el(`${id}-saved`).classList.set.has('visible'), toasts.length], [undefined, '7', true, 0]);
+    for (const v of ['1', '168']) {
+      el('s-recovery-age-input').value = v;
+      await save(...fields[1]);
+      assert.deepStrictEqual(patches.pop()[2], { recovery_max_age_hours: Number(v) }, `age ${v} is in range`);
+    }
+
+    el(`${id}-saved`).classList.set.clear();
+    respond = () => ({ ok: false, status: 400, json: async () => ({ error: '<img src=x onerror=alert(1)>' + 'x'.repeat(400) }) });
+    el(`${id}-input`).value = '5';
+    await save(id, key, min, max);
+    const [msg, isErr] = toasts.pop();
+    assert.ok(isErr && msg.startsWith('Failed to save setting: <img src=x onerror=alert(1)>') && msg.length === 'Failed to save setting: '.length + 200, 'server error text shown (truncated) — showToast renders it via textContent');
+    assert.strictEqual(el(`${id}-saved`).classList.set.has('visible'), false, 'no "saved" on failure');
+    respond = () => ({ ok: false, status: 500, json: async () => { throw new Error('not json'); } });
+    await save(id, key, min, max);
+    assert.deepStrictEqual(toasts.pop(), ['Failed to save setting', true], 'non-JSON error body falls back to the generic message');
+    ctx.fetch = async () => { throw new Error('offline'); };
+    await save(id, key, min, max);
+    assert.deepStrictEqual(toasts.pop(), ['Failed to save setting', true]);
+    const core = fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8');
+    const toastFn = core.slice(core.indexOf('function showToast('), core.indexOf('\n}\n', core.indexOf('function showToast(')));
+    assert.ok(toastFn.includes('el.textContent = msg;') && !/innerHTML/.test(toastFn), 'toast renders as text');
   });
 
   await test('sub-agent model picker — platform optgroups, model + platform_id travel together, unavailable pin kept, codex has no platforms, chip and hint name the platform', () => {
