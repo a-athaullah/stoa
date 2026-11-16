@@ -404,6 +404,25 @@ Also sent: `client_version`, `harnesses_available`, `supervisor` (`'pm2'|null`),
 Server validates secret, adds to `agentClients` Map.
 After connect: sends `claude_md_import` for each unmigrated workdir.
 
+#### Session Recovery (after connect, self-healing 3/3)
+```json
+// Server → Agent: agent_ready carries the flag only for a current agent
+{ "type": "agent_ready", "recover_journal": true }
+
+// Agent → Server, once per connection (a second one is dropped); entries of a dead connector process, max 50
+{ "type": "recovery_report", "restarted_at": "2026-11-16T01:02:03.000Z",
+  "entries": [{ "session_key": "/wd::68::t:42830", "room_id": 68, "thread_id": 42830, "sub_agent_id": null,
+    "message_id": 43001, "task_id": 12, "resume_session_id": "…", "harness": "claude", "state": "turn_running",
+    "cause": "turn", "since": "…", "updated_at": "…", "recovery_count": 1, "exit": "update" }] }
+
+// Server → Agent: one verdict per entry; every action but recover removes the entry on the agent
+{ "type": "recovery_result", "results": [{ "session_key": "/wd::68::t:42830", "action": "recover", "reason": "…" }] }
+
+// Server → Agent: the recovery run is a normal agent_trigger with
+{ "recovery": { "session_key": "/wd::68::t:42830", "recovery_count": 1 } }
+```
+Entries are untrusted: the server re-checks room participation, thread root, sub-agent ownership/link and looks the card up by thread (the entry's `task_id` is ignored). Details: architecture.md "Session Recovery". Limits: `GET/PATCH /api/settings` `recovery_max_per_thread` (1-20, default 3, `.env RECOVERY_MAX_PER_THREAD`) and `recovery_max_age_hours` (1-168, default 24, `.env RECOVERY_MAX_AGE_HOURS`); out-of-range values are ignored like the other settings.
+
 #### CLAUDE.md Import (on connect)
 ```json
 // Server → Agent

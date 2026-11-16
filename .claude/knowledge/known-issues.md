@@ -94,6 +94,20 @@
   `enqueueOrphanWakes`, `RUN_IN_FLIGHT_SQL`) so it is unit-tested on a temp DB.
 - Tests: run-tests.js sets `AGENT_RUN_TIMEOUT_MS=15000` so the timeout path runs for real.
 
+**Session recovery after a connector restart (task #28, `lib/session-recovery.js`) — design decisions:**
+- The server decides (entries come from the agent's disk: ownership can only be checked server-side); the
+  consecutive count lives in the journal entry (survives both restarts, resets when the work settles).
+- Interrupted sub-agent runs are not recovered as the sub-agent: the parent is already woken for them
+  (`pending_wakes`, lib/orphan-runs.js) and decides; a second turn would race it. A sub-agent whose run
+  had ended but whose background work died is recovered as the sub-agent (its result wakes the parent).
+- Limit / failure → `returnToBacklog` (idle, thread kept). If the owner's runner is still playing, it may
+  start that card again; that new run is a normal run (a crashing card then loops through the runner, as it
+  would without recovery), not a recovery loop.
+- A card whose agent stays away longer than the restart grace (10 min) still goes to Backlog with
+  `RESTART_UNRECOVERED` (quiet mode); a recovery arriving later still resumes the thread, without the
+  "Task #N masih ongoing" line (the card is no longer running).
+- The recovery prompt and notice use the agent's language (`adapter_config.lang`); task events and logs stay English/Indonesian like the rest.
+
 **Self-healing for parent triggers refused by "agent updating" (bug/outdated-trigger-lost):**
 - Incident 2026-10-22 03:30–03:35 UTC, room 68 (msgs 43448/43450/43453/43455): a parent trigger to
   an outdated agent was set `state='error'` + restart and dropped; sub-agents had a wake, parents had nothing.

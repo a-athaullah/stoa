@@ -533,6 +533,26 @@ CREATE INDEX IF NOT EXISTS idx_pending_retriggers_participant ON pending_retrigg
 CREATE INDEX IF NOT EXISTS idx_pending_retriggers_trigger ON pending_retriggers(trigger_message_id);
 CREATE INDEX IF NOT EXISTS idx_pending_retriggers_room ON pending_retriggers(room_id);
 
+-- Self-healing 3/3: journal sessions accepted for recovery (lib/session-recovery.js).
+CREATE TABLE IF NOT EXISTS pending_recoveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  participant_id INTEGER NOT NULL REFERENCES room_participants(id) ON DELETE CASCADE,
+  thread_id INTEGER NOT NULL,
+  sub_agent_id INTEGER REFERENCES sub_agents(id) ON DELETE CASCADE,
+  session_key TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('turn_running','background_only')),
+  exit_reason TEXT NOT NULL CHECK(exit_reason IN ('update','restart','crash')),
+  server_restarted INTEGER NOT NULL DEFAULT 0,
+  restarted_at TEXT NOT NULL,
+  resume_session_id TEXT,
+  recovery_count INTEGER NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(actor_id, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_recoveries_thread ON pending_recoveries(room_id, thread_id);
+
 -- Skills library (migrations/20261027-skills-library.sql). messages.skill_refs is added by that migration.
 CREATE TABLE IF NOT EXISTS skills (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

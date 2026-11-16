@@ -340,6 +340,38 @@ CREATE TABLE room_task_events (
 - Runner uses `provider='task'` on the messages row so the feed renders a **Task #N** badge.
 - Max 1,000 tasks per room (`LIMITS.tasksPerRoom`).
 
+## Session Recovery Table
+
+Added in `migrations/20261116-pending-recoveries.sql` (self-healing 3/3, `lib/session-recovery.js`).
+
+```sql
+-- Journal sessions of a dead connector process, accepted for recovery; claimed (deleted) right before
+-- the recovery trigger. One row per (agent, journal session key).
+CREATE TABLE pending_recoveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  participant_id INTEGER NOT NULL REFERENCES room_participants(id) ON DELETE CASCADE,
+  thread_id INTEGER NOT NULL,               -- thread root the session works in (validated: root of room_id)
+  sub_agent_id INTEGER REFERENCES sub_agents(id) ON DELETE CASCADE,
+  session_key TEXT NOT NULL,                -- journal key, echoed to the agent in agent_trigger.recovery
+  state TEXT NOT NULL,                      -- 'turn_running' | 'background_only'
+  exit_reason TEXT NOT NULL,                -- 'update' | 'restart' | 'crash' (connector side)
+  server_restarted INTEGER NOT NULL DEFAULT 0, -- the server restarted since the entry was last written
+  restarted_at TEXT NOT NULL,               -- when the reporting connector process started
+  resume_session_id TEXT,                   -- used only when ai_sessions has no session for the thread
+  recovery_count INTEGER NOT NULL,          -- consecutive recoveries incl. this one (from the journal)
+  created_at TEXT DEFAULT (datetime('now')),-- given up after 30 min (sweep)
+  UNIQUE(actor_id, session_key)
+);
+-- idx_pending_recoveries_thread (room_id, thread_id): taskThreadBusy, abortThreadRuns
+```
+
+**Key points:**
+- Counts as thread activity in `taskThreadBusy`, so a card's restart grace never sends it to Backlog while its recovery waits.
+- Task board Stop (`abortThreadRuns`) deletes the thread's rows.
+- No settings columns: the limits are `.env` values (`RECOVERY_MAX_PER_THREAD`, `RECOVERY_MAX_AGE_HOURS`, `/api/settings`).
+
 ## MCP Gateway Tables
 
 Added in `migrations/20261022-mcp-gateway.sql`.

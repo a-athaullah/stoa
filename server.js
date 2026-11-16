@@ -17,6 +17,7 @@ const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules'
 const { createRoomTasks, taskMcpTools } = require('./lib/room-tasks');
 const { createThreadCompleteDefer } = require('./lib/thread-complete-defer');
 const { createRoomTasksRunner } = require('./lib/room-tasks-runner');
+const { createSessionRecovery, recoveryLimits } = require('./lib/session-recovery');
 const { createRoomMessages } = require('./lib/room-messages');
 const { stripCodeSpans } = require('./lib/code-spans'); // a mention inside markdown code is an example, not a trigger
 const { createStoaMemory } = require('./lib/stoa-memory');
@@ -800,6 +801,7 @@ function sweepExpiredRetriggers() {
 // STOA_SMOKE_BOOT (lib/server-update.js trial boot on a DB copy): no background work that could post or reach out.
 if (!SMOKE_BOOT) setInterval(() => {
   try { sweepExpiredRetriggers(); } catch (e) { console.error('[retrigger] sweep error:', e.message); }
+  try { sessionRecovery.sweep(); } catch (e) { console.error('[recovery] sweep error:', e.message); }
 }, RETRIGGER_SWEEP_MS).unref();
 
 function drainRetriggers(actorId) {
@@ -1875,6 +1877,20 @@ const roomTasksRunner = createRoomTasksRunner({
   noReplyMs: parseInt(process.env.TASK_NO_REPLY_MS, 10) || 120000,
   maxMs: parseInt(process.env.TASK_DECIDE_MAX_MS, 10) || 10800000,
   restartGraceMs: parseInt(process.env.TASK_RESTART_GRACE_MS, 10) || 600000,
+});
+// Session recovery after a restart (lib/session-recovery.js, self-healing 3/3): the agent reports its
+// work journal (recovery_report) and accepted sessions are re-triggered in their thread.
+const SERVER_STARTED_AT = Date.now();
+const sessionRecovery = createSessionRecovery({
+  db,
+  agentReady: (actorId) => agentReadyForWake(actorId),
+  agentLang: (actorId) => agentLangOf(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(actorId) || {}),
+  trigger: (roomId, ai, prompt, threadId) => triggerAiResponse(roomId, ai, prompt, null, [], null, threadId),
+  postSystemEvent: (roomId, participantId, threadId, text) => postWakeSystemEvent(roomId, participantId, threadId, text),
+  returnToBacklog: (roomId, taskId, reason) => roomTasksRunner.returnToBacklog(roomId, taskId, reason),
+  runInFlightSql: RUN_IN_FLIGHT_SQL,
+  orphanWakeEnabled,
+  serverStartedAt: SERVER_STARTED_AT,
 });
 // Poll: ends runs whose thread went quiet and retries runners waiting on a thread slot or an agent.
 // Same gate as the scheduler loop.
@@ -3471,6 +3487,8 @@ const server = http.createServer(async (req, res) => {
       auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24, max_pinned_rooms: parseInt(process.env.MAX_PINNED_ROOMS) || 3,
+      recovery_max_per_thread: recoveryLimits().maxPerThread,
+      recovery_max_age_hours: recoveryLimits().maxAgeHours,
     });
   }
 
@@ -3523,6 +3541,14 @@ const server = http.createServer(async (req, res) => {
     if (body.max_pinned_rooms !== undefined) {
       const val = parseInt(body.max_pinned_rooms);
       if (val >= 1 && val <= 20) { writeEnv("MAX_PINNED_ROOMS", String(val)); process.env.MAX_PINNED_ROOMS = String(val); }
+    }
+    if (body.recovery_max_per_thread !== undefined) {
+      const val = parseInt(body.recovery_max_per_thread);
+      if (val >= 1 && val <= 20) { writeEnv('RECOVERY_MAX_PER_THREAD', String(val)); process.env.RECOVERY_MAX_PER_THREAD = String(val); }
+    }
+    if (body.recovery_max_age_hours !== undefined) {
+      const val = parseInt(body.recovery_max_age_hours);
+      if (val >= 1 && val <= 168) { writeEnv('RECOVERY_MAX_AGE_HOURS', String(val)); process.env.RECOVERY_MAX_AGE_HOURS = String(val); }
     }
     if (body.port !== undefined) {
       const newPort = parseInt(body.port);
@@ -6426,6 +6452,7 @@ wss.on('connection', (ws, req) => {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
         enqueueOrphanWakes(reconnectCleaned);
+        roomTasksRunner.holdThreads(reconnectCleaned);
       }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       agentFeatures.set(agentActorId, new Set(Array.isArray(msg.features) ? msg.features.filter(f => typeof f === 'string').slice(0, 20) : []));
@@ -6440,7 +6467,9 @@ wss.on('connection', (ws, req) => {
         console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
-      ws.send(JSON.stringify({ type: 'agent_ready' }));
+      // recover_journal: a current agent reports its work journal (recovery_report, lib/session-recovery.js).
+      // An outdated one is about to update and restart: its next process reports instead.
+      ws.send(JSON.stringify({ type: 'agent_ready', recover_journal: agentReadyForWake(agentActorId) || undefined }));
       harnessAccounts.agentConnected(agentActorId, msg.machine);
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
@@ -6462,6 +6491,7 @@ wss.on('connection', (ws, req) => {
         for (const r of reconnectWakes) drainWake(r.id).catch(e => console.error('[wake] reconnect drain error:', e.message));
       }
       drainRetriggers(agentActorId);
+      sessionRecovery.drain(agentActorId);
       // CLAUDE.md import: request import for unmigrated workdirs
       const unmigratedWds = db.prepare(
         'SELECT id, path FROM agent_workdirs WHERE actor_id=? AND claude_md_migrated_at IS NULL'
@@ -6621,6 +6651,17 @@ wss.on('connection', (ws, req) => {
     }
 
     // ── Agent reports its run queue (stoa.js sends it whenever a run is queued, starts or ends)
+    // ── Agent reports its work journal after agent_ready (recover_journal); once per connection.
+    if (msg.type === 'recovery_report' && agentActorId) {
+      if (ws._recoveryReported) return;
+      ws._recoveryReported = true;
+      try {
+        const results = sessionRecovery.report(agentActorId, msg);
+        ws.send(JSON.stringify({ type: 'recovery_result', results }));
+      } catch (e) { console.error('[recovery] report failed:', e.message); }
+      return;
+    }
+
     if (msg.type === 'agent_queue_status' && agentActorId) {
       try { applyAgentQueueStatus(agentActorId, msg); }
       catch (e) { console.error('[queue] agent_queue_status failed:', e.message); }
@@ -7669,6 +7710,8 @@ wss.on('connection', (ws, req) => {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
         enqueueOrphanWakes(cleaned);
+        // The agent's cards wait in the restart grace for its recovery (lib/room-tasks-runner.js holdThreads).
+        roomTasksRunner.holdThreads(cleaned);
       }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
       const interruptedIds = new Set(cleaned.map(r => r.id));
@@ -7827,8 +7870,9 @@ function taskThreadBusy(roomId, threadId) {
     EXISTS (SELECT 1 FROM messages WHERE room_id=? AND (thread_id=? OR id=?) AND ${RUN_IN_FLIGHT_SQL})
     OR EXISTS (SELECT 1 FROM room_message_queue WHERE room_id=? AND (thread_id=? OR message_id=?))
     OR EXISTS (SELECT 1 FROM pending_wakes WHERE room_id=? AND thread_id=?)
-    OR EXISTS (SELECT 1 FROM pending_retriggers WHERE room_id=? AND (thread_id=? OR trigger_message_id=?))`)
-    .get(roomId, threadId, threadId, roomId, threadId, threadId, roomId, threadId, roomId, threadId, threadId);
+    OR EXISTS (SELECT 1 FROM pending_retriggers WHERE room_id=? AND (thread_id=? OR trigger_message_id=?))
+    OR EXISTS (SELECT 1 FROM pending_recoveries WHERE room_id=? AND thread_id=?)`)
+    .get(roomId, threadId, threadId, roomId, threadId, threadId, roomId, threadId, roomId, threadId, threadId, roomId, threadId);
 }
 
 // Task board Stop: end every turn of one thread through the same paths as the stop buttons
@@ -7840,6 +7884,7 @@ function abortThreadRuns(roomId, threadId) {
     const queued = db.prepare('DELETE FROM room_message_queue WHERE room_id=? AND (thread_id=? OR message_id=?)').run(roomId, threadId, threadId).changes;
     db.prepare('DELETE FROM pending_wakes WHERE room_id=? AND thread_id=?').run(roomId, threadId);
     db.prepare('DELETE FROM pending_retriggers WHERE room_id=? AND (thread_id=? OR trigger_message_id=?)').run(roomId, threadId, threadId);
+    db.prepare('DELETE FROM pending_recoveries WHERE room_id=? AND thread_id=?').run(roomId, threadId);
     return queued;
   })();
   if (dropped) {
@@ -8780,9 +8825,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
-    const sessionId = subAgent
+    // A recovery (lib/session-recovery.js) resumes the journal's session when the server has none yet:
+    // a first turn cut off before its agent_complete stored the session id.
+    const sessionId = (subAgent
       ? getSubAgentThreadSession(ai.participant_id, subAgent.id, threadId)
-      : getThreadSession(ai.participant_id, threadId);
+      : getThreadSession(ai.participant_id, threadId)) || ai.recovery?.resume_session_id || null;
     const agentRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
       const timeout = createRunTimeout(agentRunTimeoutMs, () => {
@@ -8849,6 +8896,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           ORDER BY id DESC LIMIT 1`).get(roomId, threadId, threadId, roomId)?.id ?? undefined : undefined,
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
+        // Journal entry this run recovers: the agent carries its consecutive count into the run's entry.
+        recovery: ai.recovery ? { session_key: ai.recovery.session_key, recovery_count: ai.recovery.recovery_count } : undefined,
         mcp_token: mcpToken,
         sub_agent_secret: subAgent ? subAgentSecretFor(ai.actor_id, subAgent.id) : undefined,
         skills: agentHasSkillCache && skillRefs.length ? skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version, manifest_hash: r.manifest_hash })) : undefined,
