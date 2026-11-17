@@ -976,6 +976,8 @@ function appendThreadMessage(m, container) {
 
   const resultChip = buildResultChip(m.result_meta);
   if (resultChip) bubble.appendChild(resultChip);
+  const errorDetail = buildRunErrorDetail(m.result_meta);
+  if (errorDetail) bubble.appendChild(errorDetail);
 
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';

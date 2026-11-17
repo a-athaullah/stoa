@@ -122,6 +122,52 @@ function buildResultChip(raw) {
   return chip;
 }
 
+// Expandable harness failure detail (result_meta.error_detail, already redacted by agent + server).
+// Shown only for failed runs; every value goes through textContent.
+function buildRunErrorDetail(raw) {
+  if (!raw) return null;
+  let meta = raw;
+  if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { return null; } }
+  if (!meta || typeof meta !== 'object' || !FAILURE_STATES.has(meta.exit_reason)) return null;
+  const d = meta.error_detail;
+  if (!d || typeof d !== 'object') return null;
+  const facts = [];
+  if (typeof d.harness === 'string' && d.harness) facts.push(['Harness', d.harness]);
+  if (Number.isInteger(d.exit_code)) facts.push(['Exit code', String(d.exit_code)]);
+  if (typeof d.signal === 'string' && d.signal) facts.push(['Signal', d.signal]);
+  const tail = typeof d.stderr_tail === 'string' ? d.stderr_tail.replace(/\s+$/, '') : '';
+  if (!facts.length && !tail) return null;
+
+  const box = document.createElement('details');
+  box.className = 'h-run-error';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Error details';
+  box.appendChild(summary);
+  if (facts.length) {
+    const dl = document.createElement('dl');
+    dl.className = 'h-run-error-facts';
+    for (const [k, v] of facts) {
+      const dt = document.createElement('dt');
+      dt.textContent = k;
+      const dd = document.createElement('dd');
+      dd.textContent = v;
+      const pair = document.createElement('div');
+      pair.append(dt, dd);
+      dl.appendChild(pair);
+    }
+    box.appendChild(dl);
+  }
+  if (tail) {
+    const pre = document.createElement('pre');
+    pre.className = 'h-run-error-log';
+    const code = document.createElement('code');
+    code.textContent = tail;
+    pre.appendChild(code);
+    box.appendChild(pre);
+  }
+  return box;
+}
+
 // ── Reply quote ──────────────────────────────────────────────────────────────
 // The one renderer for m.reply_msg: feed fallback, thread panel and live run bubbles.
 // skill_refs: [{id, name, version}] (or its JSON text, as stored) resolved by the server when the run was routed.
@@ -295,6 +341,8 @@ function appendMessage(m, container) {
 
   const resultChip = buildResultChip(m.result_meta);
   if (resultChip) bubble.appendChild(resultChip);
+  const errorDetail = buildRunErrorDetail(m.result_meta);
+  if (errorDetail) bubble.appendChild(errorDetail);
 
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';
