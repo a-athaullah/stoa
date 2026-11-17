@@ -5,6 +5,8 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 
 const SANDBOX_MODE = 'danger-full-access';
+// Mirrors STDERR_RAW_KEEP in lib/harness-error.js (this file ships alone and cannot require lib/).
+const STDERR_KEEP = 16384;
 
 function escapeTomlValue(str) {
   return JSON.stringify(String(str));
@@ -109,7 +111,8 @@ class CodexSession extends EventEmitter {
 
     this.proc.stderr.on('data', d => {
       process.stderr.write(d);
-      stderrBuf += d.toString();
+      // Rolling tail: only the end is ever shown (stoa.js redacts and trims it to 20 lines / 2 KB).
+      stderrBuf = (stderrBuf + d.toString()).slice(-STDERR_KEEP);
     });
 
     this.proc.on('close', (code, signal) => {
@@ -121,7 +124,10 @@ class CodexSession extends EventEmitter {
         const sessionId = this._threadId;
         const res = this._currentResolve;
         this._clearCurrent();
-        res({ content, sessionId, usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null, isError: code !== 0 });
+        const result = { content, sessionId, usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null, isError: code !== 0 };
+        // Raw, unredacted: stoa.js turns it into result_meta.error_detail (lib/harness-error.js).
+        if (code !== 0) Object.assign(result, { exitCode: code, signal: signal || null, stderrTail: stderrBuf });
+        res(result);
       }
     });
 

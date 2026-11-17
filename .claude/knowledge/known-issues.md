@@ -76,6 +76,18 @@
   so a replay/duplicate or a result for a row already `complete` / errored by the agent itself is
   logged and ignored: no broadcast, no wake, no saveSession. `room_id` comes from the row, never
   from the message. "(stopped by user)" with the agent offline stays final.
+- Harness failure detail (task #30): a harness that exits non-zero with empty content no longer
+  shows only "(agent returned an empty reply)". codex-session.js resolves (claude-session.js
+  rejects) with the RAW `exitCode` / `signal` / `stderrTail` (≤16 KB); those two files ship as
+  separate update files and must not require `lib/`. stoa.js turns it into
+  `error_detail = { harness, exit_code, signal, stderr_tail }` via `lib/harness-error.js`
+  (redacted: Authorization/cookie headers, Bearer, key=value secrets, signed-URL params, sk-/ghp_/
+  xox/AKIA/AIza/JWT/PEM, long opaque strings; home/user paths → `~`; ≤20 lines / 2 KB) and sends
+  it in `agent_complete.result_meta.error_detail` or `agent_error.error_detail`. The server
+  re-validates and re-redacts it (`sanitizeErrorDetail`, only kept when `exit_reason='error'`),
+  fills an empty bubble with "Harness <name> gagal (exit N): <last error line>" and stores the
+  detail in `result_meta`. No stderr / malformed detail → old placeholder (agent_complete) or
+  untouched content (agent_error). Old agents send no detail → unchanged behaviour.
 - Half-open sockets (bug/ws-heartbeat): `lib/ws-heartbeat.js` pings every socket each
   `STOA_WS_HEARTBEAT_MS` (default 30000, integer 1000-300000, invalid → warning + default;
   run-tests.js uses 2000). A socket that sent no bytes at all since the previous tick is

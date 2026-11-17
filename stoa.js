@@ -254,6 +254,7 @@ var { extractSendMarkers, failureNotes } = require("./lib/send-markers");
 var { unshippedAgentRequires } = require("./lib/agent-bundle-check");
 var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
 var { createWorkJournal } = require("./lib/work-journal");
+var { buildErrorDetail } = require("./lib/harness-error");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -2368,15 +2369,21 @@ ${allNotes}`;
         console.log(`[stoa] Aborted message ${message_id}, reason=${effectiveReason || "user"}, partial=${partial.length} chars`);
       }
     } else {
-      if (!content.trim()) console.warn(`[stoa] empty result from ${triggerHarness}: msg=${message_id} subtype=${subtype || ""} ${sessionKey}`);
-      if (isError || subtype && subtype !== "success") content += reportModelUnavailable(entry, content);
+      const failed = isError || subtype && subtype !== "success";
+      let errorDetail = null;
+      if (!content.trim()) {
+        console.warn(`[stoa] empty result from ${triggerHarness}: msg=${message_id} subtype=${subtype || ""} ${sessionKey}`);
+        if (failed) errorDetail = buildErrorDetail({ harness: triggerHarness, exitCode: result.exitCode, signal: result.signal, stderr: result.stderrTail, home: os.homedir() });
+      }
+      if (failed) content += reportModelUnavailable(entry, content);
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
       const result_meta = {
-        exit_reason: isError || subtype && subtype !== "success" ? "error" : "completed",
+        exit_reason: failed ? "error" : "completed",
         tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
         duration_ms: durationMs || null
       };
+      if (errorDetail) result_meta.error_detail = errorDetail;
       const completeMsg = { type: "agent_complete", room_id, message_id, content: cleanContent || (attachments.length ? "\u{1F4CE}" : cleanContent), claude_session_id: sessionId, ai_model: actualModel, result_meta };
       if (attachments.length === 1) {
         completeMsg.file_url = attachments[0].url;
@@ -2431,7 +2438,10 @@ ${allNotes}`;
     } else {
       consecutiveTriggerErrors++;
       console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
-      send({ type: "agent_error", room_id, message_id, error: err.message + reportModelUnavailable(entry, err.message) });
+      const errorMsg = { type: "agent_error", room_id, message_id, error: err.message + reportModelUnavailable(entry, err.message) };
+      const errorDetail = buildErrorDetail({ harness: msg.harness || "claude", exitCode: err.exitCode, signal: err.signal, stderr: err.stderrTail, home: os.homedir() });
+      if (errorDetail) errorMsg.error_detail = errorDetail;
+      send(errorMsg);
     }
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log("[stoa] too many trigger errors, restarting clean...");
