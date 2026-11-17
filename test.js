@@ -1855,6 +1855,33 @@ function runUnitTests() {
     }
   });
 
+  ut('lib/harness-error — errorDetailSummary renders as literal text through the real client markdown pipeline (no img / link / code from stderr)', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const he = require('./lib/harness-error');
+    // marked + markdown.js as loaded by index.html; DOMPurify is a pass-through so the assertions
+    // hold on marked's raw output (the sanitizer only ever removes, it cannot add an element back).
+    const ctx = { console, DOMPurify: { addHook() {}, removeHook() {}, sanitize: h => h }, hljs: { getLanguage: () => null, highlightAuto: s => ({ value: s }) },
+      document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {}, location: { origin: 'http://stoa.test' } } };
+    vm.createContext(ctx);
+    for (const f of ['public/vendor/marked.min.js', 'public/js/markdown.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const render = s => vm.runInContext(`renderMarkdown(${JSON.stringify(s)})`, ctx);
+    const text = html => html.replace(/<\/?p>/g, '').trim().replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    const lines = [
+      'Error: <img src=x onerror=alert(1)>',
+      'Error: ![x](https://evil.example/b.png) and [c](https://evil.example/)',
+      'fatal: `rm -rf` **b** _i_ ~~s~~ <script>alert(1)</script>',
+      'Error: see https://evil.example/x www.evil.example ops@evil.example <https://evil.example/>',
+      'Error: &lt;img src=x&gt; token=[redacted] \\<img src=y> # | a | {b}',
+    ];
+    for (const line of lines) {
+      const summary = he.errorDetailSummary({ harness: 'codex', exit_code: 1, signal: null, stderr_tail: line });
+      const html = render(summary);
+      for (const tag of ['img', 'a', 'script', 'code', 'strong', 'em', 'del']) assert.ok(!new RegExp('<' + tag + '[\\s>/]', 'i').test(html), `no <${tag}> from stderr: ${html}`);
+      assert.strictEqual(text(html), 'Harness codex failed (exit 1): ' + line, `stderr line shown verbatim: ${html}`);
+    }
+  });
+
   ut('harness-session sanitizeUpdateError reuses the shared redaction (Bearer / key=value now covered)', () => {
     const { sanitizeUpdateError } = require('./harness-session');
     assert.strictEqual(sanitizeUpdateError('fetch failed: Authorization: Bearer abcdefgh12345678', null), 'fetch failed: Authorization: [redacted]');
@@ -11290,7 +11317,7 @@ async function run() {
         };
         const stderr = 'Authorization: Bearer sk-ant-api03-SERVERSIDELEAK0001\nError: thread/start failed: managed preferences token=SERVERSIDELEAK0002';
         let { payload, row } = await runOnce({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: stderr } });
-        assert.strictEqual(payload.content, 'Harness codex failed (exit 1): Error: thread/start failed: managed preferences token=[redacted]');
+        assert.strictEqual(payload.content, 'Harness codex failed (exit 1): Error: thread/start failed: managed preferences token=\\[redacted\\]');
         assert.strictEqual(row.content, payload.content);
         assert.strictEqual(payload.state, 'error');
         assert.strictEqual(row.state, 'error');
@@ -11337,7 +11364,7 @@ async function run() {
         };
         let { payload, row } = await runOnce({ error_detail: { harness: 'claude', exit_code: 1, signal: null, stderr_tail: 'Error: Invalid API key x-api-key: sk-ant-api03-AGENTERRLEAK000001' } });
         assert.strictEqual(row.state, 'error');
-        assert.strictEqual(row.content, 'Harness claude failed (exit 1): Error: Invalid API key x-api-key: [redacted]');
+        assert.strictEqual(row.content, 'Harness claude failed (exit 1): Error: Invalid API key x-api-key: \\[redacted\\]');
         assert.strictEqual(payload.content, row.content, 'clients see the error line');
         const meta = JSON.parse(row.result_meta);
         assert.strictEqual(meta.exit_reason, 'error');
