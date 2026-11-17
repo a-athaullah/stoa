@@ -1,3 +1,5 @@
+const { redactSecrets } = require('./lib/harness-error');
+
 function createHarnessSession(harness, opts, deps) {
   if (harness === 'codex') {
     let CodexSession;
@@ -228,11 +230,7 @@ const UPDATE_ERROR_MAX = 300;
 // absolute user paths masked, token-looking strings redacted, last UPDATE_ERROR_MAX chars kept.
 function sanitizeUpdateError(text, home) {
   if (typeof text !== 'string') return null;
-  let s = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ');
-  if (typeof home === 'string' && home.length > 1) s = s.split(home).join('~');
-  s = s.replace(/(?:\/Users|\/home)\/[^\s/'"]+/g, '~').replace(/[A-Za-z]:\\Users\\[^\s\\'"]+/gi, '~');
-  s = s.replace(/\b(?:sk|ghp|gho|xox[abpr]|github_pat)[-_][A-Za-z0-9_-]{10,}/g, '[redacted]');
-  s = s.replace(/\s+/g, ' ').trim();
+  const s = redactSecrets(text, home).replace(/\s+/g, ' ').trim();
   if (!s) return null;
   return s.length > UPDATE_ERROR_MAX ? '\u2026' + s.slice(-(UPDATE_ERROR_MAX - 1)) : s;
 }

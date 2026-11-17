@@ -292,6 +292,8 @@ const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErro
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
 
+const { sanitizeErrorDetail, errorDetailSummary } = require('./lib/harness-error');
+
 function sanitizeResultMeta(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const out = {};
@@ -304,6 +306,11 @@ function sanitizeResultMeta(raw) {
   }
   if (Number.isFinite(raw.duration_ms) && raw.duration_ms > 0) {
     out.duration_ms = Math.trunc(raw.duration_ms);
+  }
+  // Only a failed run carries harness stderr; re-validated and re-redacted (the agent is untrusted).
+  if (out.exit_reason === 'error') {
+    const detail = sanitizeErrorDetail(raw.error_detail);
+    if (detail) out.error_detail = detail;
   }
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
@@ -6901,10 +6908,12 @@ wss.on('connection', (ws, req) => {
       if (!msg.content?.trim()) {
         const errMeta = pendingActorMeta.get(msg.message_id) || {};
         console.warn(`[agent] empty agent_complete: message_id=${msg.message_id} room=${roomId} thread=${errMeta.thread_id ?? 'none'} agent=${agentActorId}`);
-        // A visible placeholder instead of an empty error bubble with no trace of what happened.
-        const placeholder = '(agent returned an empty reply)';
+        // A visible placeholder instead of an empty error bubble with no trace of what happened;
+        // the harness's own error line when the agent sent its stderr (result_meta.error_detail).
+        const errorDetail = JSON.parse(sanitizeResultMeta(msg.result_meta) || '{}').error_detail || null;
+        const placeholder = errorDetail ? errorDetailSummary(errorDetail) : '(agent returned an empty reply)';
         const errTiming = finalizeRunTiming(msg.message_id, { room_id: roomId, thread_id: errMeta.thread_id, actor_id: agentActorId, state: 'error' });
-        const errResultMeta = withTiming(JSON.stringify({ exit_reason: 'error' }), errTiming);
+        const errResultMeta = withTiming(JSON.stringify(errorDetail ? { exit_reason: 'error', error_detail: errorDetail } : { exit_reason: 'error' }), errTiming);
         const errDone = db.prepare(`UPDATE messages SET content=?, state='error', result_meta=?, completed_at=datetime('now')
           WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL} RETURNING thread_id, sub_agent_id`).get(placeholder, errResultMeta, msg.message_id, agentActorId);
         if (!errDone) return;
@@ -7156,10 +7165,21 @@ wss.on('connection', (ws, req) => {
       finalizeRunTiming(msg.message_id, { room_id: run.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: 'error' });
       // The run is over: drop the server-written awaiting-agent / interrupted mark so a later
       // disconnect cleanup cannot wake twice and the queued interrupted wake gives way to this one.
-      const errRow = db.prepare(`UPDATE messages SET state='error', result_meta=CASE
-          WHEN json_extract(result_meta, '$.awaiting_agent')=1 OR json_extract(result_meta, '$.exit_reason')='interrupted' THEN NULL ELSE result_meta END
-        WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}
-        RETURNING participant_id, sub_agent_id, thread_id, content`).get(msg.message_id, agentActorId);
+      // A harness that died with stderr (error_detail) also fills an empty bubble with its error line.
+      const errorDetail = sanitizeErrorDetail(msg.error_detail);
+      const errRow = db.transaction(() => {
+        const row = db.prepare(`UPDATE messages SET state='error', result_meta=CASE
+            WHEN json_extract(result_meta, '$.awaiting_agent')=1 OR json_extract(result_meta, '$.exit_reason')='interrupted' THEN NULL ELSE result_meta END
+          WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}
+          RETURNING participant_id, sub_agent_id, thread_id, content`).get(msg.message_id, agentActorId);
+        if (row && errorDetail) {
+          row.content = db.prepare(`UPDATE messages SET
+              result_meta=json_set(coalesce(result_meta, '{}'), '$.exit_reason', 'error', '$.error_detail', json(?)),
+              content=CASE WHEN trim(coalesce(content, ''))='' THEN ? ELSE content END
+            WHERE id=? RETURNING content`).get(JSON.stringify(errorDetail), errorDetailSummary(errorDetail), msg.message_id).content;
+        }
+        return row;
+      })();
       if (!errRow) return;
       broadcast(run.room_id, roomMessages.runError(msg.message_id));
       // R15: agent reported error cleanly — reset session to idle so it isn't

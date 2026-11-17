@@ -103,6 +103,8 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     }
     const resultChip = buildResultChip(resultMeta);
     if (resultChip) bubble.appendChild(resultChip);
+    const errorDetail = buildRunErrorDetail(resultMeta);
+    if (errorDetail) bubble.appendChild(errorDetail);
     const skillChips = buildSkillRefChips(runSkillRefs[msgId]);
     if (skillChips) bubble.appendChild(skillChips);
     addCopyButtons(bubble);

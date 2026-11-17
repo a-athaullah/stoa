@@ -1803,6 +1803,171 @@ function runUnitTests() {
       delete require.cache[require.resolve('./codex-session')];
     }
   });
+  ut('lib/harness-error — redactSecrets / stderrTail / buildErrorDetail / sanitizeErrorDetail / errorDetailSummary', () => {
+    const he = require('./lib/harness-error');
+    const secrets = ['sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV', 'abcdef123456sigvalue', 'AKIAIOSFODNN7EXAMPLE', 'supersecret123', 'hunter2222', 'pa55word',
+      'ghp_abcdefghijklmnopqrstuvwxyz0123', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      'xoxb-1234567890-abcdefghij', 'QWERTY123sas', 'opaque', '0123456789abcdef0123456789abcdef01234567', 'AIzaSyA1234567890abcdefghijklmnopqrstuv', 'raw-key-material'];
+    const raw = [
+      '\x1b[31mError\x1b[0m: thread/start failed: Failed to synchronize managed preferences (code -32600)\r',
+      'Authorization: Bearer sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV',
+      'GET https://s3.amazonaws.com/b/k?X-Amz-Signature=abcdef123456sigvalue&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE&ok=1',
+      'api_key=supersecret123 "password": "hunter2222" invalid token: expired',
+      'https://user:pa55word@host/x ghp_abcdefghijklmnopqrstuvwxyz0123 /Users/kai/.codex/config.toml /home/kai/x C:\\Users\\kai\\y',
+      'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      'xoxb-1234567890-abcdefghij sig=QWERTY123sas cookie: session=opaque',
+      'hash 0123456789abcdef0123456789abcdef01234567 AIzaSyA1234567890abcdefghijklmnopqrstuv',
+      '-----BEGIN RSA PRIVATE KEY-----', 'raw-key-material', '-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+    const tail = he.stderrTail(raw, '/Users/kai');
+    for (const sec of secrets) assert.ok(!tail.includes(sec), `secret leaked: ${sec}\n${tail}`);
+    assert.ok(!tail.includes('kai'), 'user paths masked');
+    assert.ok(!/[\x00-\x08\x0b-\x1f\x7f]/.test(tail), 'no control characters / ANSI');
+    assert.match(tail, /^Error: thread\/start failed: Failed to synchronize managed preferences \(code -32600\)$/m, 'the error line survives intact');
+    assert.match(tail, /invalid token: expired/, 'prose after "token:" is not a secret');
+    assert.match(tail, /&ok=1/, 'unrelated query params kept');
+    assert.strictEqual(he.redactSecrets(tail), tail, 'idempotent: the server re-redacts what the agent already redacted');
+    const long = Array.from({ length: 30 }, (_, i) => `line ${i} ` + 'x'.repeat(150)).join('\n');
+    const t2 = he.stderrTail(long);
+    assert.ok(t2.length <= he.STDERR_TAIL_MAX_CHARS, `tail capped at ${he.STDERR_TAIL_MAX_CHARS}: ${t2.length}`);
+    assert.ok(t2.split('\n').length <= he.STDERR_TAIL_MAX_LINES);
+    assert.ok(t2.endsWith('line 29 ' + 'x'.repeat(150)), 'keeps the END of stderr');
+    assert.strictEqual(he.stderrTail(Array.from({ length: 25 }, (_, i) => `l${i}`).join('\n')).split('\n')[0], 'l5', 'last 20 lines');
+    assert.strictEqual(he.buildErrorDetail({ harness: 'codex', exitCode: 1, stderr: ' \n\x1b[0m\n' }), null, 'no stderr → no detail (placeholder stays)');
+    assert.strictEqual(he.buildErrorDetail({ harness: 'Codex<script>', exitCode: 1, stderr: 'Error: x' }), null);
+    assert.deepStrictEqual(he.buildErrorDetail({ harness: 'codex', exitCode: null, signal: 'SIGKILL', stderr: 'Error: x\n' }),
+      { harness: 'codex', exit_code: null, signal: 'SIGKILL', stderr_tail: 'Error: x' });
+    const ok = { harness: 'codex', exit_code: 1, signal: null, stderr_tail: 'Error: boom token=abc123def' };
+    assert.deepStrictEqual(he.sanitizeErrorDetail(ok), { ...ok, stderr_tail: 'Error: boom token=[redacted]' });
+    for (const bad of [null, 'str', [ok], { ...ok, harness: 1 }, { ...ok, exit_code: '1' }, { ...ok, exit_code: 1.5 }, { ...ok, signal: 'KILL; rm' },
+      { ...ok, stderr_tail: 42 }, { ...ok, stderr_tail: '' }]) {
+      assert.strictEqual(he.sanitizeErrorDetail(bad), null, `rejected: ${JSON.stringify(bad)}`);
+    }
+    assert.strictEqual(he.sanitizeErrorDetail({ ...ok, stderr_tail: long + '\nError: last' }).stderr_tail.length <= he.STDERR_TAIL_MAX_CHARS, true, 'oversized input re-trimmed');
+    assert.strictEqual(he.errorDetailSummary({ harness: 'codex', exit_code: 1, signal: null, stderr_tail: 'warn: a\nError: thread/start failed\n    at foo (bar.js:1)' }),
+      'Harness codex failed (exit 1): Error: thread/start failed', 'the error line wins over a trailing stack frame');
+    assert.strictEqual(he.errorDetailSummary({ harness: 'claude', exit_code: null, signal: 'SIGKILL', stderr_tail: 'bye' }), 'Harness claude failed (signal SIGKILL): bye');
+    assert.ok(he.errorDetailSummary({ harness: 'codex', exit_code: 2, signal: null, stderr_tail: 'Error ' + 'y'.repeat(500) }).length < 260, 'summary line capped');
+    for (const evil of ['a-'.repeat(8192), 'x.'.repeat(8192) + '!', 'token'.repeat(3300), 'secretx'.repeat(2300) + '!', '"token": '.repeat(1800)]) {
+      const t0 = Date.now();
+      he.stderrTail(evil);
+      assert.ok(Date.now() - t0 < 1000, 'hostile stderr redacts in bounded time');
+    }
+  });
+
+  ut('lib/harness-error — errorDetailSummary renders as literal text through the real client markdown pipeline (no img / link / code from stderr)', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const he = require('./lib/harness-error');
+    // marked + markdown.js as loaded by index.html; DOMPurify is a pass-through so the assertions
+    // hold on marked's raw output (the sanitizer only ever removes, it cannot add an element back).
+    const ctx = { console, DOMPurify: { addHook() {}, removeHook() {}, sanitize: h => h }, hljs: { getLanguage: () => null, highlightAuto: s => ({ value: s }) },
+      document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {}, location: { origin: 'http://stoa.test' } } };
+    vm.createContext(ctx);
+    for (const f of ['public/vendor/marked.min.js', 'public/js/markdown.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const render = s => vm.runInContext(`renderMarkdown(${JSON.stringify(s)})`, ctx);
+    const text = html => html.replace(/<\/?p>/g, '').trim().replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    const lines = [
+      'Error: <img src=x onerror=alert(1)>',
+      'Error: ![x](https://evil.example/b.png) and [c](https://evil.example/)',
+      'fatal: `rm -rf` **b** _i_ ~~s~~ <script>alert(1)</script>',
+      'Error: see https://evil.example/x www.evil.example ops@evil.example <https://evil.example/>',
+      'Error: &lt;img src=x&gt; token=[redacted] \\<img src=y> # | a | {b}',
+    ];
+    for (const line of lines) {
+      const summary = he.errorDetailSummary({ harness: 'codex', exit_code: 1, signal: null, stderr_tail: line });
+      const html = render(summary);
+      for (const tag of ['img', 'a', 'script', 'code', 'strong', 'em', 'del']) assert.ok(!new RegExp('<' + tag + '[\\s>/]', 'i').test(html), `no <${tag}> from stderr: ${html}`);
+      assert.strictEqual(text(html), 'Harness codex failed (exit 1): ' + line, `stderr line shown verbatim: ${html}`);
+    }
+  });
+
+  ut('harness-session sanitizeUpdateError reuses the shared redaction (Bearer / key=value now covered)', () => {
+    const { sanitizeUpdateError } = require('./harness-session');
+    assert.strictEqual(sanitizeUpdateError('fetch failed: Authorization: Bearer abcdefgh12345678', null), 'fetch failed: Authorization: [redacted]');
+    assert.strictEqual(sanitizeUpdateError('GET /x?api_key=zz99yy88', null), 'GET /x?api_key=[redacted]');
+  });
+
+  ut('CodexSession close: non-zero exit hands raw exit code, signal and stderr tail to stoa.js; clean exit does not', () => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const fakeProcs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.stdin = { write: () => {}, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.kill = () => {};
+      fakeProcs.push(p);
+      return p;
+    };
+    const origWrite = process.stderr.write;
+    delete require.cache[require.resolve('./codex-session')];
+    try {
+      const { CodexSession } = require('./codex-session');
+      const session = new CodexSession({ workDir: '/tmp' });
+      let failed = null, ok = null, killed = null;
+      process.stderr.write = () => true;
+      session._startTask({ prompt: 'one', resolve: (r) => { failed = r; }, reject: () => {}, taskId: 't1' });
+      fakeProcs[0].stderr.emit('data', Buffer.from('x'.repeat(20000)));
+      fakeProcs[0].stderr.emit('data', Buffer.from('Error: thread/start failed\n'));
+      fakeProcs[0].emit('close', 1, null);
+      assert.strictEqual(failed.exitCode, 1);
+      assert.strictEqual(failed.signal, null);
+      assert.ok(failed.stderrTail.endsWith('Error: thread/start failed\n'), 'latest stderr kept');
+      assert.ok(failed.stderrTail.length <= 16384, 'rolling buffer bounded');
+      session._startTask({ prompt: 'two', resolve: (r) => { ok = r; }, reject: () => {}, taskId: 't2' });
+      fakeProcs[1].stderr.emit('data', Buffer.from('noise\n'));
+      fakeProcs[1].emit('close', 0, null);
+      assert.strictEqual(ok.stderrTail, undefined, 'clean exit carries no stderr');
+      session._startTask({ prompt: 'three', resolve: (r) => { killed = r; }, reject: () => {}, taskId: 't3' });
+      fakeProcs[2].emit('close', null, 'SIGKILL');
+      assert.deepStrictEqual({ isError: killed.isError, exitCode: killed.exitCode, signal: killed.signal }, { isError: true, exitCode: null, signal: 'SIGKILL' });
+    } finally {
+      process.stderr.write = origWrite;
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./codex-session')];
+    }
+  });
+
+  ut('ClaudeSession close mid-turn: rejection carries exit code, signal and stderr tail', () => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const fakeProcs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.stdin = { write: () => {}, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.kill = () => {};
+      fakeProcs.push(p);
+      return p;
+    };
+    const origWrite = process.stderr.write, origErr = console.error;
+    delete require.cache[require.resolve('./claude-session')];
+    let session = null;
+    try {
+      const { ClaudeSession } = require('./claude-session');
+      session = new ClaudeSession({ workDir: '/tmp' });
+      let rejected = null;
+      session._currentReject = (e) => { rejected = e; };
+      process.stderr.write = () => true;
+      console.error = () => {};
+      fakeProcs[0].stderr.emit('data', Buffer.from('Error: Invalid API key · token=abc12345\n'));
+      fakeProcs[0].emit('close', 1, null);
+      assert.strictEqual(rejected.message, 'claude process exited unexpectedly');
+      assert.deepStrictEqual({ exitCode: rejected.exitCode, signal: rejected.signal, stderrTail: rejected.stderrTail },
+        { exitCode: 1, signal: null, stderrTail: 'Error: Invalid API key · token=abc12345\n' });
+    } finally {
+      process.stderr.write = origWrite;
+      console.error = origErr;
+      if (session) session._dead = true;
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./claude-session')];
+    }
+  });
 
   // R4: cancelTask removes queued task without aborting current
   ut('ClaudeSession.cancelTask() removes queued task', () => {
@@ -3377,6 +3542,76 @@ async function runAsyncUnitTests() {
       assert.strictEqual(restarts, 1, 'no progress for RESTART_STALL_MS → forced restart');
       assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'restarting', reason: 'update_stalled', active: 1, queued: 0 }], 'notifies before restarting');
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+  await uta('harness error detail — a real codex adapter that exits 1 with secrets on stderr → agent_complete.result_meta.error_detail redacted; exit 0 empty → none; crashed claude → agent_error.error_detail', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), pathM = require('path'), osM = require('os');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-fake-codex-'));
+    const mode = pathM.join(dir, 'mode');
+    fsM.writeFileSync(pathM.join(dir, 'codex'), [
+      '#!/bin/sh',
+      '/bin/cat > /dev/null',
+      `if [ "$(/bin/cat '${mode}')" = fail ]; then`,
+      `  printf 'warning: loading ${osM.homedir()}/.codex/config.toml\\nAuthorization: Bearer sk-ant-api03-LEAKLEAKLEAKLEAK1234\\nError: thread/start: thread/start failed: failed to load configuration (code -32600) api_key=sk-proj-LEAKLEAKLEAKLEAK5678\\n' >&2`,
+      '  exit 1',
+      'fi',
+      'exit 0',
+    ].join('\n'), { mode: 0o755 });
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${dir}:/usr/bin:/bin`;
+    delete require.cache[require.resolve('./codex-session')];
+    const { CodexSession } = require('./codex-session');
+    let mockClaude = null;
+    const sent = [];
+    const origWrite = process.stderr.write;
+    const codexFor = (wd) => { const s = new CodexSession({ workDir: wd }); s._harness = 'codex'; return s; };
+    stoa.__setDeps({
+      send: (m) => sent.push(m), doRestart: () => {},
+      prepareResume: async (o) => (o.harness === 'codex' ? codexFor(o.targetDir) : mockClaude),
+      getSession: (wd, room, env, sub, thread, sp, sph, harness) => (harness === 'codex' ? codexFor(wd) : mockClaude),
+    });
+    const run = async (id, msg) => {
+      sent.length = 0;
+      await stoa.processTrigger({ room_id: 97, message_id: id, prompt: 'hi', workdir: osM.tmpdir(), ...msg });
+      return { complete: sent.find(m => m.type === 'agent_complete'), error: sent.find(m => m.type === 'agent_error') };
+    };
+    try {
+      process.stderr.write = () => true;
+      stoa.activeTriggers.clear();
+      fsM.writeFileSync(mode, 'fail');
+      let r = await run('he-1', { harness: 'codex' });
+      assert.ok(r.complete, `agent_complete sent: ${JSON.stringify(sent).slice(0, 500)}`);
+      assert.strictEqual(r.complete.content, '');
+      assert.strictEqual(r.complete.result_meta.exit_reason, 'error');
+      const d = r.complete.result_meta.error_detail;
+      assert.deepStrictEqual({ harness: d.harness, exit_code: d.exit_code, signal: d.signal }, { harness: 'codex', exit_code: 1, signal: null });
+      assert.match(d.stderr_tail, /Error: thread\/start: thread\/start failed: failed to load configuration \(code -32600\)/);
+      assert.ok(!d.stderr_tail.includes('LEAK'), `secrets redacted before leaving the agent: ${d.stderr_tail}`);
+      assert.ok(!d.stderr_tail.includes(osM.homedir()), 'home path masked');
+      assert.match(d.stderr_tail, /Authorization: \[redacted\]/);
+      fsM.writeFileSync(mode, 'ok');
+      r = await run('he-2', { harness: 'codex' });
+      assert.strictEqual(r.complete.content, '');
+      assert.deepStrictEqual(Object.keys(r.complete.result_meta).sort(), ['duration_ms', 'exit_reason', 'tokens']);
+      assert.strictEqual(r.complete.result_meta.exit_reason, 'completed', 'exit 0 + empty content: no error_detail, server keeps its placeholder');
+      mockClaude = {
+        _systemPromptHash: null, _harness: 'claude', flags: [], env: {}, resumeId: null,
+        on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+        send: async () => { throw Object.assign(new Error('claude process exited unexpectedly'), { exitCode: 2, signal: null, stderrTail: 'fatal: x-api-key: sk-ant-api03-LEAKLEAKLEAKLEAK9999\n' }); },
+      };
+      r = await run('he-3', {});
+      assert.strictEqual(r.error.error, 'claude process exited unexpectedly');
+      assert.deepStrictEqual(r.error.error_detail, { harness: 'claude', exit_code: 2, signal: null, stderr_tail: 'fatal: x-api-key: [redacted]' });
+      mockClaude.send = async () => { throw new Error('spawn claude ENOENT'); };
+      r = await run('he-4', {});
+      assert.strictEqual(r.error.error_detail, undefined, 'no stderr → no detail');
+    } finally {
+      process.stderr.write = origWrite;
+      process.env.PATH = prevPath;
+      fsM.rmSync(dir, { recursive: true, force: true });
+      delete require.cache[require.resolve('./codex-session')];
+      stoa.activeTriggers.clear(); stoa.__resetDeps();
+    }
   });
 
   await uta('agent pending restart — a tool in flight stretches the stall window to TOOL_STALL_MS (hard cap); text output ends it', async () => {
@@ -11062,6 +11297,85 @@ async function run() {
         assert.strictEqual(row.state, 'error');
         assert.ok(row.completed_at, 'completed_at must be set');
         assert.strictEqual(JSON.parse(row.result_meta).exit_reason, 'error');
+      } finally { humanWs.close(); }
+    });
+    await test('agent_complete empty + result_meta.error_detail → bubble shows the harness error line (re-redacted), detail stored; malformed/non-error detail → old placeholder', async () => {
+      if (!rlWs) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        await histP;
+        const runOnce = async (resultMeta, content = '') => {
+          const trig = waitForWsMessage(rlWs, m => m.type === 'agent_trigger', 5000);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'go' }));
+          const m = await trig;
+          const done = waitForWsMessage(humanWs, x => x.type === 'message_complete' && x.message_id === m.message_id, 5000);
+          rlWs.send(JSON.stringify({ type: 'agent_complete', room_id: rlRoomId, message_id: m.message_id, content, result_meta: resultMeta }));
+          const payload = await done;
+          return { payload, row: db.prepare('SELECT content, state, result_meta FROM messages WHERE id=?').get(m.message_id) };
+        };
+        const stderr = 'Authorization: Bearer sk-ant-api03-SERVERSIDELEAK0001\nError: thread/start failed: managed preferences token=SERVERSIDELEAK0002';
+        let { payload, row } = await runOnce({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: stderr } });
+        assert.strictEqual(payload.content, 'Harness codex failed (exit 1): Error: thread/start failed: managed preferences token=\\[redacted\\]');
+        assert.strictEqual(row.content, payload.content);
+        assert.strictEqual(payload.state, 'error');
+        assert.strictEqual(row.state, 'error');
+        const meta = JSON.parse(row.result_meta);
+        assert.strictEqual(meta.exit_reason, 'error');
+        assert.deepStrictEqual({ ...meta.error_detail, stderr_tail: undefined }, { harness: 'codex', exit_code: 1, signal: null, stderr_tail: undefined });
+        assert.ok(!row.result_meta.includes('SERVERSIDELEAK'), 'server re-redacts an unredacted tail');
+        assert.strictEqual(JSON.parse(payload.result_meta).error_detail.stderr_tail, meta.error_detail.stderr_tail, 'broadcast carries the stored detail');
+        const huge = Array.from({ length: 200 }, (_, i) => `noise ${i} ` + 'z'.repeat(300)).join('\n') + '\nError: last';
+        ({ row } = await runOnce({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: huge, extra: 'x'.repeat(5000) } }));
+        const big = JSON.parse(row.result_meta).error_detail;
+        assert.ok(big.stderr_tail.length <= 2048 && big.stderr_tail.split('\n').length <= 20, 'oversized tail re-trimmed');
+        assert.strictEqual(big.extra, undefined, 'unknown keys dropped');
+        assert.match(row.content, /: Error: last$/);
+        for (const bad of [{ harness: 'codex', exit_code: '1); DROP TABLE messages;--', stderr_tail: 'Error: x' }, { harness: '<img src=x>', exit_code: 1, stderr_tail: 'Error: x' }, 'Error: x', [1]]) {
+          ({ payload, row } = await runOnce({ exit_reason: 'error', error_detail: bad }));
+          assert.strictEqual(row.content, '(agent returned an empty reply)', `malformed detail rejected: ${JSON.stringify(bad)}`);
+          assert.strictEqual(JSON.parse(row.result_meta).error_detail, undefined);
+        }
+        ({ row } = await runOnce({ exit_reason: 'completed', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: 'Error: x' } }));
+        assert.strictEqual(row.content, '(agent returned an empty reply)', 'detail only honoured on a failed run');
+        assert.strictEqual(JSON.parse(row.result_meta).error_detail, undefined);
+        ({ row } = await runOnce({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: 'Error: partial' } }, 'some streamed text'));
+        assert.strictEqual(row.content, 'some streamed text', 'non-empty content is never replaced');
+        assert.strictEqual(JSON.parse(row.result_meta).error_detail.stderr_tail, 'Error: partial', 'detail kept next to real content');
+      } finally { humanWs.close(); }
+    });
+
+    await test('agent_error with error_detail → empty bubble filled with the harness error line, detail in result_meta; without detail unchanged', async () => {
+      if (!rlWs) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        await histP;
+        const runOnce = async (extra) => {
+          const trig = waitForWsMessage(rlWs, m => m.type === 'agent_trigger', 5000);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'go' }));
+          const m = await trig;
+          const done = waitForWsMessage(humanWs, x => (x.type === 'message_state' || x.type === 'message_complete') && x.message_id === m.message_id && x.state === 'error', 5000);
+          rlWs.send(JSON.stringify({ type: 'agent_error', room_id: rlRoomId, message_id: m.message_id, error: 'claude process exited unexpectedly', ...extra }));
+          const payload = await done;
+          return { payload, row: db.prepare('SELECT content, state, result_meta FROM messages WHERE id=?').get(m.message_id) };
+        };
+        let { payload, row } = await runOnce({ error_detail: { harness: 'claude', exit_code: 1, signal: null, stderr_tail: 'Error: Invalid API key x-api-key: sk-ant-api03-AGENTERRLEAK000001' } });
+        assert.strictEqual(row.state, 'error');
+        assert.strictEqual(row.content, 'Harness claude failed (exit 1): Error: Invalid API key x-api-key: \\[redacted\\]');
+        assert.strictEqual(payload.content, row.content, 'clients see the error line');
+        const meta = JSON.parse(row.result_meta);
+        assert.strictEqual(meta.exit_reason, 'error');
+        assert.strictEqual(meta.error_detail.harness, 'claude');
+        assert.ok(!row.result_meta.includes('AGENTERRLEAK'));
+        ({ row } = await runOnce({}));
+        assert.strictEqual(row.state, 'error');
+        assert.ok(!row.content, 'no detail: content untouched (empty) as before');
+        assert.ok(!row.result_meta || JSON.parse(row.result_meta).error_detail === undefined);
+        ({ row } = await runOnce({ error_detail: { harness: 'claude', exit_code: 'x', stderr_tail: 'Error: y' } }));
+        assert.ok(!row.content, 'malformed detail ignored');
       } finally { humanWs.close(); }
     });
 
@@ -19487,6 +19801,42 @@ async function run() {
     ctx.refreshSubAgentAvatars({ parent_actor_id: 1, label: 'Kenji', avatar_url: '/x.png' }, root);
     assert.strictEqual(only(kenji).tagName, 'SPAN', 'an update without an id repaints nothing');
 
+  });
+
+  await test('harness error detail — failed run renders exit code, signal and stderr tail as text in a collapsed <details>; non-failure or malformed detail renders nothing', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.className = ''; this._text = ''; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...c) { c.forEach(x => this.appendChild(x)); }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { throw new Error('innerHTML must not be used: ' + v); }
+      find(tag) { const out = []; const walk = e => e.children.forEach(c => { if (c.tagName === tag) out.push(c); walk(c); }); walk(this); return out; }
+    }
+    const ctx = { document: { createElement: t => new El(t) } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/append.js'), 'utf8'), ctx);
+    const build = vm.runInContext('buildRunErrorDetail', ctx);
+    const tail = 'Error: boom <img src=x onerror=alert(1)>\nAuthorization: Bearer [redacted]\n';
+    const box = build(JSON.stringify({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: 'SIGTERM', stderr_tail: tail } }));
+    assert.strictEqual(box.tagName, 'DETAILS');
+    assert.strictEqual(box.open, undefined, 'collapsed by default');
+    assert.strictEqual(box.find('SUMMARY')[0].textContent, 'Error details');
+    assert.deepStrictEqual(box.find('DT').map(e => e.textContent), ['Harness', 'Exit code', 'Signal']);
+    assert.deepStrictEqual(box.find('DD').map(e => e.textContent), ['codex', '1', 'SIGTERM']);
+    assert.strictEqual(box.find('CODE')[0].textContent, tail.trimEnd(), 'stderr tail kept verbatim as text (markup not interpreted), trailing whitespace trimmed');
+    const killed = build({ exit_reason: 'error', error_detail: { harness: 'claude', exit_code: null, signal: 'SIGKILL', stderr_tail: '' } });
+    assert.deepStrictEqual(killed.find('DD').map(e => e.textContent), ['claude', 'SIGKILL'], 'null exit code is omitted, not shown as "null"');
+    assert.strictEqual(killed.find('PRE').length, 0, 'no empty log block');
+    assert.strictEqual(build(JSON.stringify({ exit_reason: 'completed', error_detail: { harness: 'codex', exit_code: 1, stderr_tail: 'x' } })), null, 'not for a completed run');
+    assert.strictEqual(build(JSON.stringify({ exit_reason: 'error' })), null, 'plain error without detail keeps the old bubble');
+    assert.strictEqual(build('{not json'), null);
+    assert.strictEqual(build(null), null);
+    assert.strictEqual(build({ exit_reason: 'error', error_detail: 'stderr as a string' }), null);
+    const junk = build({ exit_reason: 'error', error_detail: { harness: 42, exit_code: '1', signal: {}, stderr_tail: ['x'] } });
+    assert.strictEqual(junk, null, 'wrong-typed fields are dropped; nothing left means nothing rendered');
   });
 
   await test('sub-agent avatar — thinking bubble carries the run\'s sub-agent id, so two parents with a same-label sub-agent in one room never cross-repaint', () => {

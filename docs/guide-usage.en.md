@@ -367,6 +367,8 @@ Every completed agent reply carries a quiet **result chip** under the bubble sho
 - **Tokens** — total input + output tokens for the turn (e.g. `1.3k tok`).
 - **Duration** — wall-clock time (e.g. `47s` or `2m 10s`).
 
+When a run ends with `⚠ error` and the harness produced no content, the bubble shows a one-line summary — **"Harness \<name\> failed (exit N): \<last stderr line\>"** — instead of the generic "(agent returned an empty reply)". An expandable **"Error details"** section below the summary shows the harness name, exit code, signal, and the final stderr lines (up to 20 lines / 2 KB). Secrets are automatically redacted before they reach the server: `Authorization` / `cookie` / `x-api-key` headers, `Bearer` tokens, `api_key=` / `token=` / `password=` query params, signed URL parameters (`X-Amz-Signature`, `sig=`), `sk-` / `sk-ant-` / `ghp_` / JWT / PEM patterns, and long random strings are all replaced with `[redacted]`; home paths are masked to `~`. If the harness produced no stderr, the placeholder "(agent returned an empty reply)" is shown as before.
+
 For sub-agents, the spend is **attributed to the specific sub-agent** in the usage log, so per-sub-agent cost is tracked separately from the parent agent's own turns.
 
 When an orchestrator has run **two or more sub-agents** in a room, its next synthesis turn receives a compact **cost rollup** (runs, total tokens, wall time, and per-sub-agent breakdown). The orchestrator uses this to close a multi-spawn pipeline with a brief run summary in its reply. A single spawn does not trigger a summary.

@@ -368,6 +368,8 @@ Setiap balasan agent yang selesai membawa **chip hasil** ringkas di bawah bubble
 - **Token** — total token input + output untuk giliran itu (mis. `1.3k tok`).
 - **Durasi** — waktu wall-clock (mis. `47s` atau `2m 10s`).
 
+Ketika run berakhir dengan `⚠ error` dan harness tidak menghasilkan konten, bubble menampilkan ringkasan satu baris — **"Harness \<nama\> failed (exit N): \<baris stderr terakhir\>"** — alih-alih placeholder generik "(agent returned an empty reply)". Bagian **"Error details"** yang bisa dibuka di bawah ringkasan menampilkan nama harness, exit code, signal, dan baris stderr terakhir (maks 20 baris / 2 KB). Secret diredaksi otomatis sebelum sampai ke server: header `Authorization` / `cookie` / `x-api-key`, token `Bearer`, param `api_key=` / `token=` / `password=`, parameter URL bertanda tangan (`X-Amz-Signature`, `sig=`), pola `sk-` / `sk-ant-` / `ghp_` / JWT / PEM, dan string acak panjang — semuanya diganti `[redacted]`; home path disamarkan menjadi `~`. Jika harness tidak menghasilkan stderr, placeholder "(agent returned an empty reply)" tetap muncul seperti biasa.
+
 Untuk sub-agent, biayanya **diatribusikan ke sub-agent spesifik** di log usage, sehingga biaya per sub-agent dilacak terpisah dari giliran agent induk sendiri.
 
 Ketika sebuah orchestrator sudah menjalankan **dua sub-agent atau lebih** di sebuah room, giliran sintesis berikutnya menerima **rollup biaya** ringkas (jumlah run, total token, wall time, dan rincian per sub-agent). Orchestrator memakainya untuk menutup pipeline multi-spawn dengan ringkasan run singkat di balasannya. Spawn tunggal tidak memicu ringkasan.

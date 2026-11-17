@@ -7,6 +7,9 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// Mirrors STDERR_RAW_KEEP in lib/harness-error.js (this file ships alone and cannot require lib/).
+const STDERR_KEEP = 16384;
+
 // Stoa MCP gateway. The header holds the literal ${STOA_MCP_TOKEN}; Claude Code expands it from the
 // process env, so the token never appears in argv (visible in ps). No --strict-mcp-config: the
 // user's own MCP servers keep working.
@@ -87,13 +90,15 @@ class ClaudeSession extends EventEmitter {
         this.flags = this.flags.filter((f, i, arr) => f !== '--resume' && arr[i - 1] !== '--resume');
         this.resumeId = null;
       }
+      const stderrTail = this._stderrBuf.slice(-STDERR_KEEP);
       const lastStderr = this._stderrBuf.trim().split('\n').slice(-3).join(' | ');
       console.error(`[session] claude process exited code=${code} signal=${signal}${lastStderr ? ' stderr=' + lastStderr.slice(0, 200) : ''}, restarting in 3s...`);
       this._stderrBuf = '';
       if (this._currentReject) {
         const reject = this._currentReject;
         this._clearCurrent({ drain: false });
-        reject(new Error('claude process exited unexpectedly'));
+        // Raw, unredacted: stoa.js turns it into error_detail (lib/harness-error.js) for agent_error.
+        reject(Object.assign(new Error('claude process exited unexpectedly'), { exitCode: code, signal: signal || null, stderrTail }));
       }
       this._autoTurn = null;
       this._backgroundTasks = [];

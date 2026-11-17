@@ -81,6 +81,9 @@ function appendFeedRootRow(m, inner) {
     col.appendChild(content);
   }
 
+  const errorDetail = buildRunErrorDetail(m.result_meta);
+  if (errorDetail) col.appendChild(errorDetail);
+
   const skillChips = buildSkillRefChips(m.skill_refs);
   if (skillChips) col.appendChild(skillChips);
 
@@ -111,7 +114,7 @@ function appendFeedRootRow(m, inner) {
   inner.appendChild(row);
 
   row.addEventListener('click', e => {
-    if (e.target.closest('a, button, .h-thread-chip, .h-msg-action-btn')) return;
+    if (e.target.closest('a, button, .h-thread-chip, .h-msg-action-btn, .h-run-error')) return;
     openThread(m.id);
   });
 
