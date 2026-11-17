@@ -85,7 +85,7 @@
   xox/AKIA/AIza/JWT/PEM, long opaque strings; home/user paths → `~`; ≤20 lines / 2 KB) and sends
   it in `agent_complete.result_meta.error_detail` or `agent_error.error_detail`. The server
   re-validates and re-redacts it (`sanitizeErrorDetail`, only kept when `exit_reason='error'`),
-  fills an empty bubble with "Harness <name> gagal (exit N): <last error line>" and stores the
+  fills an empty bubble with "Harness <name> failed (exit N): <last error line>" and stores the
   detail in `result_meta`. No stderr / malformed detail → old placeholder (agent_complete) or
   untouched content (agent_error). Old agents send no detail → unchanged behaviour.
 - Half-open sockets (bug/ws-heartbeat): `lib/ws-heartbeat.js` pings every socket each

@@ -1845,8 +1845,8 @@ function runUnitTests() {
     }
     assert.strictEqual(he.sanitizeErrorDetail({ ...ok, stderr_tail: long + '\nError: last' }).stderr_tail.length <= he.STDERR_TAIL_MAX_CHARS, true, 'oversized input re-trimmed');
     assert.strictEqual(he.errorDetailSummary({ harness: 'codex', exit_code: 1, signal: null, stderr_tail: 'warn: a\nError: thread/start failed\n    at foo (bar.js:1)' }),
-      'Harness codex gagal (exit 1): Error: thread/start failed', 'the error line wins over a trailing stack frame');
-    assert.strictEqual(he.errorDetailSummary({ harness: 'claude', exit_code: null, signal: 'SIGKILL', stderr_tail: 'bye' }), 'Harness claude gagal (signal SIGKILL): bye');
+      'Harness codex failed (exit 1): Error: thread/start failed', 'the error line wins over a trailing stack frame');
+    assert.strictEqual(he.errorDetailSummary({ harness: 'claude', exit_code: null, signal: 'SIGKILL', stderr_tail: 'bye' }), 'Harness claude failed (signal SIGKILL): bye');
     assert.ok(he.errorDetailSummary({ harness: 'codex', exit_code: 2, signal: null, stderr_tail: 'Error ' + 'y'.repeat(500) }).length < 260, 'summary line capped');
     for (const evil of ['a-'.repeat(8192), 'x.'.repeat(8192) + '!', 'token'.repeat(3300), 'secretx'.repeat(2300) + '!', '"token": '.repeat(1800)]) {
       const t0 = Date.now();
@@ -11290,7 +11290,7 @@ async function run() {
         };
         const stderr = 'Authorization: Bearer sk-ant-api03-SERVERSIDELEAK0001\nError: thread/start failed: managed preferences token=SERVERSIDELEAK0002';
         let { payload, row } = await runOnce({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: null, stderr_tail: stderr } });
-        assert.strictEqual(payload.content, 'Harness codex gagal (exit 1): Error: thread/start failed: managed preferences token=[redacted]');
+        assert.strictEqual(payload.content, 'Harness codex failed (exit 1): Error: thread/start failed: managed preferences token=[redacted]');
         assert.strictEqual(row.content, payload.content);
         assert.strictEqual(payload.state, 'error');
         assert.strictEqual(row.state, 'error');
@@ -11337,7 +11337,7 @@ async function run() {
         };
         let { payload, row } = await runOnce({ error_detail: { harness: 'claude', exit_code: 1, signal: null, stderr_tail: 'Error: Invalid API key x-api-key: sk-ant-api03-AGENTERRLEAK000001' } });
         assert.strictEqual(row.state, 'error');
-        assert.strictEqual(row.content, 'Harness claude gagal (exit 1): Error: Invalid API key x-api-key: [redacted]');
+        assert.strictEqual(row.content, 'Harness claude failed (exit 1): Error: Invalid API key x-api-key: [redacted]');
         assert.strictEqual(payload.content, row.content, 'clients see the error line');
         const meta = JSON.parse(row.result_meta);
         assert.strictEqual(meta.exit_reason, 'error');

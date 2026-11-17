@@ -365,7 +365,7 @@ Aria:   [审查代码并提供反馈]
 - **令牌** — 本轮的输入 + 输出令牌总数（例如 `1.3k tok`）。
 - **时长** — 实际墙钟时间（例如 `47s` 或 `2m 10s`）。
 
-当运行以 `⚠ error` 结束且程序集未生成内容时，气泡会显示单行摘要 — **"Harness \<名称\> 失败 (exit N): \<最后一行 stderr\>"** — 而非通用占位符 "(agent returned an empty reply)"。摘要下方有可展开的 **"Error details"** 区域，显示程序集名称、退出码、信号以及最后几行 stderr（最多 20 行 / 2 KB）。机密信息在到达服务器之前会被自动脱敏：`Authorization` / `cookie` / `x-api-key` 标头、`Bearer` 令牌、`api_key=` / `token=` / `password=` 查询参数、签名 URL 参数（`X-Amz-Signature`、`sig=`）、`sk-` / `sk-ant-` / `ghp_` / JWT / PEM 模式以及长随机字符串均替换为 `[redacted]`；主目录路径掩码为 `~`。若程序集未输出任何 stderr，则照常显示原有占位符。
+当运行以 `⚠ error` 结束且 harness 未生成内容时，气泡会显示单行摘要 — **"Harness \<名称\> failed (exit N): \<最后一行 stderr\>"** — 而非通用占位符 "(agent returned an empty reply)"。摘要下方有可展开的 **"Error details"** 区域，显示harness 名称、退出码、信号以及最后几行 stderr（最多 20 行 / 2 KB）。机密信息在到达服务器之前会被自动脱敏：`Authorization` / `cookie` / `x-api-key` 标头、`Bearer` 令牌、`api_key=` / `token=` / `password=` 查询参数、签名 URL 参数（`X-Amz-Signature`、`sig=`）、`sk-` / `sk-ant-` / `ghp_` / JWT / PEM 模式以及长随机字符串均替换为 `[redacted]`；主目录路径掩码为 `~`。若harness 未输出任何 stderr，则照常显示原有占位符。
 
 对于子代理，其花费会在使用日志中**归属到具体的子代理**，因此每个子代理的成本会与父代理自身的轮次分开跟踪。
 
