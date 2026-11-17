@@ -19489,6 +19489,42 @@ async function run() {
 
   });
 
+  await test('harness error detail — failed run renders exit code, signal and stderr tail as text in a collapsed <details>; non-failure or malformed detail renders nothing', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.className = ''; this._text = ''; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...c) { c.forEach(x => this.appendChild(x)); }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { throw new Error('innerHTML must not be used: ' + v); }
+      find(tag) { const out = []; const walk = e => e.children.forEach(c => { if (c.tagName === tag) out.push(c); walk(c); }); walk(this); return out; }
+    }
+    const ctx = { document: { createElement: t => new El(t) } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/append.js'), 'utf8'), ctx);
+    const build = vm.runInContext('buildRunErrorDetail', ctx);
+    const tail = 'Error: boom <img src=x onerror=alert(1)>\nAuthorization: Bearer [redacted]\n';
+    const box = build(JSON.stringify({ exit_reason: 'error', error_detail: { harness: 'codex', exit_code: 1, signal: 'SIGTERM', stderr_tail: tail } }));
+    assert.strictEqual(box.tagName, 'DETAILS');
+    assert.strictEqual(box.open, undefined, 'collapsed by default');
+    assert.strictEqual(box.find('SUMMARY')[0].textContent, 'Error details');
+    assert.deepStrictEqual(box.find('DT').map(e => e.textContent), ['Harness', 'Exit code', 'Signal']);
+    assert.deepStrictEqual(box.find('DD').map(e => e.textContent), ['codex', '1', 'SIGTERM']);
+    assert.strictEqual(box.find('CODE')[0].textContent, tail.trimEnd(), 'stderr tail kept verbatim as text (markup not interpreted), trailing whitespace trimmed');
+    const killed = build({ exit_reason: 'error', error_detail: { harness: 'claude', exit_code: null, signal: 'SIGKILL', stderr_tail: '' } });
+    assert.deepStrictEqual(killed.find('DD').map(e => e.textContent), ['claude', 'SIGKILL'], 'null exit code is omitted, not shown as "null"');
+    assert.strictEqual(killed.find('PRE').length, 0, 'no empty log block');
+    assert.strictEqual(build(JSON.stringify({ exit_reason: 'completed', error_detail: { harness: 'codex', exit_code: 1, stderr_tail: 'x' } })), null, 'not for a completed run');
+    assert.strictEqual(build(JSON.stringify({ exit_reason: 'error' })), null, 'plain error without detail keeps the old bubble');
+    assert.strictEqual(build('{not json'), null);
+    assert.strictEqual(build(null), null);
+    assert.strictEqual(build({ exit_reason: 'error', error_detail: 'stderr as a string' }), null);
+    const junk = build({ exit_reason: 'error', error_detail: { harness: 42, exit_code: '1', signal: {}, stderr_tail: ['x'] } });
+    assert.strictEqual(junk, null, 'wrong-typed fields are dropped; nothing left means nothing rendered');
+  });
+
   await test('sub-agent avatar — thinking bubble carries the run\'s sub-agent id, so two parents with a same-label sub-agent in one room never cross-repaint', () => {
     const vm = require('vm');
     const fs = require('fs');
