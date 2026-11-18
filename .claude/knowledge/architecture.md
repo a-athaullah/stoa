@@ -315,6 +315,36 @@ Document nodes are **never** merge targets of conversation extraction (Knowledge
 
 ---
 
+## Knowledge Search
+
+`lib/knowledge-search.js` (server), `migrations/20261119-knowledge-usage-time.sql` (Knowledge 4/6). Tool `stoa__knowledge_search` (lib/stoa-mcp-tools.js), endpoint `GET /api/knowledge/usage`, WS event `knowledge_used`.
+
+### Ranking (hybrid, same rule as message search)
+
+```
+validate query / limit (400 before any work)
+  ↓
+semantic.ready? → embed([query], { passage: false, timeoutMs: SEARCH_TIMEOUT_MS = 4 s })   ← the only await
+  null / timeout / not ready → text only (semantic: false), never an error
+  ↓ (from here synchronous: a node deleted while embedding is simply not read)
+load active nodes (embedding only when embedding_model = semantic.model)
+  text list:     per query unit (loose word, prefix match from 3 chars; "quoted phrase" exact)
+                 title hit 2, else summary hit 1 → score / (2 × units); JS scan, Unicode-folded
+  semantic list: dot(query, node) for same-dimension vectors, top 20, keep sim > 0 and ≥ best − 0.05
+  ↓
+fuseRrf(text, semantic) (lib/search-query.js, k = 60) → top `limit`, score = RRF score
+  ↓
+sources (canReach per room, cached per call) → usage rows (1 transaction) → knowledge_used to browsers
+```
+
+Both lists scan the active nodes in memory: the cosine needs every vector anyway, and the graph is one owner's (hundreds to a few thousand nodes). Revisit if it grows by orders of magnitude.
+
+### Why sources are filtered but summaries are not
+
+Card #37: an agent anywhere may use what is known; links into a room stay behind that room's access rule. Exclusion of private rooms happens at write time (`eligibleRoom`), so every stored node is shareable; only its message links are not. Hidden message sources are a count only, so neither a room id nor its existence leaks.
+
+---
+
 ## Knowledge Extraction
 
 `lib/knowledge-extraction.js` (server), `lib/knowledge-agent.js` (connector), `migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).
