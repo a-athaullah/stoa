@@ -610,6 +610,15 @@ CREATE UNIQUE INDEX idx_knowledge_jobs_node_pending ON knowledge_jobs(node_id)
 
 Trigger `knowledge_nodes_bd` — BEFORE DELETE ON knowledge_nodes, WHEN the node has ≥1 usage row and ≥1 origin room: copies title/category, origin rooms and usage (with name snapshots) into the archive before the cascade removes them. Fires on every delete path (panel, message/thread/room/document deletion through `knowledge_sources_ad`). An unused node is not archived (its title is not kept). Trigger `knowledge_deleted_node_rooms_ad` drops an archive whose last origin room is gone (room deleted).
 
+**Brain layout (`migrations/20261120-knowledge-layout.sql`, Knowledge 6/6, lib/knowledge-layout.js) — derived data only:**
+
+| Table | Columns / FKs |
+|-------|---------------|
+| `knowledge_layout_basis` | one row (`id` CHECK = 1): `model`, `dims`, `n_basis` (nodes it was computed from), `basis` BLOB = Float32 [mean D, 3 components × D, 3 spreads], `computed_at` |
+| `knowledge_node_layout` | `node_id` PK → knowledge_nodes CASCADE, `x`, `y`, `z`, `model` (embedding model projected from; `''` = no vector, spot from the node id) |
+
+Trigger `knowledge_nodes_layout_au` — AFTER UPDATE OF embedding, embedding_model ON knowledge_nodes, when either really changed: deletes the node's position (re-projected on the next graph read). Basis rebuild rules are in the header of lib/knowledge-layout.js.
+
 **Gotcha — trigger bodies may only name baseline tables.** Older migrations rebuild tables (CREATE new / DROP / RENAME); on a fresh install SQLite then re-checks every trigger, and a table created only by a migration (e.g. `sub_agents`) does not exist yet at that point → the rebuild fails, is retried later and drops columns added in between. That is why `knowledge_nodes_bd` copies `knowledge_usage.sub_agent_label` instead of joining `sub_agents`. The test "migrations: fresh DB from schema.sqlite.sql" catches it (ai_sessions columns).
 
 `knowledge_jobs_actor_bd` — BEFORE DELETE ON actors. When an actor that holds a lease is deleted, its running job is returned to `pending` (lease cleared, `attempts` unchanged). If a pending twin for the same conversation or node already exists, the running job is deleted instead (the twin covers it from the same cursor). This prevents the `CHECK(status='running' = leased_actor_id IS NOT NULL)` constraint from blocking the actor deletion.

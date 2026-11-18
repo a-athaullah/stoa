@@ -292,6 +292,8 @@ const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
 const { createKnowledgeSearch } = require('./lib/knowledge-search');
 const { createKnowledgeAdmin } = require('./lib/knowledge-admin');
+const { createKnowledgeLayout } = require('./lib/knowledge-layout');
+const { KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1954,7 +1956,11 @@ const knowledgeDocs = createKnowledgeDocuments({
 });
 // stoa__knowledge_search + GET /api/knowledge/usage (lib/knowledge-search.js). knowledge_used goes to
 // the owner's browsers only (broadcastGlobal), never to agent connections.
-const knowledgeSearch = createKnowledgeSearch({ db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data) });
+const knowledgeSearch = createKnowledgeSearch({
+  db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
+});
+// Knowledge brain positions + GET /api/knowledge/graph (lib/knowledge-layout.js), session-only.
+const knowledgeLayout = createKnowledgeLayout({ db, model: semanticIndex.model });
 // Room knowledge settings + management panel (lib/knowledge-admin.js); routes are session-only.
 const knowledgeAdmin = createKnowledgeAdmin({
   db, eligibleRoom: (room) => knowledge.eligibleRoom(room), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
@@ -2902,6 +2908,17 @@ const server = http.createServer(async (req, res) => {
     return json(res, r.body, r.status);
   }
 
+  // Knowledge brain (card #39), session-only like the usage above: lib/knowledge-layout.js (graph) and
+  // lib/knowledge-admin.js (node detail, recent searches) validate everything.
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/graph') {
+    const r = knowledgeLayout.graph();
+    return json(res, r.body, r.status);
+  }
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/usage/recent') {
+    const r = knowledgeAdmin.recentUsage(url.searchParams);
+    return json(res, r.body, r.status);
+  }
+
   // Room knowledge settings and management panel (card #38). Session-only (not in lib/agent-scope.js):
   // it lists what every agent looked up and deletes knowledge, an owner view. lib/knowledge-admin.js
   // validates every id.
@@ -2916,14 +2933,22 @@ const server = http.createServer(async (req, res) => {
     }
     else if (sub === 'documents' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.documents(roomRaw);
     else if (sub === 'documents' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.removeDocument(roomRaw, itemRaw);
+    else if (sub === 'documents' && !itemRaw && req.method === 'POST') {
+      // Upload from the panel (card #39). JSON escaping can make text up to 6× longer (\u00XX); the
+      // text itself is held to KNOWLEDGE_DOC_MAX_BYTES by lib/knowledge-documents.js (413).
+      let raw;
+      try { raw = await readBody(req, KNOWLEDGE_DOC_MAX_BYTES * 6 + 64 * 1024); } catch { return json(res, { error: 'request body too large' }, 413); }
+      const owner = db.prepare("SELECT id FROM actors WHERE type='human' ORDER BY id LIMIT 1").get();
+      r = await knowledgeAdmin.uploadDocument(roomRaw, parseJsonBody(raw), owner?.id ?? null);
+    }
     else if (sub === 'nodes' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.nodes(roomRaw, url.searchParams);
     else if (sub === 'usage' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.usage(roomRaw, url.searchParams);
     else if (sub === 'deleted' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.forgetDeleted(roomRaw, itemRaw);
     if (r) return json(res, r.body, r.status);
   }
-  const kNode = req.method === 'DELETE' && url.pathname.match(/^\/api\/knowledge\/nodes\/([^/]+)$/);
+  const kNode = (req.method === 'DELETE' || req.method === 'GET') && url.pathname.match(/^\/api\/knowledge\/nodes\/([^/]+)$/);
   if (kNode) {
-    const r = knowledgeAdmin.deleteNode(kNode[1], url.searchParams.get('room_id'));
+    const r = req.method === 'GET' ? knowledgeAdmin.nodeDetail(kNode[1]) : knowledgeAdmin.deleteNode(kNode[1], url.searchParams.get('room_id'));
     return json(res, r.body, r.status);
   }
 
