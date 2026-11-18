@@ -26794,6 +26794,282 @@ async function run() {
     finally { db.close(); }
   });
 
+  console.log('\n[Knowledge schema]');
+
+  // Full boot schema (db/schema.sqlite.sql + every migration, as server.js does), FKs on as in db/index.js.
+  const _knowledgeBootDb = (schemaSql) => {
+    const Database = require('better-sqlite3');
+    const fsK = require('fs'), pathK = require('path');
+    const { runMigrations } = require('./lib/migrations');
+    const kdb = new Database(':memory:');
+    kdb.pragma('foreign_keys = ON');
+    const results = runMigrations(kdb, pathK.join(__dirname, 'migrations'), { log() {}, error() {} },
+      { schemaSql: schemaSql ?? fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+    return { kdb, results };
+  };
+  const _knowledgeFixture = (kdb) => {
+    const actor = kdb.prepare("INSERT INTO actors (name, type) VALUES ('k-human', 'human')").run().lastInsertRowid;
+    const room = () => {
+      const r = kdb.prepare("INSERT INTO rooms (title, created_by) VALUES ('k-room', ?)").run(actor).lastInsertRowid;
+      const p = kdb.prepare('INSERT INTO room_participants (room_id, actor_id) VALUES (?, ?)').run(r, actor).lastInsertRowid;
+      return { id: r, p };
+    };
+    const msg = (rm, threadId = null) => kdb.prepare('INSERT INTO messages (room_id, participant_id, content, thread_id) VALUES (?, ?, ?, ?)')
+      .run(rm.id, rm.p, 'knowledge source', threadId).lastInsertRowid;
+    const node = (title = 'n') => kdb.prepare("INSERT INTO knowledge_nodes (title, category) VALUES (?, 'eng')").run(title).lastInsertRowid;
+    const doc = (rm) => kdb.prepare("INSERT INTO knowledge_documents (name, content_hash, added_by_actor_id, room_id) VALUES ('a.md', 'h', ?, ?)").run(actor, rm.id).lastInsertRowid;
+    const srcMsg = (n, m) => kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(n, m);
+    const srcDoc = (n, d) => kdb.prepare('INSERT INTO knowledge_sources (node_id, document_id) VALUES (?, ?)').run(n, d);
+    const nodeRow = (n) => kdb.prepare('SELECT status, stale_at FROM knowledge_nodes WHERE id = ?').get(n);
+    const count = (t) => kdb.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get().c;
+    // Same statements, same order, as DELETE /api/rooms/:id in server.js.
+    const deleteRoom = (rm) => kdb.transaction(() => {
+      kdb.prepare('DELETE FROM messages WHERE room_id = ?').run(rm.id);
+      kdb.prepare('DELETE FROM room_participants WHERE room_id = ?').run(rm.id);
+      kdb.prepare('DELETE FROM rooms WHERE id = ?').run(rm.id);
+    })();
+    const orphanSources = () => kdb.prepare(`SELECT COUNT(*) AS c FROM knowledge_sources s
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_nodes n WHERE n.id = s.node_id)
+         OR (s.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = s.message_id))
+         OR (s.document_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM knowledge_documents d WHERE d.id = s.document_id))`).get().c;
+    return { actor, room, msg, node, doc, srcMsg, srcDoc, nodeRow, count, deleteRoom, orphanSources };
+  };
+
+  await test('knowledge schema: migration on the pre-migration schema creates exactly what db/schema.sqlite.sql has', async () => {
+    const fsK = require('fs'), pathK = require('path'), osK = require('os');
+    const { splitSqlStatements, applyMigration, runMigrations } = require('./lib/migrations');
+    const Database = require('better-sqlite3');
+    const MIG = '20261118-knowledge-schema.sql';
+    const full = fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+    // Pre-migration baseline: no rooms.knowledge_enabled line, no knowledge_* statement.
+    const noColumn = full.split('\n').filter(l => !/^\s*knowledge_enabled\s/.test(l)).join('\n');
+    assert.notStrictEqual(noColumn, full, 'baseline declares rooms.knowledge_enabled');
+    const preSchema = splitSqlStatements(noColumn).filter(s => !/knowledge_/.test(s)).join(';\n') + ';\n';
+    const tmp = fsK.mkdtempSync(pathK.join(osK.tmpdir(), 'stoa-kmig-'));
+    const pre = new Database(':memory:');
+    const { kdb: post } = _knowledgeBootDb();
+    try {
+      for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) {
+        if (f !== MIG) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+      }
+      pre.pragma('foreign_keys = ON');
+      runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
+      assert.ok(!pre.prepare("SELECT 1 FROM sqlite_master WHERE name LIKE 'knowledge%'").get(), 'pre-migration DB has no knowledge objects');
+      const sql = fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8');
+      assert.deepStrictEqual(applyMigration(pre, MIG, sql), { status: 'applied' }, 'applies cleanly, nothing skipped');
+      const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%' ORDER BY name").all()
+        .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
+      const after = objs(pre);
+      assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_room', 'idx_knowledge_edges_b',
+        'idx_knowledge_nodes_status', 'idx_knowledge_sources_document', 'idx_knowledge_sources_message', 'idx_knowledge_usage_actor',
+        'idx_knowledge_usage_node', 'idx_knowledge_usage_room', 'idx_knowledge_usage_sub_agent', 'knowledge_documents', 'knowledge_edges',
+        'knowledge_nodes', 'knowledge_sources', 'knowledge_sources_ad', 'knowledge_usage']);
+      assert.deepStrictEqual(after, objs(post), 'migration ≡ baseline');
+      const col = (d) => d.prepare("SELECT type, \"notnull\", dflt_value FROM pragma_table_info('rooms') WHERE name = 'knowledge_enabled'").get();
+      assert.deepStrictEqual(col(pre), { type: 'INTEGER', notnull: 1, dflt_value: '0' });
+      assert.deepStrictEqual(col(pre), col(post));
+      for (const d of [pre, post]) {
+        const a = d.prepare("INSERT INTO actors (name, type) VALUES ('x', 'human')").run().lastInsertRowid;
+        assert.throws(() => d.prepare("INSERT INTO rooms (title, created_by, knowledge_enabled) VALUES ('x', ?, 2)").run(a), /CHECK constraint failed/);
+        const r = d.prepare("INSERT INTO rooms (title, created_by) VALUES ('x', ?)").run(a).lastInsertRowid;
+        assert.strictEqual(d.prepare('SELECT knowledge_enabled FROM rooms WHERE id = ?').get(r).knowledge_enabled, 0, 'opt-in: off by default');
+      }
+      const again = applyMigration(pre, MIG + '.again', sql);
+      assert.strictEqual(again.status, 'reconciled', 'idempotent: re-running only skips the existing column');
+      assert.deepStrictEqual(again.skipped, ['duplicate column name: knowledge_enabled']);
+    } finally { pre.close(); post.close(); fsK.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  await test('knowledge schema: fresh boot applies the migration; FK lookups use the source indexes', async () => {
+    const { kdb, results } = _knowledgeBootDb();
+    try {
+      assert.deepStrictEqual(results.filter(r => r.status === 'failed'), []);
+      assert.strictEqual(results.find(r => r.filename === '20261118-knowledge-schema.sql')?.status, 'reconciled');
+      const plan = (q) => kdb.prepare('EXPLAIN QUERY PLAN ' + q).all().map(r => r.detail).join(' | ');
+      assert.match(plan('SELECT 1 FROM knowledge_sources WHERE message_id = 1'), /idx_knowledge_sources_message/);
+      assert.match(plan('SELECT 1 FROM knowledge_sources WHERE document_id = 1'), /idx_knowledge_sources_document/);
+      assert.match(plan("SELECT id FROM knowledge_nodes WHERE status = 'stale' ORDER BY stale_at"), /idx_knowledge_nodes_status/);
+      assert.doesNotMatch(plan("SELECT id FROM knowledge_nodes WHERE status = 'stale' ORDER BY stale_at"), /TEMP B-TREE/, 'stale queue needs no sort');
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting a node\'s only source message deletes the node', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const m = k.msg(rm), n = k.node(), other = k.node('other');
+      k.srcMsg(n, m); k.srcMsg(other, k.msg(rm));
+      kdb.prepare('DELETE FROM messages WHERE id = ?').run(m);
+      assert.strictEqual(k.nodeRow(n), undefined, 'node gone');
+      assert.deepStrictEqual(k.nodeRow(other), { status: 'active', stale_at: null }, 'unrelated node untouched');
+      assert.strictEqual(k.count('knowledge_sources'), 1);
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting one of two sources marks the node stale, keeps the first stale_at', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const [m1, m2, m3] = [k.msg(rm), k.msg(rm), k.msg(rm)];
+      const n = k.node();
+      k.srcMsg(n, m1); k.srcMsg(n, m2); k.srcMsg(n, m3);
+      kdb.prepare("UPDATE knowledge_nodes SET updated_at = '2000-01-01 00:00:00' WHERE id = ?").run(n);
+      kdb.prepare('DELETE FROM messages WHERE id = ?').run(m1);
+      const r1 = kdb.prepare('SELECT status, stale_at, updated_at FROM knowledge_nodes WHERE id = ?').get(n);
+      assert.strictEqual(r1.status, 'stale');
+      assert.match(r1.stale_at, /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+      assert.notStrictEqual(r1.updated_at, '2000-01-01 00:00:00', 'updated_at bumped');
+      kdb.prepare("UPDATE knowledge_nodes SET stale_at = '2001-01-01 00:00:00' WHERE id = ?").run(n);
+      kdb.prepare('DELETE FROM messages WHERE id = ?').run(m2);
+      assert.deepStrictEqual(k.nodeRow(n), { status: 'stale', stale_at: '2001-01-01 00:00:00' }, 'queue position kept');
+      assert.deepStrictEqual(kdb.prepare("SELECT id FROM knowledge_nodes WHERE status = 'stale' ORDER BY stale_at").all(), [{ id: n }]);
+      assert.throws(() => kdb.prepare("UPDATE knowledge_nodes SET status = 'active' WHERE id = ?").run(n), /CHECK constraint failed/, 'active must clear stale_at');
+      kdb.prepare("UPDATE knowledge_nodes SET status = 'active', stale_at = NULL WHERE id = ?").run(n);
+      assert.throws(() => kdb.prepare("UPDATE knowledge_nodes SET status = 'stale' WHERE id = ?").run(n), /CHECK constraint failed/, 'stale needs stale_at');
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting a thread (one multi-row DELETE) removes a node whose sources were all in it', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const root = k.msg(rm), r1 = k.msg(rm, root), r2 = k.msg(rm, root), outside = k.msg(rm);
+      const inThread = k.node('in-thread'), mixed = k.node('mixed');
+      k.srcMsg(inThread, root); k.srcMsg(inThread, r1); k.srcMsg(inThread, r2);
+      k.srcMsg(mixed, r1); k.srcMsg(mixed, outside);
+      // DELETE /api/messages/:root?cascade=1: replies in one statement, then the root.
+      kdb.prepare('DELETE FROM messages WHERE thread_id = ?').run(root);
+      assert.strictEqual(k.nodeRow(inThread).status, 'stale', 'root still a source');
+      kdb.prepare('DELETE FROM messages WHERE id = ?').run(root);
+      assert.strictEqual(k.nodeRow(inThread), undefined, 'all sources gone → node gone');
+      assert.strictEqual(k.nodeRow(mixed).status, 'stale', 'source outside the thread keeps the node, stale');
+      kdb.prepare('DELETE FROM messages WHERE thread_id IS NULL AND id = ?').run(outside);
+      const n2 = k.node('one-statement');
+      const t = k.msg(rm), a = k.msg(rm, t), b = k.msg(rm, t);
+      k.srcMsg(n2, a); k.srcMsg(n2, b);
+      kdb.prepare('DELETE FROM messages WHERE thread_id = ?').run(t);
+      assert.strictEqual(k.nodeRow(n2), undefined, 'both sources deleted by one statement → node gone');
+      assert.strictEqual(k.orphanSources(), 0);
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting a room removes its nodes, documents, usage, edges; no orphan sources', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const a = k.room(), b = k.room();
+      const onlyA = k.node('only-a'), docOnly = k.node('doc-only'), shared = k.node('shared'), onlyB = k.node('only-b');
+      const dA = k.doc(a);
+      k.srcMsg(onlyA, k.msg(a)); k.srcDoc(onlyA, dA);
+      k.srcDoc(docOnly, dA);
+      k.srcMsg(shared, k.msg(a)); k.srcMsg(shared, k.msg(b));
+      k.srcMsg(onlyB, k.msg(b)); k.srcDoc(onlyB, k.doc(b));
+      const edge = kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b, weight) VALUES (?, ?, 0.5)');
+      edge.run(onlyA, docOnly); edge.run(onlyA, shared); edge.run(shared, onlyB);
+      const use = kdb.prepare('INSERT INTO knowledge_usage (node_id, actor_id, room_id) VALUES (?, ?, ?)');
+      use.run(onlyA, k.actor, a.id); use.run(shared, k.actor, a.id); use.run(onlyB, k.actor, b.id); use.run(shared, k.actor, b.id);
+      kdb.prepare('UPDATE rooms SET knowledge_enabled = 1 WHERE id = ?').run(a.id);
+
+      k.deleteRoom(a);
+      assert.deepStrictEqual(kdb.prepare('SELECT title, status FROM knowledge_nodes ORDER BY id').all(),
+        [{ title: 'shared', status: 'stale' }, { title: 'only-b', status: 'active' }]);
+      assert.deepStrictEqual(kdb.prepare('SELECT room_id FROM knowledge_documents').all(), [{ room_id: b.id }]);
+      assert.deepStrictEqual(kdb.prepare('SELECT node_id, room_id FROM knowledge_usage ORDER BY id').all(),
+        [{ node_id: onlyB, room_id: b.id }, { node_id: shared, room_id: b.id }]);
+      assert.deepStrictEqual(kdb.prepare('SELECT node_a, node_b FROM knowledge_edges').all(), [{ node_a: shared, node_b: onlyB }]);
+      assert.strictEqual(k.count('knowledge_sources'), 3, 'shared←msg(b), only-b←msg(b), only-b←doc(b)');
+      assert.strictEqual(k.orphanSources(), 0);
+      assert.deepStrictEqual(kdb.pragma('foreign_key_check'), []);
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: document and message sources mixed on one node', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const n = k.node(), m = k.msg(rm), d = k.doc(rm);
+      k.srcMsg(n, m); k.srcDoc(n, d);
+      assert.throws(() => k.srcDoc(n, d), /UNIQUE constraint failed/, 'one row per (node, document)');
+      assert.throws(() => k.srcMsg(n, m), /UNIQUE constraint failed/, 'one row per (node, message)');
+      kdb.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(d);
+      assert.strictEqual(k.nodeRow(n).status, 'stale', 'document gone, message left → stale');
+      kdb.prepare('DELETE FROM messages WHERE id = ?').run(m);
+      assert.strictEqual(k.nodeRow(n), undefined, 'last source gone → node gone');
+      const n2 = k.node(), d2 = k.doc(rm);
+      k.srcDoc(n2, d2);
+      const adder = kdb.prepare("INSERT INTO actors (name, type) VALUES ('adder', 'human')").run().lastInsertRowid;
+      kdb.prepare('UPDATE knowledge_documents SET added_by_actor_id = ? WHERE id = ?').run(adder, d2);
+      kdb.prepare('DELETE FROM actors WHERE id = ?').run(adder);
+      assert.deepStrictEqual(kdb.prepare('SELECT added_by_actor_id FROM knowledge_documents WHERE id = ?').get(d2), { added_by_actor_id: null }, 'document outlives the actor who added it');
+      assert.strictEqual(k.nodeRow(n2).status, 'active');
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting a node cascades sources, edges, usage without touching other nodes', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const n = k.node('n'), x = k.node('x'), y = k.node('y');
+      const m = k.msg(rm);
+      k.srcMsg(n, m); k.srcMsg(n, k.msg(rm)); k.srcDoc(n, k.doc(rm));
+      k.srcMsg(x, m); k.srcMsg(y, k.msg(rm));
+      const edge = kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b) VALUES (?, ?)');
+      edge.run(n, x); edge.run(n, y); edge.run(x, y);
+      kdb.prepare('INSERT INTO knowledge_usage (node_id, actor_id, room_id) VALUES (?, ?, ?)').run(n, k.actor, rm.id);
+      kdb.prepare('INSERT INTO knowledge_usage (node_id, actor_id, room_id) VALUES (?, ?, ?)').run(x, k.actor, rm.id);
+      kdb.prepare('DELETE FROM knowledge_nodes WHERE id = ?').run(n);
+      assert.deepStrictEqual(kdb.prepare('SELECT node_id FROM knowledge_sources ORDER BY node_id').all(), [{ node_id: x }, { node_id: y }]);
+      assert.deepStrictEqual(kdb.prepare('SELECT node_a, node_b FROM knowledge_edges').all(), [{ node_a: x, node_b: y }]);
+      assert.deepStrictEqual(kdb.prepare('SELECT node_id FROM knowledge_usage').all(), [{ node_id: x }]);
+      assert.deepStrictEqual([k.nodeRow(x), k.nodeRow(y)], [{ status: 'active', stale_at: null }, { status: 'active', stale_at: null }], 'trigger on the cascaded sources leaves other nodes alone');
+      assert.strictEqual(k.count('knowledge_documents'), 1, 'documents are not owned by a node');
+      assert.deepStrictEqual(kdb.pragma('foreign_key_check'), []);
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: CHECK constraints reject malformed rows', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const n = k.node(), x = k.node(), m = k.msg(rm), d = k.doc(rm);
+      const src = kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id, document_id) VALUES (?, ?, ?)');
+      assert.throws(() => src.run(n, null, null), /CHECK constraint failed/, 'needs a message or a document');
+      assert.throws(() => src.run(n, m, d), /CHECK constraint failed/, 'not both');
+      assert.throws(() => src.run(n, m + 1000, null), /FOREIGN KEY constraint failed/, 'message must exist');
+      assert.throws(() => kdb.prepare("INSERT INTO knowledge_nodes (title, category) VALUES ('t', 'misc')").run(), /CHECK constraint failed/);
+      assert.throws(() => kdb.prepare("INSERT INTO knowledge_nodes (title, category, embedding) VALUES ('t', 'res', x'00000000')").run(), /CHECK constraint failed/, 'embedding needs its model');
+      const [lo, hi] = n < x ? [n, x] : [x, n];
+      assert.throws(() => kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b) VALUES (?, ?)').run(hi, lo), /CHECK constraint failed/, 'node_a < node_b');
+      assert.throws(() => kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b) VALUES (?, ?)').run(lo, lo), /CHECK constraint failed/, 'no self edge');
+      kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b) VALUES (?, ?)').run(lo, hi);
+      assert.throws(() => kdb.prepare('INSERT INTO knowledge_edges (node_a, node_b) VALUES (?, ?)').run(lo, hi), /UNIQUE constraint failed/);
+      assert.strictEqual(k.count('knowledge_sources'), 0, 'nothing slipped through');
+    } finally { kdb.close(); }
+  });
+
+  await test('knowledge schema: deleting a sub-agent keeps usage rows (sub_agent_id → NULL); deleting the actor drops them', async () => {
+    const { kdb } = _knowledgeBootDb();
+    try {
+      const k = _knowledgeFixture(kdb);
+      const rm = k.room();
+      const n = k.node();
+      const agent = kdb.prepare("INSERT INTO actors (name, type) VALUES ('k-agent', 'ai')").run().lastInsertRowid;
+      const sa = kdb.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'k-sub')").run(agent).lastInsertRowid;
+      kdb.prepare('INSERT INTO knowledge_usage (node_id, actor_id, sub_agent_id, room_id) VALUES (?, ?, ?, ?)').run(n, agent, sa, rm.id);
+      kdb.prepare('DELETE FROM sub_agents WHERE id = ?').run(sa);
+      assert.deepStrictEqual(kdb.prepare('SELECT actor_id, sub_agent_id FROM knowledge_usage').all(), [{ actor_id: agent, sub_agent_id: null }]);
+      kdb.prepare('DELETE FROM actors WHERE id = ?').run(agent);
+      assert.strictEqual(k.count('knowledge_usage'), 0);
+      assert.strictEqual(k.nodeRow(n).status, 'active', 'usage never touches the node');
+    } finally { kdb.close(); }
+  });
+
   console.log('\n[Slack Code Fences]');
 
   // Rendered through the same marked version the client uses, so a leaked fence

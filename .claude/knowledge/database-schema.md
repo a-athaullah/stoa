@@ -42,7 +42,8 @@ CREATE TABLE rooms (
   model TEXT,                      -- Default model override
   system_prompt TEXT,              -- Room-level system prompt (appended to agent)
   max_active_threads INTEGER DEFAULT 3, -- Max parallel streaming threads
-  created_at TEXT
+  created_at TEXT,
+  knowledge_enabled INTEGER NOT NULL DEFAULT 0 -- Knowledge opt-in (0/1)
 );
 ```
 
@@ -52,6 +53,7 @@ CREATE TABLE rooms (
 - `is_pinned` → keep at top of sidebar
 - `system_prompt` → sent to agent as `--append-system-prompt`; imported from CLAUDE.md on agent connect
 - `max_active_threads` → caps concurrent streaming threads per room (default 3)
+- `knowledge_enabled` → room opts in to Knowledge extraction (default 0 = never read). See Knowledge Tables.
 
 ---
 
@@ -484,6 +486,27 @@ CREATE TABLE mcp_approval_exemptions (
 3. `mcp_servers.default_access`
 
 **Cleanup:** `mcp_access` rows for deleted agents/sub-agents/rooms are cleaned up by DELETE triggers on those tables.
+
+---
+
+## Knowledge Tables
+
+`migrations/20261118-knowledge-schema.sql` (Knowledge 1/6, schema only; no endpoint yet).
+
+| Table | Columns / FKs |
+|-------|---------------|
+| `knowledge_nodes` | `title`, `summary`, `category` ∈ eng/ops/dec/res, `embedding` BLOB (Float32 LE, same as `message_embeddings.vec`) + `embedding_model` (required when embedding set), `status` ∈ active/stale, `stale_at` (set iff stale), `created_at`, `updated_at`. Index `(status, stale_at)`. Nodes have no room: they belong to rooms through their sources. |
+| `knowledge_documents` | `name`, `content_hash`, `added_by_actor_id` → actors SET NULL, `room_id` → rooms CASCADE |
+| `knowledge_sources` | `node_id` → nodes CASCADE, `message_id` → messages CASCADE, `document_id` → documents CASCADE; CHECK exactly one of message/document; UNIQUE (node, message), (node, document); partial indexes on message_id / document_id |
+| `knowledge_edges` | `node_a`, `node_b` → nodes CASCADE, `weight`; CHECK `node_a < node_b` (undirected, stored once), UNIQUE pair |
+| `knowledge_usage` | `node_id` → nodes CASCADE, `actor_id` → actors CASCADE, `sub_agent_id` → sub_agents **SET NULL** (usage history survives a sub-agent delete), `room_id` → rooms CASCADE, `used_at`. Indexes (node_id), (room_id, used_at) |
+
+**Deletion is enforced in the DB, not server.js.** Trigger `knowledge_sources_ad` (AFTER DELETE ON knowledge_sources, fires for FK-cascaded rows too): node with no source left → DELETE (edges/usage cascade); otherwise → `status='stale'`, `stale_at = COALESCE(stale_at, now)` (queue position kept), `updated_at=now`. So delete message / delete thread (multi-row `DELETE WHERE thread_id`) / delete room (messages, then rooms → documents) all clean up with no knowledge-specific code. Deleting a node cascades its sources; the trigger then matches nothing.
+
+**Rules for later cards:**
+- Search/retrieval MUST filter `status='active'` (a stale summary may still describe deleted content).
+- Re-extraction queue: `WHERE status='stale' ORDER BY stale_at` (index-ordered); on success set `status='active', stale_at=NULL` together (CHECK enforces the pair).
+- Edges: always insert `(min(id), max(id))`.
 
 ---
 
