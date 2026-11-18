@@ -271,6 +271,12 @@ GET /api/search/status
 
 Returns `{ state: 'off'|'loading'|'ready'|'failed', model, dim, indexed, error }` (`error` is null unless `failed`). Human session only — agents do not need backfill status.
 
+```
+GET /api/knowledge/usage?range=24h|7d|30d
+```
+
+Knowledge graph history mode (card #39). Returns `{ range, nodes: [{ node_id, count }] }`: uses (`knowledge_usage` rows) per node since `datetime('now', -range)`, most used first, ties by node id. Every node that still exists, **stale included** (a stale node usually turns active again under the same id; a deleted node's usage is gone by cascade). Any other / missing `range` → 400 `range must be one of 24h, 7d, 30d`. Human session only (not in `lib/agent-scope.js`): no session → 401, agent secret → 403 `agent_scope_denied`. Reads only `idx_knowledge_usage_time (used_at, node_id)` (covering; the SQL groups by `+node_id` so the planner does not walk `idx_knowledge_usage_node` instead — `USAGE_SQL` in `lib/knowledge-search.js`, EXPLAIN-checked in test.js).
+
 ### Thread Routes
 ```
 GET    /api/rooms/:id/threads            → List threads (?state=active | open | completed; default all with replies)
@@ -533,6 +539,16 @@ Sent on every queue change and right after `agent_connect`. Server ownership-che
 - Sent on every position change. Also sent on `join_room` for all currently-queued runs (after `history`).
 - Clear the badge on `null`, `message_complete`, or `message_state: error`.
 
+#### knowledge_used (server → browsers only)
+
+Sent once per `stoa__knowledge_search` call that returned at least one note, through `broadcastGlobal` (human connections; agent connections never get it):
+
+```json
+{ "type": "knowledge_used", "node_ids": [12, 7], "actor_id": 4, "sub_agent_id": null, "room_id": 2638, "at": "2026-11-19T01:02:03.000Z" }
+```
+
+`node_ids` in result order; `room_id` = the room of the calling MCP session (not the nodes' rooms); `sub_agent_id` set for a sub-agent session (`actor_id` is then its parent). One event with an array rather than one per node: a search returns up to 20 notes. Same data as the `knowledge_usage` rows written in that call.
+
 #### Live Run Events (server → room clients)
 
 Key WS events broadcast to room browsers during a run. All carry `message_id` and `room_id`.
@@ -627,6 +643,22 @@ Returns `{ documents: [{ id, name, bytes, sections, added_by, created_at, update
 ```
 
 Deletes the document with that id belonging to `ident.roomId`. A document from another room returns `404` (same as not found — no information leak). `DELETE FROM knowledge_documents` only; cascade + trigger `knowledge_sources_ad` removes all nodes automatically.
+
+### Knowledge Search (MCP only, Knowledge 4/6)
+
+#### stoa__knowledge_search
+
+```json
+{ "query": "how do we roll back a deploy", "limit": 8 }
+```
+
+`lib/knowledge-search.js`, every MCP session (main and sub-agent; Claude Code and Codex both reach it through the gateway, no allowlist). The session must be bound to a room the agent is in (`asyncRoomTool`).
+
+- `query` required: string, non-blank, ≤ 500 chars (`MAX_INPUT` of `lib/search-query.js`), with at least one letter/digit. `limit` optional integer 1–20 (default 8); anything else → 400 (not clamped).
+- Scope: every `status='active'` node of every room. Stale nodes never appear. Room privacy is enforced when nodes are written (opt-in flag, `KNOWLEDGE_EXCLUDED_ROOM_IDS`), not here.
+- Returns `{ results: [{ id, title, summary, category, score, match: 'text'|'semantic'|'both', sources, more_sources?, hidden_sources? }], semantic: bool }`.
+- `sources` (≤ 10, rest counted in `more_sources`): `{ type: 'message', room_id, room_title, thread_id, message_id }` only when `lib/room-access.js` `canReach` (participant; sub-agent linked + parent in; not archived) — otherwise counted in `hidden_sources`, nothing else said. `{ type: 'document', name, section }` always (they are part of the title), plus `room_id` / `room_title` only when reachable.
+- Writes one `knowledge_usage` row per returned note (actor, sub_agent, session room) in one transaction, then sends `knowledge_used` (see WebSocket). An empty result writes and sends nothing.
 
 ---
 

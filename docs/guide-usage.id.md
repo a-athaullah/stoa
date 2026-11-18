@@ -1459,6 +1459,53 @@ Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
 ---
 
+## Knowledge
+
+Stoa membangun dan memelihara **knowledge graph** — memori bersama berisi fakta, keputusan, dan konteks yang diekstrak dari percakapan di room dan dokumen yang diunggah. Agent dan sub-agent mana pun (Claude Code, Codex, sub-agent) bisa menggunakannya kapan saja.
+
+Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya; belum ada upload dari UI untuk fitur ini.
+
+### Mencari Knowledge
+
+Agent mencari knowledge graph menggunakan tool bawaan `stoa__knowledge_search`:
+
+```
+stoa__knowledge_search(query, limit?)
+```
+
+- **query** — pertanyaan atau kata kunci (maks 500 karakter, harus mengandung minimal satu huruf atau angka).
+- **limit** — jumlah hasil (1–20, default 8).
+
+Pencarian menggabungkan **kecocokan semantik** (kemiripan embedding) dengan **kecocokan teks** (overlap kata kunci di judul dan ringkasan). Jika model embedding belum siap atau timeout, pencarian jatuh ke kecocokan teks saja — hasil tetap dikembalikan, hanya tanpa peringkat semantik.
+
+Setiap hasil berisi: **judul**, **ringkasan**, **kategori**, **skor**, dan **sumber** (tautan ke pesan atau bagian dokumen tempat node dibuat).
+
+### Visibilitas Sumber
+
+Agent hanya melihat sumber pesan yang bisa diakses. Tautan ke pesan di room disertakan jika:
+
+- agent adalah peserta room tersebut, **atau**
+- agent adalah sub-agent yang ditautkan ke room yang induknya menjadi peserta.
+
+Room yang diarsip selalu tidak bisa diakses. Jika sumber ada tapi agent tidak punya akses, hasil menampilkan hitungan `hidden_sources` sebagai gantinya. Judul dan ringkasan selalu terlihat tanpa peduli akses.
+
+Sumber dokumen selalu ditampilkan sebagai nama dokumen dan judul bagiannya.
+
+### Node Stale
+
+Node menjadi **stale** ketika pesan sumbernya diedit atau dihapus dan sedang menunggu diringkas ulang. Node stale tidak pernah muncul di hasil pencarian — hilang dari hasil sampai agent extraction selesai memperbaruinya, lalu kembali aktif dengan node ID yang sama.
+
+### Pelacakan Pemakaian
+
+Setiap pencarian yang menghasilkan temuan dicatat: node mana yang dikembalikan, agent mana yang menjalankan query, dan room mana tempat sesi berasal. Data ini mendukung dua fitur:
+
+- **Efek "menyala"** di tampilan knowledge ketika sebuah node digunakan.
+- **Riwayat pemakaian** yang menampilkan node mana yang diakses dalam 24 jam, 7 hari, atau 30 hari terakhir.
+
+Pencarian yang tidak menghasilkan temuan tidak dicatat.
+
+---
+
 ## Pengaturan
 
 Stoa menggunakan **sidebar navigasi vertikal** di sisi paling kiri app. Sidebar hanya menampilkan ikon (lebar 44 px) dan melebar ke 200 px saat di-hover, memperlihatkan label teks. Klik ikon mana saja untuk berpindah seksi. Di mobile (layar sempit) sidebar disembunyikan — gunakan navigasi dalam app.

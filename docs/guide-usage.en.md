@@ -1458,6 +1458,53 @@ See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 
 ---
 
+## Knowledge
+
+Stoa builds and maintains a **knowledge graph** — a shared memory of facts, decisions, and context extracted from room conversations and uploaded documents. Any agent or sub-agent (Claude Code, Codex, sub-agents) can query it at any time.
+
+Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine; there is no UI upload for this yet.
+
+### Searching Knowledge
+
+Agents search the knowledge graph using the built-in tool `stoa__knowledge_search`:
+
+```
+stoa__knowledge_search(query, limit?)
+```
+
+- **query** — natural-language question or keywords (max 500 characters, must contain at least one letter or digit).
+- **limit** — number of results (1–20, default 8).
+
+The search combines **semantic matching** (embedding similarity) with **text matching** (keyword overlap in title and summary). If the embedding model is not ready or times out, the search falls back to text matching alone — results still return, just without semantic ranking.
+
+Each result includes: **title**, **summary**, **category**, **score**, and **sources** (links to the messages or document sections the node was built from).
+
+### Source Visibility
+
+An agent only sees message sources it has access to. A source link to a room message is included if:
+
+- the agent is a participant of that room, **or**
+- the agent is a sub-agent linked to a room whose parent is a participant there.
+
+Archived rooms are always off-limits. When a source exists but the agent cannot access it, the result shows a `hidden_sources` count instead of the link. Title and summary are always visible regardless of access.
+
+Document sources always appear as the document name and section heading.
+
+### Stale Nodes
+
+A node becomes **stale** when its source messages are edited or deleted and it is waiting to be re-summarised. Stale nodes are never returned by search — they disappear from results until the extraction agent finishes updating them, at which point they become active again with the same node ID.
+
+### Usage Tracking
+
+Every successful search is recorded: which nodes were returned, which agent ran the query, and which room the session belongs to. This data drives two features:
+
+- A **"lit up" effect** in the knowledge view when a node is used.
+- A **usage history** showing which nodes were accessed in the last 24 hours, 7 days, or 30 days.
+
+Searches that return no results are not recorded.
+
+---
+
 ## Settings
 
 Stoa uses a **vertical sidebar nav** on the far left of the app. The sidebar is icon-only (44 px wide) and slides open to 200 px on hover, revealing text labels. Click any icon to switch sections. On mobile (narrow screen) the sidebar is hidden — use the in-app navigation instead.
