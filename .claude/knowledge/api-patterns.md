@@ -277,6 +277,28 @@ GET /api/knowledge/usage?range=24h|7d|30d
 
 Knowledge graph history mode (card #39). Returns `{ range, nodes: [{ node_id, count }] }`: uses (`knowledge_usage` rows) per node since `datetime('now', -range)`, most used first, ties by node id. Every node that still exists, **stale included** (a stale node usually turns active again under the same id; a deleted node's usage is gone by cascade). Any other / missing `range` → 400 `range must be one of 24h, 7d, 30d`. Human session only (not in `lib/agent-scope.js`): no session → 401, agent secret → 403 `agent_scope_denied`. Reads only `idx_knowledge_usage_time (used_at, node_id)` (covering; the SQL groups by `+node_id` so the planner does not walk `idx_knowledge_usage_node` instead — `USAGE_SQL` in `lib/knowledge-search.js`, EXPLAIN-checked in test.js).
 
+### Room knowledge settings & management (card #38, lib/knowledge-admin.js)
+
+All human session only (not in `lib/agent-scope.js`): no session → 401, agent / sub-agent secret → 403 `agent_scope_denied`. Every id is validated in the lib (not a positive integer → 400); unknown room → 404.
+
+```
+GET    /api/rooms/:id/knowledge                     → { enabled, eligible, locked, lock_reason: 'excluded'|'archived'|null, documents, nodes, stale_nodes }
+PUT    /api/rooms/:id/knowledge { enabled: bool }   → same body; enabled not boolean → 400; switching ON a locked room → 403 (excluded) / 409 (archived), error body carries lock_reason; OFF is never refused
+GET    /api/rooms/:id/knowledge/documents           → lib/knowledge-documents.js list: { documents: [{ id, name, bytes, sections, added_by, created_at, updated_at, updated_by }], truncated? }
+DELETE /api/rooms/:id/knowledge/documents/:docId    → { deleted, sections_removed }; document of another room → 404
+GET    /api/rooms/:id/knowledge/nodes?document_id=&q=&limit=&offset=
+       → { nodes: [{ id, title, category, status, summary_preview (≤200 chars), sources: { messages, documents }, other_rooms, uses, last_used_at, updated_at }], total }
+DELETE /api/knowledge/nodes/:id?room_id=            → { deleted, archived }; room_id required; node never sourced in that room → 404
+GET    /api/rooms/:id/knowledge/usage?node_id=&limit=&before_id=
+       → { items: [{ id, node_id, node_title, deleted, deleted_id?, deleted_at?, actor: { id, name }, sub_agent: { id, label } | null, room: { id, title }, used_at }], next_before_id }
+DELETE /api/rooms/:id/knowledge/deleted/:deletedId  → { forgotten }; archive not linked to that room → 404
+```
+
+- "Nodes of a room" = `knowledge_node_rooms` (every room the node ever had a source in), so a node stays in the panel after its source there is deleted. `sources` counts current sources in every room; `other_rooms` = origin rooms besides this one. Order `updated_at DESC, id DESC`; `limit` 1-200 (default 50), `offset` 0-1e6; `q` = case-insensitive substring of the title (`instr(lower())`, ASCII folding), ≤200 chars; `document_id` must be a document of this room (else 404).
+- Usage history merges live uses of the room's nodes with the archive of deleted nodes from this room. `knowledge_deleted_usage.id` is the original `knowledge_usage.id`, so both share one id space: newest first by id, `next_before_id` = last item id when more exist, else null. Names prefer the live actor / sub-agent / room, the archive snapshot covers deleted ones (`id: null`).
+- Switching off deletes the room's pending conversation jobs (`node_id IS NULL`); running and stale-node jobs re-check `eligibleRoom()` themselves. Nodes already made stay. Event `room_knowledge_changed { room_id, enabled }` via broadcastGlobal, only when the value changed.
+- Excluded = `KNOWLEDGE_EXCLUDED_ROOM_IDS` (`knowledge.excludedRoom(id)`); there is no private-room column.
+
 ### Thread Routes
 ```
 GET    /api/rooms/:id/threads            → List threads (?state=active | open | completed; default all with replies)

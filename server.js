@@ -291,6 +291,7 @@ const { createSemanticIndex } = require('./lib/semantic-index');
 const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
 const { createKnowledgeSearch } = require('./lib/knowledge-search');
+const { createKnowledgeAdmin } = require('./lib/knowledge-admin');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1954,6 +1955,11 @@ const knowledgeDocs = createKnowledgeDocuments({
 // stoa__knowledge_search + GET /api/knowledge/usage (lib/knowledge-search.js). knowledge_used goes to
 // the owner's browsers only (broadcastGlobal), never to agent connections.
 const knowledgeSearch = createKnowledgeSearch({ db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data) });
+// Room knowledge settings + management panel (lib/knowledge-admin.js); routes are session-only.
+const knowledgeAdmin = createKnowledgeAdmin({
+  db, eligibleRoom: (room) => knowledge.eligibleRoom(room), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
+  docs: knowledgeDocs, notify: (data) => broadcastGlobal(data),
+});
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
 const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
@@ -2893,6 +2899,31 @@ const server = http.createServer(async (req, res) => {
   // lib/agent-scope.js): it shows what every agent looked up, an owner view.
   if (req.method === 'GET' && url.pathname === '/api/knowledge/usage') {
     const r = knowledgeSearch.usageCounts(url.searchParams.get('range'));
+    return json(res, r.body, r.status);
+  }
+
+  // Room knowledge settings and management panel (card #38). Session-only (not in lib/agent-scope.js):
+  // it lists what every agent looked up and deletes knowledge, an owner view. lib/knowledge-admin.js
+  // validates every id.
+  const kRoom = url.pathname.match(/^\/api\/rooms\/([^/]+)\/knowledge(?:\/(documents|nodes|usage|deleted)(?:\/([^/]+))?)?$/);
+  if (kRoom) {
+    const [, roomRaw, sub, itemRaw] = kRoom;
+    let r = null;
+    if (!sub && req.method === 'GET') r = knowledgeAdmin.settings(roomRaw);
+    else if (!sub && req.method === 'PUT') {
+      const data = parseJsonBody(await readBody(req, 64 * 1024));
+      r = knowledgeAdmin.setEnabled(roomRaw, data);
+    }
+    else if (sub === 'documents' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.documents(roomRaw);
+    else if (sub === 'documents' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.removeDocument(roomRaw, itemRaw);
+    else if (sub === 'nodes' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.nodes(roomRaw, url.searchParams);
+    else if (sub === 'usage' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.usage(roomRaw, url.searchParams);
+    else if (sub === 'deleted' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.forgetDeleted(roomRaw, itemRaw);
+    if (r) return json(res, r.body, r.status);
+  }
+  const kNode = req.method === 'DELETE' && url.pathname.match(/^\/api\/knowledge\/nodes\/([^/]+)$/);
+  if (kNode) {
+    const r = knowledgeAdmin.deleteNode(kNode[1], url.searchParams.get('room_id'));
     return json(res, r.body, r.status);
   }
 
