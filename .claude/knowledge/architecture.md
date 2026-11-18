@@ -235,6 +235,86 @@ After a connector process dies mid-work, its journal entries are recovered once 
 
 **Logs** (`[recovery]`): `restart: N sesi akan dipulihkan (Actor #X, M entri dilaporkan)`, then one line per entry: `dipulihkan` / `dilewati` / `dibuang` / `dihentikan` with the reason; `trigger:`, `terputus:`, `gagal:` while draining. The connector logs `restart: N journal entries reported` and one line per verdict.
 
+## Knowledge Documents
+
+`lib/knowledge-documents.js` (server), `lib/knowledge-file.js` (server + bundled into agent), `lib/knowledge-graph.js` (shared helpers), `migrations/20261119-knowledge-documents.sql` (Knowledge 3/6).
+
+Agents add `.md`/`.markdown`/`.txt` files from their own machine to the room's knowledge base. The file is split per ATX heading (without an LLM) into nodes an agent can later retrieve. No raw text is stored — only scrubbed section text and the SHA-256 of the whole file.
+
+### knowledge_add flow
+
+```
+Agent calls stoa__knowledge_add { path, name?, category? }
+  ↓
+Server sends WS knowledge_file_read { request_id, path, room_id, thread_id, sub_agent_id }
+  to the connector that owns the calling MCP session
+  ↓
+Connector (stoa.js) validates: regular file, .md/.markdown/.txt, ≤512 KB (from stat, before read),
+  strict UTF-8 (TextDecoder fatal), no NUL byte — refuses without reading if size/ext wrong
+  ↓
+Connector sends knowledge_file_read_result { request_id, name, content } | { request_id, error }
+  ↓
+Server re-validates: string type, byte length ≤ 512 KB, no \u0000, extension on name
+  (connector may be old, broken, or forged — never trust it alone)
+  ↓
+splitSections: ATX headings outside code fences → sections with key + summary
+  redactSecrets applied before split; each part ≤ SECTION_MAX = MAX_TEXT - TITLE_MAX - 1 (1879)
+  ↓
+Compare against existing sections (room_id + name identity):
+  same section_hash → keep node unchanged
+  changed section → update node title/summary/embedding, set active
+  new section → insert node + source
+  gone section → DELETE knowledge_sources row (trigger deletes node)
+  ↓
+Embed new/changed sections in batches of 16 (before transaction)
+  embed not ready → 503, nothing written
+  ↓
+Single db.transaction: re-check hash, write knowledge_documents + knowledge_sources + knowledge_nodes
+  hash unchanged inside transaction → unchanged: true, no write
+  ↓
+Recompute edges for new/changed nodes (cosine ≥ KNOWLEDGE_EDGE_SIM, up to 8 per node)
+  ↓
+Return { document_id, name, sections, added, updated, removed, unchanged_sections }
+```
+
+**Feature flag:** connector must announce `knowledge_add` in `agent_connect.features`. Without it the tool answers an error ("update agent"/"agent offline"), nothing is written.
+
+**Concurrency:** an in-memory lock per `(room_id, name)` prevents two parallel `add` calls from racing. The second gets 409. Inside the transaction the hash is re-checked.
+
+**Eligibility gate:** `eligibleRoom()` from `lib/knowledge-extraction.js` (same as extraction) is checked before `knowledge_file_read` is sent and again before writing. 403 if not eligible. List and delete still work so a document never gets stuck in a non-eligible room.
+
+### Re-ingest
+
+Adding the same `name` again updates the document rather than creating a duplicate. Identity is `(room_id, name)`. Detection: SHA-256 of the raw file — if hash is the same AND all existing `section_hash` values match → `unchanged: true`, nothing written.
+
+### Deletion
+
+`stoa__knowledge_document_delete { id }` deletes `knowledge_documents`. Cascade + trigger `knowledge_sources_ad` removes nodes automatically. Deleting a room cascades through messages/documents.
+
+Document nodes are **never** merge targets of conversation extraction (Knowledge 2/6). `candidatesFor` and `store()` in `lib/knowledge-extraction.js` skip nodes that have a document source, so a re-ingest never overwrites conversation summaries and conversation sources never attach to document nodes. Edges between document and conversation nodes are still allowed.
+
+### Section splitting
+
+- ATX headings (`#`–`######`) at the start of a line, outside fenced code blocks (`` ` `` `` ` `` `` ` `` or `~~~`).
+- Setext headings (underline style) are ignored.
+- Section key = heading path `H1 > H2 > H3` (normalized: trim, single spaces). Duplicate path gets ` #2`, ` #3` suffix. Text before the first heading → key `(intro)`.
+- Empty sections (heading only, or whitespace) are skipped.
+- Sections longer than `SECTION_MAX` (1879) are split at paragraph breaks; a single paragraph exceeding the limit is cut hard → key ` [part N]`.
+- Max 300 sections per document → 400 if exceeded.
+
+### Validation limits
+
+| Limit | Value |
+|-------|-------|
+| `KNOWLEDGE_DOC_MAX_BYTES` | 512 KB (exported from `lib/knowledge-file.js`) |
+| Max sections per document | 300 |
+| `SECTION_MAX` | `MAX_TEXT - TITLE_MAX - 1` = 1879 chars |
+| `TITLE_MAX` | 120 chars |
+| `LIST_MAX` (documents list) | 500, with `truncated: true` when exceeded |
+| Document name max | 200 chars |
+
+---
+
 ## Knowledge Extraction
 
 `lib/knowledge-extraction.js` (server), `lib/knowledge-agent.js` (connector), `migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).

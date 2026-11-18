@@ -570,6 +570,66 @@ UI shows error state with red indicator.
 
 ## Special Routes
 
+### Knowledge Documents (MCP only, Knowledge 3/6)
+
+Three built-in MCP tools in `lib/stoa-mcp-tools.js` (served from `lib/knowledge-documents.js`). All scoped to `ident.roomId`; sub-agent sessions may use all three (recorded as the parent actor).
+
+#### stoa__knowledge_add
+
+```json
+{ "path": "/abs/or/relative.md", "name": "optional-name.md", "category": "eng|ops|dec|res" }
+```
+
+- `path` required (1–4096 chars). Relative paths are resolved against the calling session's workdir.
+- `name` optional (1–200 chars); defaults to the file basename. Must end in `.md`, `.markdown`, or `.txt`. Used as document identity in the room — adding with the same name updates the existing document.
+- `category` optional (default `res`).
+- Returns `{ document_id, name, sections, added, updated, removed, unchanged_sections }`.
+- Error: `503` when the semantic index is not ready (nothing written). `403` when room is not eligible. `409` when two parallel calls for the same `(room, name)` race.
+- Only for rooms with `knowledge_enabled=1` and not archived/excluded.
+
+**WS round-trip** (`knowledge_file_read`): the server sends this to the connector that owns the calling MCP session before the tool writes anything.
+
+```json
+// Server → connector
+{ "type": "knowledge_file_read", "request_id": "uuid", "path": "/abs/path.md",
+  "room_id": 5, "thread_id": 42, "sub_agent_id": null }
+
+// Connector → server (success)
+{ "type": "knowledge_file_read_result", "request_id": "uuid", "name": "path.md", "content": "..." }
+
+// Connector → server (failure)
+{ "type": "knowledge_file_read_result", "request_id": "uuid", "error": "file not found" }
+```
+
+**Connector checks** (in `lib/knowledge-file.js`, bundled into `dist/stoa.js`):
+- File must be a regular file (`stat`, not symlink to directory/device).
+- Extension: `.md`, `.markdown`, `.txt` (case-insensitive).
+- Size: checked from `stat` before reading — refuses immediately if `> KNOWLEDGE_DOC_MAX_BYTES` (512 KB).
+- Encoding: strict UTF-8 (`TextDecoder fatal`), no NUL byte.
+- Path relative to workdir resolves only when that workdir's session is in the pool.
+
+**Feature flag:** connector must announce `"knowledge_add"` in `agent_connect.features`. Without it, the tool answers an error without sending `knowledge_file_read`.
+
+**Server re-validates** (independent of connector): type, byte length, NUL, extension on `name`. Never trust the connector alone.
+
+#### stoa__knowledge_documents_list
+
+```json
+{}
+```
+
+Returns `{ documents: [{ id, name, bytes, sections, added_by, created_at, updated_at, updated_by }] }`. Capped at 500 entries (`truncated: true` when exceeded). No eligibility gate (works even after a room loses its knowledge flag).
+
+#### stoa__knowledge_document_delete
+
+```json
+{ "id": 123 }
+```
+
+Deletes the document with that id belonging to `ident.roomId`. A document from another room returns `404` (same as not found — no information leak). `DELETE FROM knowledge_documents` only; cascade + trigger `knowledge_sources_ad` removes all nodes automatically.
+
+---
+
 ### Scheduled Triggers
 `/api/rooms/:id/schedules[/:sid]` + `/schedules/doctor` — human session or agent secret (scope `room`).
 - Body: `{target_actor_id, task (10..4000), schedule_spec, enabled?}`; spec shapes in `lib/schedule.js` (interval 5..1440 min, daily, weekly `days` 0=Sun, monthly `day` clamps to month end, yearly `month`+`day`, Feb 29 → Feb 28 in non-leap years). Max 20 per room (`400 schedule_limit`, checked in the insert transaction).
@@ -799,6 +859,7 @@ Business logic extracted from REST handlers lives in `lib/*.js` as pure function
 - `lib/stoa-mcp-tools.js` — assembles all 48 `stoa__*` tool definitions; also exports `availableTo(ident)` for per-tool visibility filtering
 - `stoa__mcp_catalog` / `stoa__mcp_server_list` / `stoa__mcp_server_add` (main sessions only) — `lib/mcp-api.js` `listServersForAgent(ident)` / `checkServerForAgent(body, actorId)` (precheck) / `addServerForAgent(body, actorId)`, same `newServerFields` + `createServer` core as `POST /api/mcp/servers`. The agent list is its own shape, not `serialize()`: `env_keys` is key names only (no masked tail, no plain `secret:false` value), plus `has_access` from `gateway.allowedServers(ident)`; every server is listed so the agent can pick a free slug. The add result uses the same `agentView`. Add is approval-gated by a seeded override (owner can change it); `createServer(body, { grantAgentId })` forces `default_access 'none'` (ignores `allow_all`) and inserts the `mcp_access` agent grant in the same transaction. Then connection test (`test: {ok, tool_count, error?}`, a failure keeps the server), `keepAlive`, `gateway.toolsChanged()`, ` · config` notice `added MCP server <slug>`. Core 400/409 → tool error. No remove via MCP (Settings only).
 - `stoa__mcp_server_update` (main sessions only, approval-gated by a seeded override) — `lib/mcp-api.js` `planAgentUpdate(body, ident)` feeds `checkUpdateForAgent` (precheck), `previewUpdateForAgent` (card) and `updateServerForAgent`. Same `planPatch` + `applyPatch` core as `PATCH /api/mcp/servers/:id` (planPatch validates without writing; applyPatch writes, clears OAuth on auth/url change, `reconfigure` unless keep_alive-only, `keepAlive`). Agent-only rules: keys outside `AGENT_UPDATE_FIELDS` (slug, name, command, args, url, env, env_remove, keep_alive, auth, enabled) → 400 `<key> cannot be changed by an agent` (never dropped — access/default_access/preset/transport stay with the owner); the slug resolves only among `gateway.allowedServers(ident)` (enabled + access), anything else → 404 `MCP server not found`, so disabling a server takes it out of the agent's reach; fields that already hold the sent value are removed from the plan, empty plan → 400 `nothing to change`. Card preview `{ slug, changes: { <field>: {from, to}, env: { set: {KEY: '***'}, removed: [KEY] } } }` (secret:false preset fields keep their value, like add); when the plan fails the card falls back to the sent args with env values masked (no stored config of a server without access). Then connection test, `gateway.toolsChanged()`, notice `updated MCP server <slug>`; returns `{ server: agentView, test }`.
+- `lib/knowledge-documents.js` — serves `stoa__knowledge_add`, `stoa__knowledge_documents_list`, `stoa__knowledge_document_delete` (see Knowledge Documents below)
 - `lib/skills.js` (skills library) — also serves `stoa__skill_list|get|use|create|update|delete|import_git|source_check|source_update|source_detach` (open to sub-agent sessions too). Mutations by name through `canMutate`: another agent's / the owner's / (from a sub-agent) the parent's skill → 404 `not_found`, same as missing; the parent manages its sub-agents' skills. Max 5 MB of body + decoded files per call (`/mcp` body cap `MCP_BODY_MAX` 8 MB); bigger → `POST /api/skills/import`. `skill_get` returns one text file ≤ 256 KB (built-in `resultCapBytes` override of the gateway's 256 KB cap). `skill_use` → WS `skill_sync {request_id, skill}` to the caller's own client (feature `skill_sync` in `agent_connect`), answered by `skill_sync_result {request_id, dir, version, stale?} | {error}` from that actor only, `SKILL_SYNC_TIMEOUT_MS` 60 s; failure / old client → body with `dir: null` + `files_unavailable`. Create/update/delete post a ` · config` notice. `skills.catalog()` → `<stoa-skills>` block (≤ 40 enabled skills / 4 KB, descriptions one line ≤ 160 chars without `< > \``) appended to the base system prompt of sessions that have the `stoa__*` tools — wake runs too, so `system_prompt_hash` stays stable.
 - Skill history/export (session-only, not in `lib/agent-scope.js`): `GET /api/skills/:id/revisions/:v` → `{revision}` = the `/revisions` row + `current`, `body` (full SKILL.md, frontmatter included) and `files [{path, sha256, size, mode}]`; 404 `not_found` | `revision_not_found`. `GET /api/skills/:id/export[?version=N]` → `application/zip` (`attachment; filename="<name>.zip"`, `nosniff`, `no-store`) with one `<name>/` folder, mode bits in the Unix external attributes; written by `zipStream()` in `lib/skill-bundle.js` (one blob in memory at a time, async deflateRaw, stored when it does not shrink, no zip64 — bundles are ≤ 50 MB / 300 files). Bad `version` → 400 `invalid_version`. Export → `POST /api/skills/import` round-trips to the same `manifest_hash`. Entries carry a 0x5455 Extended Timestamp (revision `created_at`); the DOS time is UTC so the bytes don't depend on the server TZ.
 - Skill edits: optional `base_version` (PATCH body; `?base_version=` on `PUT`/`DELETE /api/skills/:id/files/*`) ≠ current version → 409 `version_conflict {current_version}`, nothing written. The editor always sends it; MCP `skill_update` and older clients omit it (last write wins).
