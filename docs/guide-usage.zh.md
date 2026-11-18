@@ -1503,7 +1503,7 @@ Agent 只能看到其有权访问的房间的消息来源。房间消息链接�
 
 #### 为房间启用知识库
 
-知识提取采用每个房间单独开启的方式。打开房间设置（房间标题栏的**齿轮图标**），向下滚动到 **Knowledge** 部分，然后开启 **Include in Knowledge** 开关。
+知识提取采用每个房间单独开启的方式。点击右侧边栏条的 **Memory** 按钮（大脑图标），打开 **System Prompt & Memory** 弹出面板，向下滚动到底部的 **Knowledge** 部分，然后开启 **Include in Knowledge** 开关。
 
 - **默认：关闭。** 房间必须明确启用后，其对话才会被添加到知识图谱中。
 - **启用时：** 系统会弹出确认提示，说明该房间现有的对话历史也将被加入提取队列——不仅仅是此后的新消息。确认后继续。
@@ -1518,7 +1518,7 @@ Agent 只能看到其有权访问的房间的消息来源。房间消息链接�
 
 #### Manage knowledge 对话框
 
-在房间设置的 Knowledge 部分点击 **Manage knowledge**，打开一个包含三个标签页的对话框。
+在 System Prompt & Memory 弹出面板的 Knowledge 部分点击 **Manage knowledge**，打开一个包含三个标签页的对话框。
 
 **Documents 标签页**
 
@@ -1540,7 +1540,7 @@ Agent 只能看到其有权访问的房间的消息来源。房间消息链接�
 
 #### 移动端
 
-在屏幕宽度小于 768 px 的情况下，无法访问房间设置（以及 Knowledge 部分）。对话框本身具有响应式设计，在窄视口下会全屏打开，但需要较宽的屏幕或桌面浏览器才能访问 Knowledge 开关和 Manage knowledge 按钮。
+在屏幕宽度小于 768 px 的情况下，无法访问右侧边栏条（以及 System Prompt & Memory 弹出面板和 Knowledge 部分）。Manage knowledge 对话框本身具有响应式设计，在窄视口下会全屏打开，但需要较宽的屏幕或桌面浏览器才能访问 Knowledge 开关和 Manage knowledge 按钮。
 
 ---
 

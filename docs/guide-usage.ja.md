@@ -1503,7 +1503,7 @@ stoa__knowledge_search(query, limit?)
 
 #### ルームのナレッジを有効にする
 
-ナレッジの抽出はルームごとのオプトイン方式です。ルームの設定（ルームヘッダーの**ギアアイコン**）を開き、**Knowledge** セクションまでスクロールして、**Include in Knowledge** トグルをオンにします。
+ナレッジの抽出はルームごとのオプトイン方式です。右サイドバーストリップの**Memory**ボタン（脳アイコン）をクリックして **System Prompt & Memory** ポップオーバーを開き、一番下の **Knowledge** セクションまでスクロールして **Include in Knowledge** トグルをオンにします。
 
 - **デフォルト: オフ。** ルームを明示的に有効にするまで、会話はナレッジグラフに追加されません。
 - **有効にする:** ルームの既存の会話履歴も抽出キューに追加される旨の確認ダイアログが表示されます — 新しいメッセージだけでなく過去のメッセージも対象となります。確認して進めてください。
@@ -1518,7 +1518,7 @@ stoa__knowledge_search(query, limit?)
 
 #### Manage knowledge ダイアログ
 
-ルーム設定の Knowledge セクションで **Manage knowledge** をクリックすると、3つのタブを持つダイアログが開きます。
+System Prompt & Memory ポップオーバーの Knowledge セクションで **Manage knowledge** をクリックすると、3つのタブを持つダイアログが開きます。
 
 **Documents タブ**
 
@@ -1540,7 +1540,7 @@ stoa__knowledge_search(query, limit?)
 
 #### モバイル
 
-ルーム設定（および Knowledge セクション）は画面幅 768 px 未満ではアクセスできません。ダイアログ自体はレスポンシブで、狭いビューポートではフルスクリーンで開きますが、Knowledge トグルと Manage knowledge ボタンにアクセスするには広い画面またはデスクトップブラウザが必要です。
+右サイドバーストリップ（および System Prompt & Memory ポップオーバーと Knowledge セクション）は画面幅 768 px 未満ではアクセスできません。Manage knowledge ダイアログ自体はレスポンシブで、狭いビューポートではフルスクリーンで開きますが、Knowledge トグルと Manage knowledge ボタンにアクセスするには広い画面またはデスクトップブラウザが必要です。
 
 ---
 

@@ -1507,7 +1507,7 @@ Searches that return no results are not recorded.
 
 #### Enabling knowledge for a room
 
-Knowledge extraction is opt-in per room. Open the room settings (the **gear icon** in the room header), scroll to the **Knowledge** section, and toggle **Include in Knowledge**.
+Knowledge extraction is opt-in per room. Click the **Memory** button (brain icon) in the right sidebar strip to open the **System Prompt & Memory** popover, then scroll to the **Knowledge** section at the bottom and toggle **Include in Knowledge**.
 
 - **Default: off.** A room must be explicitly enabled before its conversations are added to the knowledge graph.
 - **Enabling:** a confirmation prompt warns you that the room's existing conversation history will also be queued for extraction — not just new messages from that point on. Confirm to proceed.
@@ -1522,7 +1522,7 @@ Some rooms cannot be enabled for knowledge:
 
 #### Manage knowledge dialog
 
-Click **Manage knowledge** in the room settings Knowledge section to open a three-tab dialog.
+Click **Manage knowledge** in the Knowledge section of the System Prompt & Memory popover to open a three-tab dialog.
 
 **Documents tab**
 
@@ -1544,7 +1544,7 @@ Rows for nodes that have since been deleted are crossed out and marked **deleted
 
 #### Mobile
 
-Room settings (and therefore the Knowledge section) are not accessible on screens narrower than 768 px. The dialog itself is responsive and opens full-screen on narrow viewports, but you need a wider screen or a desktop browser to reach the Knowledge toggle and the Manage knowledge button.
+The right sidebar strip (and therefore the System Prompt & Memory popover and its Knowledge section) is not accessible on screens narrower than 768 px. The Manage knowledge dialog itself is responsive and opens full-screen on narrow viewports, but you need a wider screen or a desktop browser to reach the Knowledge toggle and the Manage knowledge button.
 
 ---
 

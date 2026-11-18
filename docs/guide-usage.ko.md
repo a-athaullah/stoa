@@ -1503,7 +1503,7 @@ stoa__knowledge_search(query, limit?)
 
 #### 룸에서 지식 활성화
 
-지식 추출은 룸별 옵트인 방식입니다. 룸 설정(룸 헤더의 **기어 아이콘**)을 열고, **Knowledge** 섹션으로 스크롤한 다음, **Include in Knowledge** 토글을 켭니다.
+지식 추출은 룸별 옵트인 방식입니다. 오른쪽 사이드바 스트립의 **Memory** 버튼(뇌 아이콘)을 클릭해 **System Prompt & Memory** 팝오버를 열고, 하단의 **Knowledge** 섹션으로 스크롤한 다음 **Include in Knowledge** 토글을 켭니다.
 
 - **기본값: 꺼짐.** 룸을 명시적으로 활성화해야 대화가 지식 그래프에 추가됩니다.
 - **활성화 시:** 룸의 기존 대화 기록도 추출 대기열에 추가된다는 확인 프롬프트가 표시됩니다 — 그 이후의 새 메시지만이 아니라 과거 메시지도 포함됩니다. 확인하여 진행하세요.
@@ -1518,7 +1518,7 @@ stoa__knowledge_search(query, limit?)
 
 #### Manage knowledge 다이얼로그
 
-룸 설정 Knowledge 섹션에서 **Manage knowledge**를 클릭하면 3개의 탭이 있는 다이얼로그가 열립니다.
+System Prompt & Memory 팝오버의 Knowledge 섹션에서 **Manage knowledge**를 클릭하면 3개의 탭이 있는 다이얼로그가 열립니다.
 
 **Documents 탭**
 
@@ -1540,7 +1540,7 @@ stoa__knowledge_search(query, limit?)
 
 #### 모바일
 
-룸 설정(및 Knowledge 섹션)은 화면 너비 768 px 미만에서 접근할 수 없습니다. 다이얼로그 자체는 반응형이며 좁은 뷰포트에서는 전체 화면으로 열리지만, Knowledge 토글과 Manage knowledge 버튼에 접근하려면 더 넓은 화면이나 데스크톱 브라우저가 필요합니다.
+오른쪽 사이드바 스트립(및 System Prompt & Memory 팝오버와 Knowledge 섹션)은 화면 너비 768 px 미만에서 접근할 수 없습니다. Manage knowledge 다이얼로그 자체는 반응형이며 좁은 뷰포트에서는 전체 화면으로 열리지만, Knowledge 토글과 Manage knowledge 버튼에 접근하려면 더 넓은 화면이나 데스크톱 브라우저가 필요합니다.
 
 ---
 

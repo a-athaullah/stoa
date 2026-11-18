@@ -1508,7 +1508,7 @@ Pencarian yang tidak menghasilkan temuan tidak dicatat.
 
 #### Mengaktifkan knowledge untuk sebuah room
 
-Ekstraksi knowledge bersifat opt-in per room. Buka pengaturan room (ikon **gear** di header room), scroll ke seksi **Knowledge**, lalu aktifkan toggle **Include in Knowledge**.
+Ekstraksi knowledge bersifat opt-in per room. Klik tombol **Memory** (ikon otak) di strip sidebar kanan untuk membuka popover **System Prompt & Memory**, lalu scroll ke seksi **Knowledge** di bagian bawah dan aktifkan toggle **Include in Knowledge**.
 
 - **Default: mati.** Room harus diaktifkan secara eksplisit sebelum percakapannya masuk ke knowledge graph.
 - **Mengaktifkan:** muncul konfirmasi bahwa riwayat percakapan room yang sudah ada juga akan diantrekan untuk diekstrak — bukan hanya pesan baru ke depannya. Konfirmasi untuk melanjutkan.
@@ -1523,7 +1523,7 @@ Beberapa room tidak bisa diaktifkan untuk knowledge:
 
 #### Dialog Manage knowledge
 
-Klik **Manage knowledge** di seksi Knowledge pengaturan room untuk membuka dialog tiga tab.
+Klik **Manage knowledge** di seksi Knowledge pada popover System Prompt & Memory untuk membuka dialog tiga tab.
 
 **Tab Documents**
 
@@ -1545,7 +1545,7 @@ Baris untuk node yang sudah dihapus dicoret dan ditandai **deleted**. Baris ini 
 
 #### Mobile
 
-Pengaturan room (dan oleh karena itu seksi Knowledge) tidak bisa diakses di layar yang lebih sempit dari 768 px. Dialog itu sendiri responsif dan terbuka layar penuh di viewport sempit, tapi kamu memerlukan layar yang lebih lebar atau browser desktop untuk mencapai toggle Knowledge dan tombol Manage knowledge.
+Strip sidebar kanan (dan oleh karena itu popover System Prompt & Memory beserta seksi Knowledge-nya) tidak bisa diakses di layar yang lebih sempit dari 768 px. Dialog Manage knowledge itu sendiri responsif dan terbuka layar penuh di viewport sempit, tapi kamu memerlukan layar yang lebih lebar atau browser desktop untuk mencapai toggle Knowledge dan tombol Manage knowledge.
 
 ---
 
