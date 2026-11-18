@@ -1,6 +1,6 @@
 // ── Room sidebar ────────────────────────────────────────────────────────────
 // Icon strip on the right edge: Search, Download, Workspace, and per-room
-// settings (Model Tier, Budget, Display, Schedules, Memory) via popovers. Tasks swaps the feed for the
+// settings (Model Tier, Budget, Display, Schedules, Memory + Knowledge) via popovers. Tasks swaps the feed for the
 // room's task board (tasks/board.js).
 
 let _rsbActiveBtn = null;
@@ -879,6 +879,7 @@ function renderRoomSidebar(room, participants) {
         });
 
         sysPane.appendChild(matSection);
+        sysPane.appendChild(knBuildRoomSection(room));
       } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; }
     })();
   }

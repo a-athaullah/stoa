@@ -192,6 +192,9 @@ function waitUp(port, tries = 50) {
     SEND_FILES_TIMEOUT_MS: '2000',
     // stoa__knowledge_add wait for the agent's knowledge_file_read answer (30 s in prod) short enough for its timeout test.
     KNOWLEDGE_FILE_TIMEOUT_MS: '2000',
+    // A room id no test creates on its own: the knowledge privacy tests insert this room to check the
+    // locked toggle (the live .env value must not decide which test room is excluded).
+    KNOWLEDGE_EXCLUDED_ROOM_IDS: '2000000001',
     // Harness CLI update: wait for the agent's first status (15 s in prod) short enough for the no-ack test.
     HARNESS_UPDATE_ACK_TIMEOUT_MS: '3000',
     // In-app updater works on a git fixture test.js builds here — never on this repo — and believes a

@@ -1,0 +1,140 @@
+/* ── Room knowledge ───────────────────────────────────────────────────────────
+   Section in the System Prompt popover and the Manage knowledge dialog (rooms/knowledge.js). */
+
+.kn-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--h-border); flex: 0 0 auto; }
+.kn-section-label { font-size: 12.5px; font-weight: 500; margin-bottom: 8px; color: var(--h-ink); }
+.kn-section-body { display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+
+.kn-toggle-row { display: flex; align-items: center; gap: 10px; }
+.kn-toggle-label { font-size: 13px; color: var(--h-ink); cursor: pointer; }
+.kn-switch {
+  position: relative; flex: 0 0 auto; width: 34px; height: 20px; padding: 0; border-radius: 999px;
+  border: 1px solid var(--h-border); background: var(--h-bg); cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.kn-switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--h-ink-faint); transition: transform .15s, background .15s;
+}
+.kn-switch[aria-checked="true"] { background: var(--h-accent); border-color: var(--h-accent); }
+.kn-switch[aria-checked="true"] .kn-switch-knob { transform: translateX(14px); background: var(--h-accent-ink); }
+.kn-switch:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
+.kn-switch:disabled { opacity: .45; cursor: not-allowed; }
+.kn-switch:disabled + .kn-toggle-label { color: var(--h-ink-faint); cursor: not-allowed; }
+
+.kn-desc { font-size: 11.5px; line-height: 1.5; color: var(--h-ink-faint); }
+.kn-desc.kn-locked { color: var(--h-ink-mute); border-left: 2px solid var(--h-hairline); padding-left: 8px; }
+
+.kn-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+.kn-stat { display: inline-flex; align-items: baseline; gap: 4px; }
+.kn-stat-n { font-family: var(--h-serif); font-size: 17px; color: var(--h-ink); font-variant-numeric: tabular-nums; }
+.kn-stat-l { font-size: 11.5px; color: var(--h-ink-faint); }
+
+.kn-muted { font-size: 12.5px; color: var(--h-ink-faint); }
+.kn-error { font-size: 12.5px; color: var(--h-red); }
+
+.kn-btn {
+  position: relative; display: inline-grid; place-items: center;
+  font-family: var(--h-sans); font-size: 12px; line-height: 1.3; white-space: nowrap;
+  padding: 4px 12px; border-radius: 999px; border: 1px solid var(--h-border);
+  background: transparent; color: var(--h-ink-mute); cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.kn-btn:hover:not(:disabled) { background: var(--h-surface-hi); color: var(--h-ink); }
+.kn-btn:focus-visible, .kn-link:focus-visible, .kn-close:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
+.kn-btn:disabled { opacity: .5; cursor: default; }
+/* Two-click delete: the ghost holds the longest label so the width never changes. */
+.kn-btn[data-ghost]::after { content: attr(data-ghost); visibility: hidden; height: 0; }
+.kn-btn-quiet { border-color: transparent; }
+.kn-btn-danger:hover:not(:disabled) { color: var(--h-red); border-color: color-mix(in srgb, var(--h-red) 45%, var(--h-border)); background: transparent; }
+.kn-btn-danger.kn-armed { color: var(--h-red); border-color: var(--h-red); background: color-mix(in srgb, var(--h-red) 8%, transparent); }
+.kn-link {
+  background: none; border: none; padding: 0; font: inherit; color: var(--h-ink-mute);
+  text-decoration: underline; text-decoration-color: var(--h-hairline); text-underline-offset: 2px; cursor: pointer;
+}
+.kn-link:hover { color: var(--h-ink); text-decoration-color: currentColor; }
+
+/* ── Dialog */
+.kn-overlay {
+  position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(30,20,10,.38);
+}
+.kn-dialog {
+  display: flex; flex-direction: column; width: min(760px, 100%); height: min(680px, 100%);
+  background: var(--h-surface); color: var(--h-ink); font-family: var(--h-sans);
+  border: 1px solid var(--h-hairline); border-radius: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.18); overflow: hidden;
+}
+.kn-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 22px 24px 14px; }
+.kn-titles { min-width: 0; }
+.kn-title { font-family: var(--h-serif); font-size: 22px; line-height: 1.2; color: var(--h-ink); }
+.kn-subtitle { font-family: var(--h-serif); font-style: italic; font-size: 13.5px; color: var(--h-ink-faint); margin-top: 2px; overflow-wrap: anywhere; }
+.kn-close {
+  flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; margin: -4px -8px 0 0;
+  border: none; border-radius: 50%; background: transparent; color: var(--h-ink-mute); cursor: pointer;
+}
+.kn-close:hover { background: var(--h-surface-hi); color: var(--h-ink); }
+
+.kn-tabs { display: flex; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--h-border); overflow-x: auto; scrollbar-width: none; }
+/* The tab strip scrolls (overflow clips), so the focus ring sits inside the tab's 4px side padding. */
+.kn-tab {
+  flex: 0 0 auto; padding: 8px 4px 9px; margin-bottom: -1px; border: none; border-bottom: 2px solid transparent;
+  background: none; font-family: var(--h-sans); font-size: 13px; color: var(--h-ink-faint); cursor: pointer;
+  border-radius: 4px 4px 0 0; outline: none;
+}
+.kn-tab:focus-visible { outline: 2px solid var(--h-accent); outline-offset: -2px; }
+.kn-tab:hover { color: var(--h-ink-mute); }
+.kn-tab[aria-selected="true"] { color: var(--h-ink); border-bottom-color: var(--h-ink); }
+
+.kn-status { margin: 12px 24px 0; padding: 8px 12px; font-size: 12.5px; line-height: 1.45; color: var(--h-ink-mute); background: var(--h-bg); border-radius: 8px; overflow-wrap: anywhere; }
+.kn-status.kn-error { color: var(--h-red); background: color-mix(in srgb, var(--h-red) 7%, var(--h-surface)); }
+
+.kn-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 24px 22px; }
+.kn-pane[hidden] { display: none; }
+
+.kn-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.kn-filter-label { font-size: 12.5px; color: var(--h-ink); overflow-wrap: anywhere; }
+.kn-input {
+  font-family: var(--h-sans); font-size: 13px; color: var(--h-ink); background: var(--h-bg);
+  border: 1px solid var(--h-hairline); border-radius: 8px; padding: 6px 10px; outline: none; min-width: 0;
+}
+.kn-input:focus { border-color: var(--h-ink-mute); }
+select.kn-input { max-width: 260px; }
+.kn-search { flex: 1 1 180px; }
+.kn-count { font-size: 11.5px; color: var(--h-ink-faint); margin-bottom: 4px; min-height: 1em; font-variant-numeric: tabular-nums; }
+.kn-note { margin-bottom: 6px; font-size: 12px; line-height: 1.5; }
+
+.kn-list { list-style: none; margin: 0; padding: 0; }
+.kn-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--h-border); }
+.kn-item:last-child { border-bottom: none; }
+.kn-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.kn-item-top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.kn-item-title { font-size: 13.5px; font-weight: 500; color: var(--h-ink); overflow-wrap: anywhere; }
+.kn-item-actions { flex: 0 0 auto; display: flex; gap: 4px; align-items: center; }
+.kn-summary { font-size: 12.5px; line-height: 1.5; color: var(--h-ink-mute); overflow-wrap: anywhere; }
+.kn-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 11.5px; line-height: 1.5; color: var(--h-ink-faint); }
+.kn-who { color: var(--h-ink-mute); }
+.kn-chip {
+  font-size: 10.5px; letter-spacing: .02em; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  color: var(--h-ink-mute); border: 1px solid var(--h-border);
+}
+.kn-chip-stale { color: var(--h-amber); border-color: color-mix(in srgb, var(--h-amber) 40%, var(--h-border)); }
+.kn-chip-deleted { color: var(--h-red); border-color: color-mix(in srgb, var(--h-red) 40%, var(--h-border)); }
+.kn-usage-deleted .kn-item-title { color: var(--h-ink-mute); text-decoration: line-through; text-decoration-color: var(--h-hairline); }
+.kn-load-error { padding: 14px 0; }
+.kn-empty { padding: 28px 0; text-align: center; font-family: var(--h-serif); font-style: italic; font-size: 14px; color: var(--h-ink-faint); }
+.kn-more { margin: 12px auto 0; display: grid; }
+.kn-more[hidden] { display: none; }
+.kn-foot { margin-top: 10px; }
+
+@media (max-width: 680px) {
+  .kn-overlay { padding: 0; align-items: stretch; }
+  .kn-dialog { width: 100%; height: 100%; border-radius: 0; border: none; }
+  .kn-head { padding: 16px 16px 10px; }
+  .kn-tabs { padding: 0 12px; gap: 10px; }
+  .kn-status { margin: 10px 16px 0; }
+  .kn-body { padding: 12px 16px 18px; }
+  .kn-close { width: 36px; height: 36px; margin: -6px -10px 0 0; }
+  .kn-item { flex-direction: column; gap: 8px; }
+  .kn-item-actions { align-self: flex-end; }
+  select.kn-input { max-width: none; flex: 1 1 100%; }
+}

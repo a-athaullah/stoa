@@ -26915,16 +26915,20 @@ async function run() {
       { schemaSql: schemaSql ?? fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
     return { kdb, results };
   };
-  // db/schema.sqlite.sql as it was before migrations/20261119-knowledge-documents.sql (#34 shape of
+  // db/schema.sqlite.sql as it was before migrations/20261119-knowledge-documents.sql and -privacy.sql (#34 shape of
   // knowledge_documents / knowledge_sources, without the document indexes).
   const _knowledgeDocsPreSchema = () => {
     const { splitSqlStatements } = require('./lib/migrations');
     const full = require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
     const old = full
       .replace("  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  bytes INTEGER,\n  updated_at TEXT,\n  updated_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL\n);", "  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n);")
-      .replace('  section TEXT,\n  section_hash TEXT,\n', '');
-    const out = splitSqlStatements(old).filter(st => !/idx_knowledge_(documents_name|documents_updated_by|sources_doc_section)/.test(st)).join(';\n') + ';\n';
-    assert.ok(!/\bsection_hash\b|\bupdated_by_actor_id\b/.test(out), 'baseline document columns found and removed');
+      .replace('  section TEXT,\n  section_hash TEXT,\n', '')
+      // Added by migrations/20261119-knowledge-privacy.sql (an ALTER on both sides keeps the stored text equal).
+      .replace("  used_at TEXT NOT NULL DEFAULT (datetime('now')),\n  sub_agent_label TEXT\n);", "  used_at TEXT NOT NULL DEFAULT (datetime('now'))\n);");
+    // Also without the objects of migrations/20261119-knowledge-privacy.sql: its trigger reads the usage
+    // label column removed above.
+    const out = splitSqlStatements(old).filter(st => !/idx_knowledge_(documents_name|documents_updated_by|sources_doc_section)|knowledge_node_rooms|knowledge_deleted_|knowledge_sources_ai|knowledge_nodes_bd/.test(st)).join(';\n') + ';\n';
+    assert.ok(!/\bsection_hash\b|\bupdated_by_actor_id\b|\bsub_agent_label TEXT\n/.test(out), 'baseline document / usage label columns found and removed');
     return out;
   };
   const _knowledgeFixture = (kdb) => {
@@ -26974,7 +26978,7 @@ async function run() {
     const { kdb: post } = _knowledgeBootDb(_knowledgeDocsPreSchema());
     try {
       for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) {
-        if (![MIG, DOC_MIG, USAGE_MIG, '20261118-knowledge-extraction.sql'].includes(f)) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+        if (![MIG, DOC_MIG, USAGE_MIG, '20261118-knowledge-extraction.sql', '20261119-knowledge-privacy.sql'].includes(f)) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
       }
       pre.pragma('foreign_keys = ON');
       runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
@@ -26983,7 +26987,10 @@ async function run() {
       assert.deepStrictEqual(applyMigration(pre, MIG, sql), { status: 'applied' }, 'applies cleanly, nothing skipped');
       assert.deepStrictEqual(applyMigration(pre, DOC_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', DOC_MIG), 'utf8')), { status: 'applied' });
       assert.deepStrictEqual(applyMigration(pre, USAGE_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', USAGE_MIG), 'utf8')), { status: 'applied' });
-      const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors') AND name NOT IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au') ORDER BY name").all()
+      // Adds knowledge_usage.sub_agent_label (its other objects are excluded below, checked by their own test).
+      const PRIV_MIG = '20261119-knowledge-privacy.sql';
+      assert.deepStrictEqual(applyMigration(pre, PRIV_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', PRIV_MIG), 'utf8')), { status: 'applied' });
+      const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors', 'knowledge_node_rooms', 'knowledge_deleted_nodes', 'knowledge_deleted_node_rooms', 'knowledge_deleted_usage') AND name NOT IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au', 'knowledge_sources_ai', 'knowledge_nodes_bd') ORDER BY name").all()
         .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
       const after = objs(pre);
       assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_name', 'idx_knowledge_documents_room',
@@ -27018,6 +27025,81 @@ async function run() {
       assert.match(plan("SELECT id FROM knowledge_nodes WHERE status = 'stale' ORDER BY stale_at"), /idx_knowledge_nodes_status/);
       assert.doesNotMatch(plan("SELECT id FROM knowledge_nodes WHERE status = 'stale' ORDER BY stale_at"), /TEMP B-TREE/, 'stale queue needs no sort');
     } finally { kdb.close(); }
+  });
+
+  await test('knowledge privacy schema: migration on the pre-migration schema backfills origin rooms and ≡ baseline; used nodes archived on every delete path (thread, nested trigger), unused not; archive dropped with its last room', async () => {
+    const fsK = require('fs'), pathK = require('path'), osK = require('os');
+    const { splitSqlStatements, applyMigration, runMigrations } = require('./lib/migrations');
+    const Database = require('better-sqlite3');
+    const MIG = '20261119-knowledge-privacy.sql';
+    const NEW = /knowledge_node_rooms|knowledge_deleted_|knowledge_sources_ai|knowledge_nodes_bd/;
+    const full = fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+    const noLabel = full.replace("  used_at TEXT NOT NULL DEFAULT (datetime('now')),\n  sub_agent_label TEXT\n);", "  used_at TEXT NOT NULL DEFAULT (datetime('now'))\n);");
+    assert.notStrictEqual(noLabel, full, 'baseline declares knowledge_usage.sub_agent_label');
+    const preSchema = splitSqlStatements(noLabel).filter(st => !NEW.test(st)).join(';\n') + ';\n';
+    const tmp = fsK.mkdtempSync(pathK.join(osK.tmpdir(), 'stoa-kpmig-'));
+    const pre = new Database(':memory:');
+    const { kdb: post, results } = _knowledgeBootDb();
+    try {
+      assert.deepStrictEqual(results.find(r => r.filename === MIG), { filename: MIG, status: 'reconciled', skipped: ['duplicate column name: sub_agent_label'] }, 'fresh boot: only the baseline column is skipped');
+      for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) if (f !== MIG) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+      pre.pragma('foreign_keys = ON');
+      runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
+      const objs = (d) => d.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name LIKE '%knowledge_node_rooms%' OR name LIKE '%knowledge_deleted%' OR name IN ('knowledge_sources_ai', 'knowledge_nodes_bd') ORDER BY name").all()
+        .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
+      assert.deepStrictEqual(objs(pre), [], 'pre-migration DB has none of it');
+      // Existing knowledge before the migration: message and document sources, two rooms.
+      const k = _knowledgeFixture(pre);
+      const r1 = k.room(), r2 = k.room();
+      const n1 = k.node('n1'), n2 = k.node('n2');
+      k.srcMsg(n1, k.msg(r1)); k.srcMsg(n1, k.msg(r2)); k.srcDoc(n2, k.doc(r2));
+      const preSub = pre.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'pre-sub')").run(k.actor).lastInsertRowid;
+      pre.prepare('INSERT INTO knowledge_usage (node_id, actor_id, sub_agent_id, room_id) VALUES (?, ?, ?, ?)').run(n1, k.actor, preSub, r1.id);
+      pre.prepare('INSERT INTO knowledge_usage (node_id, actor_id, room_id) VALUES (?, ?, ?)').run(n2, k.actor, r1.id);
+      assert.deepStrictEqual(applyMigration(pre, MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8')), { status: 'applied' });
+      assert.deepStrictEqual(pre.prepare('SELECT node_id, room_id FROM knowledge_node_rooms ORDER BY node_id, room_id').all(),
+        [{ node_id: n1, room_id: r1.id }, { node_id: n1, room_id: r2.id }, { node_id: n2, room_id: r2.id }], 'backfill');
+      assert.deepStrictEqual(pre.prepare('SELECT node_id, sub_agent_label FROM knowledge_usage ORDER BY id').all(), [{ node_id: n1, sub_agent_label: 'pre-sub' }, { node_id: n2, sub_agent_label: null }], 'label backfill');
+      const usageCols = (d) => d.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('knowledge_usage') ORDER BY cid").all();
+      assert.deepStrictEqual(usageCols(pre), usageCols(post), 'knowledge_usage columns ≡ baseline');
+      assert.deepStrictEqual(objs(pre).map(o => o.name), ['idx_knowledge_deleted_node_rooms_room', 'idx_knowledge_deleted_nodes_node', 'idx_knowledge_deleted_usage_actor',
+        'idx_knowledge_deleted_usage_deleted', 'idx_knowledge_deleted_usage_room', 'idx_knowledge_deleted_usage_sub_agent', 'idx_knowledge_node_rooms_room',
+        'knowledge_deleted_node_rooms', 'knowledge_deleted_node_rooms_ad', 'knowledge_deleted_nodes', 'knowledge_deleted_usage', 'knowledge_node_rooms', 'knowledge_nodes_bd', 'knowledge_sources_ai',
+        'sqlite_autoindex_knowledge_deleted_node_rooms_1', 'sqlite_autoindex_knowledge_node_rooms_1']);
+      assert.deepStrictEqual(objs(pre), objs(post), 'migration ≡ baseline');
+
+      for (const d of [pre, post]) {
+        const f = _knowledgeFixture(d);
+        const rm = f.room(), other = f.room();
+        const root = f.msg(rm), reply = f.msg(rm, root);
+        const used = f.node('used'), unused = f.node('unused');
+        f.srcMsg(used, reply); f.srcMsg(unused, reply);
+        // A second insert of the same source (OR IGNORE outer statement) adds no second origin row.
+        d.prepare('INSERT OR IGNORE INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(used, reply);
+        assert.strictEqual(d.prepare('SELECT COUNT(*) AS c FROM knowledge_node_rooms WHERE node_id=?').get(used).c, 1);
+        const sa = d.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'kp-sub')").run(f.actor).lastInsertRowid;
+        const u = d.prepare("INSERT INTO knowledge_usage (node_id, actor_id, sub_agent_id, sub_agent_label, room_id) VALUES (?, ?, ?, 'kp-sub', ?)").run(used, f.actor, sa, other.id).lastInsertRowid;
+        // Thread delete: messages go, knowledge_sources_ad deletes the nodes (a trigger inside a cascade);
+        // the BEFORE DELETE trigger still sees the usage rows the node cascade is about to remove.
+        d.prepare('DELETE FROM messages WHERE thread_id = ? OR id = ?').run(root, root);
+        assert.strictEqual(f.nodeRow(used), undefined);
+        const arch = d.prepare('SELECT * FROM knowledge_deleted_nodes WHERE node_id=?').get(used);
+        assert.deepStrictEqual([arch.title, arch.category], ['used', 'eng']);
+        assert.deepStrictEqual(d.prepare('SELECT room_id FROM knowledge_deleted_node_rooms WHERE deleted_id=?').all(arch.id).map(x => x.room_id), [rm.id]);
+        assert.deepStrictEqual(d.prepare('SELECT id, actor_id, actor_name, sub_agent_id, sub_agent_label, room_id, room_title FROM knowledge_deleted_usage WHERE deleted_id=?').all(arch.id),
+          [{ id: u, actor_id: f.actor, actor_name: 'k-human', sub_agent_id: sa, sub_agent_label: 'kp-sub', room_id: other.id, room_title: 'k-room' }]);
+        d.prepare('DELETE FROM sub_agents WHERE id=?').run(sa);
+        assert.deepStrictEqual(d.prepare('SELECT sub_agent_id, sub_agent_label FROM knowledge_deleted_usage WHERE id=?').get(u), { sub_agent_id: null, sub_agent_label: 'kp-sub' });
+        assert.ok(!d.prepare('SELECT 1 FROM knowledge_deleted_nodes WHERE node_id=?').get(unused), 'unused node not archived');
+        assert.strictEqual(d.prepare('SELECT COUNT(*) AS c FROM knowledge_usage WHERE node_id=?').get(used).c, 0, 'live usage cascaded as before');
+        // The room the use happened in goes: SET NULL, the snapshot title stays.
+        f.deleteRoom(other);
+        assert.deepStrictEqual(d.prepare('SELECT room_id, room_title FROM knowledge_deleted_usage WHERE id=?').get(u), { room_id: null, room_title: 'k-room' });
+        // Its origin room goes: nothing left to show it in → archive dropped.
+        f.deleteRoom(rm);
+        assert.strictEqual(f.count('knowledge_deleted_nodes') + f.count('knowledge_deleted_usage'), 0);
+      }
+    } finally { pre.close(); post.close(); fsK.rmSync(tmp, { recursive: true, force: true }); }
   });
 
   await test('knowledge schema: deleting a node\'s only source message deletes the node', async () => {
@@ -30445,6 +30527,256 @@ async function run() {
         mDb.prepare('DELETE FROM knowledge_documents WHERE room_id=?').run(roomA);
         mDb.prepare('UPDATE rooms SET knowledge_enabled=? WHERE id=?').run(flag, roomA);
         await announce();
+      }
+    });
+
+    // ── Knowledge privacy & management (card #38, lib/knowledge-admin.js) ──
+    const kpParticipant = (roomId, actorId) => mDb.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, actorId).id;
+    const kpMsg = (roomId, actorId, content = 'kp source') => mDb.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, ?, 'complete')")
+      .run(roomId, kpParticipant(roomId, actorId), content).lastInsertRowid;
+    const kpNode = (title, summary = 's') => mDb.prepare("INSERT INTO knowledge_nodes (title, summary, category) VALUES (?, ?, 'eng')").run(title, summary).lastInsertRowid;
+    const kpSrcMsg = (n, m) => mDb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(n, m);
+    const kpAgentHeaders = (ag) => ({ 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret });
+
+    await test('knowledge privacy — room toggle: off by default, on/off with room_knowledge_changed, off drops queued conversation jobs only, locked rooms (excluded 403 / archived 409) can still be switched off, validation, session-only', async () => {
+      const EXCL = Number(process.env.KNOWLEDGE_EXCLUDED_ROOM_IDS);
+      assert.ok(Number.isSafeInteger(EXCL) && EXCL > 0, 'run-tests.js sets KNOWLEDGE_EXCLUDED_ROOM_IDS to one room id');
+      assert.ok(!mDb.prepare('SELECT 1 FROM rooms WHERE id=?').get(EXCL), 'excluded test room id is free');
+      const owner = mDb.prepare('SELECT created_by FROM rooms WHERE id=?').get(roomA).created_by;
+      const r = await req('POST', '/api/rooms', { title: '__kp-toggle__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      assert.strictEqual(r.status, 200, r.raw);
+      const room = r.body.id;
+      testRoomIds.push(room);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const events = [];
+      humanWs.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'room_knowledge_changed') events.push(m); });
+      const archived = mDb.prepare("INSERT INTO rooms (title, created_by, archived_at) VALUES ('__kp-archived__', ?, datetime('now'))").run(owner).lastInsertRowid;
+      try {
+        humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
+        mDb.prepare("INSERT INTO rooms (id, title, created_by) VALUES (?, '__kp-excluded__', ?)").run(EXCL, owner);
+        const get = (id) => req('GET', `/api/rooms/${id}/knowledge`);
+        const put = (id, body) => req('PUT', `/api/rooms/${id}/knowledge`, body);
+        const empty = { documents: 0, nodes: 0, stale_nodes: 0 };
+
+        assert.deepStrictEqual((await get(room)).body, { enabled: false, eligible: false, locked: false, lock_reason: null, ...empty }, 'opt-in: off by default');
+        const evOn = waitForWsMessage(humanWs, m => m.type === 'room_knowledge_changed' && m.room_id === room, 3000);
+        const on = await put(room, { enabled: true });
+        assert.deepStrictEqual([on.status, on.body], [200, { enabled: true, eligible: true, locked: false, lock_reason: null, ...empty }], on.raw);
+        assert.deepStrictEqual(await evOn, { type: 'room_knowledge_changed', room_id: room, enabled: true });
+        assert.strictEqual(mDb.prepare('SELECT knowledge_enabled FROM rooms WHERE id=?').get(room).knowledge_enabled, 1);
+
+        // Off: the queued conversation jobs of this room go; a running one and a stale-node job stay
+        // (both re-check eligibleRoom before they send or store), another room's queue is untouched.
+        const root = kpMsg(room, agA.actorId, 'kp thread root');
+        const job = (roomId, threadId, extra = '') => mDb.prepare(`INSERT INTO knowledge_jobs (room_id, thread_id, reason${extra ? ', status, leased_actor_id, leased_at' : ''})
+          VALUES (?, ?, 'idle'${extra})`).run(roomId, threadId).lastInsertRowid;
+        const pendMain = job(room, null), pendThread = job(room, root);
+        const running = job(room, null, `, 'running', ${agA.actorId}, datetime('now')`);
+        const staleNode = kpNode('kp stale node');
+        kpSrcMsg(staleNode, root);
+        const staleJob = mDb.prepare("INSERT INTO knowledge_jobs (room_id, node_id, reason) VALUES (?, ?, 'stale')").run(room, staleNode).lastInsertRowid;
+        const otherRoom = job(roomB, null);
+        const evOff = waitForWsMessage(humanWs, m => m.type === 'room_knowledge_changed' && m.room_id === room && m.enabled === false, 3000);
+        const off = await put(room, { enabled: false });
+        assert.deepStrictEqual([off.status, off.body], [200, { enabled: false, eligible: false, locked: false, lock_reason: null, documents: 0, nodes: 1, stale_nodes: 0 }], off.raw);
+        await evOff;
+        const left = mDb.prepare('SELECT id FROM knowledge_jobs WHERE id IN (?, ?, ?, ?, ?, ?) ORDER BY id').all(pendMain, pendThread, running, staleJob, otherRoom, 0).map(x => x.id);
+        assert.deepStrictEqual(left, [running, staleJob, otherRoom].sort((a, b) => a - b), 'pending conversation jobs of the room dropped');
+        assert.ok(mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(staleNode), 'existing nodes are not deleted by switching off');
+        const n = events.length;
+        assert.strictEqual((await put(room, { enabled: false })).status, 200, 'switching off again is fine');
+        await new Promise(res => setTimeout(res, 150));
+        assert.strictEqual(events.length, n, 'no event when nothing changed');
+
+        for (const bad of [{}, { enabled: 'true' }, { enabled: 1 }, [true], null]) {
+          const x = await put(room, bad);
+          assert.deepStrictEqual([x.status, x.body.error], [400, 'body must be { "enabled": true | false }'], JSON.stringify(bad));
+        }
+        const raw = await new Promise((resolve, reject) => {
+          const rq = http.request({ host: HOST, port: PORT, method: 'PUT', path: `/api/rooms/${room}/knowledge`, headers: { Cookie: cookieHeader(), 'Content-Type': 'application/json' } },
+            (res) => { let b = ''; res.on('data', c => b += c); res.on('end', () => resolve([res.statusCode, b])); });
+          rq.on('error', reject); rq.end('{not json');
+        });
+        assert.strictEqual(raw[0], 400, 'invalid JSON');
+
+        // Excluded: locked, switching on refused, off allowed (also from a value set before the lock).
+        assert.deepStrictEqual((await get(EXCL)).body, { enabled: false, eligible: false, locked: true, lock_reason: 'excluded', ...empty });
+        const ex = await put(EXCL, { enabled: true });
+        assert.deepStrictEqual([ex.status, ex.body.lock_reason], [403, 'excluded'], ex.raw);
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(EXCL);
+        assert.deepStrictEqual((await get(EXCL)).body, { enabled: true, eligible: false, locked: true, lock_reason: 'excluded', ...empty }, 'enabled but never eligible');
+        assert.deepStrictEqual((await put(EXCL, { enabled: false })).body.enabled, false);
+        // Archived: 409, off allowed.
+        const ar = await put(archived, { enabled: true });
+        assert.deepStrictEqual([ar.status, ar.body.lock_reason], [409, 'archived'], ar.raw);
+        assert.deepStrictEqual((await put(archived, { enabled: false })).body, { enabled: false, eligible: false, locked: true, lock_reason: 'archived', ...empty });
+        assert.strictEqual(mDb.prepare('SELECT knowledge_enabled FROM rooms WHERE id=?').get(archived).knowledge_enabled, 0);
+
+        assert.strictEqual((await get(999999999)).status, 404);
+        assert.strictEqual((await put(999999999, { enabled: false })).status, 404);
+        for (const id of ['0', 'abc', '-1', '1e3', '99999999999999999']) assert.strictEqual((await get(id)).status, 400, id);
+
+        // Session-only: no anonymous call, no agent secret (even of a participant), no sub-agent secret.
+        assert.strictEqual((await asAnon(() => get(room))).status, 401);
+        for (const [m, p, body] of [['GET', `/api/rooms/${room}/knowledge`], ['PUT', `/api/rooms/${room}/knowledge`, { enabled: true }],
+          ['GET', `/api/rooms/${room}/knowledge/documents`], ['GET', `/api/rooms/${room}/knowledge/nodes`], ['GET', `/api/rooms/${room}/knowledge/usage`],
+          ['DELETE', `/api/rooms/${room}/knowledge/documents/1`], ['DELETE', `/api/rooms/${room}/knowledge/deleted/1`], ['DELETE', `/api/knowledge/nodes/${staleNode}?room_id=${room}`]]) {
+          const a = await asAnon(() => req(m, p, body, kpAgentHeaders(agA)));
+          assert.deepStrictEqual([a.status, a.body.error], [403, 'agent_scope_denied'], `${m} ${p}`);
+          const s = await asAnon(() => req(m, p, body, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': subSecret }));
+          assert.deepStrictEqual([s.status, s.body.error], [403, 'agent_scope_denied'], `${m} ${p} sub-agent secret`);
+        }
+        assert.strictEqual(mDb.prepare('SELECT knowledge_enabled FROM rooms WHERE id=?').get(room).knowledge_enabled, 0, 'agent PUT changed nothing');
+        assert.ok(mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(staleNode), 'agent DELETE changed nothing');
+      } finally {
+        humanWs.close();
+        mDb.prepare('DELETE FROM knowledge_jobs WHERE room_id IN (?, ?, ?)').run(room, roomB, EXCL);
+        mDb.prepare('DELETE FROM rooms WHERE id IN (?, ?)').run(EXCL, archived);
+        mDb.prepare("UPDATE sqlite_sequence SET seq=(SELECT MAX(id) FROM rooms) WHERE name='rooms'").run();
+        await req('DELETE', `/api/rooms/${room}`);
+      }
+    });
+
+    await test('knowledge privacy — management: nodes of a room (origin kept after its source goes, filters, paging), delete from the right room only, used nodes archived on every delete path (panel, message, document, room), usage history merged and paged, forget trace', async () => {
+      const mk = async (title, ag) => {
+        const r = await req('POST', '/api/rooms', { title, workdir_id: ag.workdirId, participant_ids: [ag.actorId] });
+        assert.strictEqual(r.status, 200, r.raw);
+        testRoomIds.push(r.body.id);
+        return r.body.id;
+      };
+      const R1 = await mk('__kp-r1__', agA), R2 = await mk('__kp-r2__', agB);
+      const ghost = mDb.prepare("INSERT INTO actors (name, type) VALUES ('__kp-ghost__', 'ai')").run().lastInsertRowid;
+      try {
+        const m1 = kpMsg(R1, agA.actorId), m2 = kpMsg(R1, agA.actorId), m3 = kpMsg(R2, agB.actorId), m4 = kpMsg(R2, agB.actorId);
+        const long = 'Zq'.repeat(300);
+        const nA = kpNode('Zephyrquill alpha', long), nB = kpNode('zephyrquill BETA'), nC = kpNode('Zephyrquill gamma'), nE = kpNode('Kp lonely node');
+        kpSrcMsg(nA, m1); kpSrcMsg(nB, m2); kpSrcMsg(nB, m3); kpSrcMsg(nC, m4); kpSrcMsg(nE, m1);
+        const d1 = mDb.prepare("INSERT INTO knowledge_documents (name, content_hash, bytes, room_id, added_by_actor_id, updated_at) VALUES ('kp.md', 'h', 10, ?, ?, datetime('now'))").run(R1, agA.actorId).lastInsertRowid;
+        const d2 = mDb.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id, updated_at) VALUES ('kp2.md', 'h', ?, datetime('now'))").run(R2).lastInsertRowid;
+        const nD = kpNode('Zephyrquill doc');
+        mDb.prepare("INSERT INTO knowledge_sources (node_id, document_id, section) VALUES (?, ?, 'S')").run(nD, d1);
+        const roomsOf = (n) => mDb.prepare('SELECT room_id FROM knowledge_node_rooms WHERE node_id=? ORDER BY room_id').all(n).map(x => x.room_id);
+        assert.deepStrictEqual([roomsOf(nA), roomsOf(nB), roomsOf(nC), roomsOf(nD)], [[R1], [R1, R2], [R2], [R1]], 'knowledge_sources_ai records origin rooms');
+
+        const nodes = (roomId, qs = '') => req('GET', `/api/rooms/${roomId}/knowledge/nodes${qs}`);
+        const n1 = await nodes(R1);
+        assert.strictEqual(n1.status, 200, n1.raw);
+        assert.strictEqual(n1.body.total, 4);
+        assert.deepStrictEqual(n1.body.nodes.map(x => x.id).sort((a, b) => a - b), [nA, nB, nE, nD].sort((a, b) => a - b));
+        const a = n1.body.nodes.find(x => x.id === nA);
+        assert.deepStrictEqual(a, { id: nA, title: 'Zephyrquill alpha', category: 'eng', status: 'active', summary_preview: long.slice(0, 200),
+          sources: { messages: 1, documents: 0 }, other_rooms: 0, uses: 0, last_used_at: null, updated_at: a.updated_at });
+        assert.deepStrictEqual(n1.body.nodes.find(x => x.id === nB).other_rooms, 1, 'nB also comes from R2');
+        assert.deepStrictEqual(n1.body.nodes.find(x => x.id === nD).sources, { messages: 0, documents: 1 });
+        assert.deepStrictEqual((await nodes(R1, `?document_id=${d1}`)).body.nodes.map(x => x.id), [nD]);
+        assert.deepStrictEqual((await nodes(R1, '?q=BETA')).body.nodes.map(x => x.id), [nB], 'title match ignores case');
+        assert.deepStrictEqual((await nodes(R1, '?q=beta')).body.nodes.map(x => x.id), [nB]);
+        assert.deepStrictEqual((await nodes(R1, '?q=%25')).body.total, 0, 'q is a substring, not a LIKE pattern');
+        const p1 = await nodes(R1, '?limit=3'), p2 = await nodes(R1, '?limit=3&offset=3');
+        assert.deepStrictEqual([p1.body.nodes.length, p2.body.nodes.length, p1.body.total, p2.body.total], [3, 1, 4, 4]);
+        assert.deepStrictEqual([...p1.body.nodes, ...p2.body.nodes].map(x => x.id), n1.body.nodes.map(x => x.id), 'pages follow one order');
+        for (const qs of ['?limit=0', '?limit=201', '?limit=x', '?offset=-1', `?q=${'x'.repeat(201)}`, '?document_id=abc']) assert.strictEqual((await nodes(R1, qs)).status, 400, qs);
+        assert.strictEqual((await nodes(R1, `?document_id=${d2}`)).status, 404, 'document of another room');
+        assert.strictEqual((await nodes(999999999)).status, 404);
+
+        // Usage through the real search: the agent session (roomA) and its sub-agent.
+        const s1 = await stoaOk(tokA, 'knowledge_search', { query: 'zephyrquill', limit: 20 });
+        const s2 = await stoaOk(tokSub, 'knowledge_search', { query: 'zephyrquill alpha', limit: 1 });
+        assert.ok([nA, nB, nC, nD].every(id => s1.results.some(x => x.id === id)), 'all used test nodes found');
+        assert.ok(!s1.results.some(x => x.id === nE));
+        assert.deepStrictEqual(s2.results.map(x => x.id), [nA]);
+        // A use by an actor that will be gone when the history is read (snapshot name).
+        mDb.prepare('INSERT INTO knowledge_usage (node_id, actor_id, room_id) VALUES (?, ?, ?)').run(nB, ghost, R1);
+        const ours = (items) => items.filter(x => [nA, nB, nC, nD, nE].includes(x.node_id));
+        const usage = (roomId, qs = '') => req('GET', `/api/rooms/${roomId}/knowledge/usage${qs}`);
+        const u1 = await usage(R1);
+        assert.strictEqual(u1.status, 200, u1.raw);
+        const liveRows = mDb.prepare(`SELECT id, node_id FROM knowledge_usage WHERE node_id IN (?, ?, ?, ?) ORDER BY id DESC`).all(nA, nB, nD, nE);
+        assert.deepStrictEqual(u1.body.items.map(x => [x.id, x.node_id]), liveRows.map(x => [x.id, x.node_id]), 'R1 history = uses of R1 nodes only (no nC), newest first');
+        assert.strictEqual(u1.body.next_before_id, null);
+        const subUse = u1.body.items.find(x => x.node_id === nA && x.sub_agent);
+        assert.deepStrictEqual(subUse, { id: subUse.id, node_id: nA, node_title: 'Zephyrquill alpha', deleted: false, actor: { id: agA.actorId, name: '__test-mcp-a' },
+          sub_agent: { id: sub.id, label: 'mcpsub' }, room: { id: roomA, title: '__mcp-room-a__' }, used_at: subUse.used_at });
+        assert.strictEqual(u1.body.items.find(x => x.node_id === nA && !x.sub_agent).sub_agent, null);
+        assert.strictEqual(mDb.prepare('SELECT sub_agent_label FROM knowledge_usage WHERE id=?').get(subUse.id).sub_agent_label, 'mcpsub', 'search stores the label for after the sub-agent is gone');
+        assert.deepStrictEqual((await usage(R1, `?node_id=${nB}`)).body.items.map(x => x.node_id), [nB, nB]);
+        assert.deepStrictEqual(ours((await usage(R2)).body.items).map(x => x.node_id).sort((x, y) => x - y), [nB, nB, nC].sort((x, y) => x - y));
+        for (const qs of ['?limit=0', '?limit=201', '?node_id=x', '?before_id=0']) assert.strictEqual((await usage(R1, qs)).status, 400, qs);
+        const nodeUses = (await nodes(R1)).body.nodes.find(x => x.id === nA);
+        assert.deepStrictEqual([nodeUses.uses, typeof nodeUses.last_used_at], [2, 'string']);
+
+        // Delete from the panel: wrong room 404 (nothing deleted); right room archives a used node.
+        const del = (id, roomId) => req('DELETE', `/api/knowledge/nodes/${id}${roomId === undefined ? '' : `?room_id=${roomId}`}`);
+        assert.strictEqual((await del(nA, R2)).status, 404, 'node never came from R2');
+        assert.strictEqual((await del(nA)).status, 400, 'room_id required');
+        assert.strictEqual((await del('x', R1)).status, 400);
+        assert.strictEqual((await del(nA, 999999999)).status, 404);
+        assert.ok(mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(nA));
+        assert.deepStrictEqual((await del(nA, R1)).body, { deleted: nA, archived: true });
+        assert.ok(!mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(nA));
+        assert.deepStrictEqual((await del(nE, R1)).body, { deleted: nE, archived: false }, 'never used → nothing kept');
+        assert.ok(!mDb.prepare('SELECT 1 FROM knowledge_deleted_nodes WHERE node_id=?').get(nE), 'unused title not archived');
+        assert.strictEqual((await del(nA, R1)).status, 404, 'already gone');
+        const archA = mDb.prepare('SELECT * FROM knowledge_deleted_nodes WHERE node_id=?').get(nA);
+        assert.deepStrictEqual([archA.title, archA.category], ['Zephyrquill alpha', 'eng']);
+        assert.deepStrictEqual(mDb.prepare('SELECT room_id FROM knowledge_deleted_node_rooms WHERE deleted_id=?').all(archA.id).map(x => x.room_id), [R1]);
+
+        // Source deleted (message API): the origin room stays, the node turns stale; its last source
+        // gone → deleted through knowledge_sources_ad, archived with both rooms.
+        assert.strictEqual((await req('DELETE', `/api/messages/${m2}`)).status < 300, true);
+        assert.deepStrictEqual(roomsOf(nB), [R1, R2], 'origin room kept after its source is gone');
+        const staleB = (await nodes(R1)).body.nodes.find(x => x.id === nB);
+        assert.deepStrictEqual([staleB.status, staleB.sources], ['stale', { messages: 1, documents: 0 }]);
+        assert.deepStrictEqual((await req('GET', `/api/rooms/${R1}/knowledge`)).body, { enabled: false, eligible: false, locked: false, lock_reason: null, documents: 1, nodes: 2, stale_nodes: 1 });
+        assert.strictEqual((await req('DELETE', `/api/messages/${m3}`)).status < 300, true);
+        assert.ok(!mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(nB), 'last source gone → node deleted');
+        const archB = mDb.prepare('SELECT * FROM knowledge_deleted_nodes WHERE node_id=?').get(nB);
+        assert.ok(archB, 'deleted through a nested trigger, still archived');
+        assert.deepStrictEqual(mDb.prepare('SELECT room_id FROM knowledge_deleted_node_rooms WHERE deleted_id=? ORDER BY room_id').all(archB.id).map(x => x.room_id), [R1, R2]);
+        mDb.prepare('DELETE FROM actors WHERE id=?').run(ghost);
+
+        // Document deleted through the panel: its node goes, archived.
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/documents/${d2}`)).status, 404, 'document of another room');
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/documents/x`)).status, 400);
+        assert.deepStrictEqual((await req('GET', `/api/rooms/${R1}/knowledge/documents`)).body.documents.map(d => [d.id, d.name, d.sections, d.added_by]), [[d1, 'kp.md', 1, '__test-mcp-a']]);
+        assert.deepStrictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/documents/${d1}`)).body, { deleted: d1, sections_removed: 1 });
+        assert.ok(mDb.prepare('SELECT 1 FROM knowledge_deleted_nodes WHERE node_id=?').get(nD), 'document path archives too');
+
+        // History: the same use ids as before, now from the archive; snapshot name of the gone actor.
+        const u2 = await usage(R1);
+        assert.deepStrictEqual(u2.body.items.map(x => [x.id, x.node_id, x.deleted]), liveRows.map(x => [x.id, x.node_id, true]), 'live + archive in one id space');
+        const ghostUse = u2.body.items.find(x => x.actor.name === '__kp-ghost__');
+        assert.deepStrictEqual(ghostUse, { id: ghostUse.id, node_id: nB, node_title: 'zephyrquill BETA', deleted: true, deleted_id: archB.id, deleted_at: archB.deleted_at,
+          actor: { id: null, name: '__kp-ghost__' }, sub_agent: null, room: { id: R1, title: '__kp-r1__' }, used_at: ghostUse.used_at });
+        // Paging: one at a time through the whole list.
+        const seen = [];
+        let cursor = '';
+        for (let i = 0; i < 20; i++) {
+          const pg = await usage(R1, `?limit=1${cursor}`);
+          seen.push(...pg.body.items.map(x => x.id));
+          if (pg.body.next_before_id == null) break;
+          assert.strictEqual(pg.body.next_before_id, pg.body.items[0].id);
+          cursor = `&before_id=${pg.body.next_before_id}`;
+        }
+        assert.deepStrictEqual(seen, u2.body.items.map(x => x.id));
+        assert.deepStrictEqual((await usage(R1, `?node_id=${nB}`)).body.items.map(x => x.deleted_id), [archB.id, archB.id], 'node_id filter covers archived nodes');
+
+        // Forget: only from a room the archive belongs to.
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R2}/knowledge/deleted/${archA.id}`)).status, 404, 'nA never came from R2');
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/deleted/x`)).status, 400);
+        assert.deepStrictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/deleted/${archA.id}`)).body, { forgotten: archA.id });
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) AS c FROM knowledge_deleted_usage WHERE deleted_id=?').get(archA.id).c, 0, 'its uses go with it');
+        assert.ok(!(await usage(R1)).body.items.some(x => x.node_id === nA));
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R1}/knowledge/deleted/${archA.id}`)).status, 404);
+
+        // Room deleted: nC (only from R2, used) is archived by the message delete, then dropped with its
+        // last room; nB's archive keeps R1.
+        assert.strictEqual((await req('DELETE', `/api/rooms/${R2}`)).status, 204);
+        assert.ok(!mDb.prepare('SELECT 1 FROM knowledge_deleted_nodes WHERE node_id=?').get(nC), 'archive no room can show is dropped');
+        assert.deepStrictEqual(mDb.prepare('SELECT room_id FROM knowledge_deleted_node_rooms WHERE deleted_id=?').all(archB.id).map(x => x.room_id), [R1]);
+      } finally {
+        mDb.prepare('DELETE FROM actors WHERE id=?').run(ghost);
+        for (const id of [R1, R2]) await req('DELETE', `/api/rooms/${id}`);
       }
     });
 

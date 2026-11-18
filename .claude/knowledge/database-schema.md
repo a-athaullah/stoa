@@ -597,6 +597,21 @@ CREATE UNIQUE INDEX idx_knowledge_jobs_node_pending ON knowledge_jobs(node_id)
 
 **Triggers:**
 
+**Privacy & management (`migrations/20261119-knowledge-privacy.sql`, Knowledge 5/6, lib/knowledge-admin.js):**
+
+| Table | Columns / FKs |
+|-------|---------------|
+| `knowledge_node_rooms` | `node_id` → nodes CASCADE, `room_id` → rooms CASCADE, UNIQUE (node, room); index (room_id). Every room a node ever had a source in; filled by trigger `knowledge_sources_ai` (AFTER INSERT ON knowledge_sources, room of the message or document; `NOT EXISTS` instead of OR IGNORE because an outer statement's conflict clause overrides a trigger's). NOT cleared when a source goes. Backfilled by the migration. |
+| `knowledge_deleted_nodes` | `node_id` (no FK, UNIQUE: node ids are AUTOINCREMENT), `title`, `category`, `deleted_at` |
+| `knowledge_deleted_node_rooms` | `deleted_id` → deleted_nodes CASCADE, `room_id` → rooms CASCADE, UNIQUE pair; index (room_id) |
+| `knowledge_deleted_usage` | `id` = the original `knowledge_usage.id`, `deleted_id` → deleted_nodes CASCADE, `actor_id` → actors SET NULL + `actor_name`, `sub_agent_id` → sub_agents SET NULL + `sub_agent_label`, `room_id` → rooms SET NULL + `room_title`, `used_at`; partial indexes on the three SET NULL FKs, index (deleted_id) |
+
+`knowledge_usage.sub_agent_label` (same migration, backfilled): the sub-agent's label at the time of the use, written by lib/knowledge-search.js.
+
+Trigger `knowledge_nodes_bd` — BEFORE DELETE ON knowledge_nodes, WHEN the node has ≥1 usage row and ≥1 origin room: copies title/category, origin rooms and usage (with name snapshots) into the archive before the cascade removes them. Fires on every delete path (panel, message/thread/room/document deletion through `knowledge_sources_ad`). An unused node is not archived (its title is not kept). Trigger `knowledge_deleted_node_rooms_ad` drops an archive whose last origin room is gone (room deleted).
+
+**Gotcha — trigger bodies may only name baseline tables.** Older migrations rebuild tables (CREATE new / DROP / RENAME); on a fresh install SQLite then re-checks every trigger, and a table created only by a migration (e.g. `sub_agents`) does not exist yet at that point → the rebuild fails, is retried later and drops columns added in between. That is why `knowledge_nodes_bd` copies `knowledge_usage.sub_agent_label` instead of joining `sub_agents`. The test "migrations: fresh DB from schema.sqlite.sql" catches it (ai_sessions columns).
+
 `knowledge_jobs_actor_bd` — BEFORE DELETE ON actors. When an actor that holds a lease is deleted, its running job is returned to `pending` (lease cleared, `attempts` unchanged). If a pending twin for the same conversation or node already exists, the running job is deleted instead (the twin covers it from the same cursor). This prevents the `CHECK(status='running' = leased_actor_id IS NOT NULL)` constraint from blocking the actor deletion.
 
 `knowledge_messages_au` — AFTER UPDATE OF content ON messages WHEN old.content IS NOT new.content. Marks every node built from the edited message as `status='stale'` (`stale_at = COALESCE(stale_at, now)`). The source row is kept; re-extraction reads the new text. State-only updates and writes of the same text do not fire the trigger.

@@ -18,6 +18,7 @@ function initGlobalWs() {
       if (typeof mcpInvalidate === 'function') mcpInvalidate();
       if (typeof skillsRefreshCache === 'function') skillsRefreshCache();
       if (typeof uaHandleUpdated === 'function') uaHandleUpdated();
+      if (typeof knResync === 'function') knResync();
     };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -44,6 +45,8 @@ function initGlobalWs() {
         }
         refreshRoomList();
       }
+      if (['room_knowledge_changed', 'room_archived', 'room_restored', 'room_deleted'].includes(msg.type) && typeof knHandleRoomChanged === 'function') knHandleRoomChanged(msg.room_id, msg.type === 'room_deleted');
+      if (msg.type === 'knowledge_used' && typeof knHandleUsed === 'function') knHandleUsed();
       if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }
