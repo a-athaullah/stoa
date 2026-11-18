@@ -1504,6 +1504,49 @@ Setiap pencarian yang menghasilkan temuan dicatat: node mana yang dikembalikan, 
 
 Pencarian yang tidak menghasilkan temuan tidak dicatat.
 
+### Knowledge, penghapusan & privasi
+
+#### Mengaktifkan knowledge untuk sebuah room
+
+Ekstraksi knowledge bersifat opt-in per room. Buka pengaturan room (ikon **gear** di header room), scroll ke seksi **Knowledge**, lalu aktifkan toggle **Include in Knowledge**.
+
+- **Default: mati.** Room harus diaktifkan secara eksplisit sebelum percakapannya masuk ke knowledge graph.
+- **Mengaktifkan:** muncul konfirmasi bahwa riwayat percakapan room yang sudah ada juga akan diantrekan untuk diekstrak — bukan hanya pesan baru ke depannya. Konfirmasi untuk melanjutkan.
+- **Mematikan:** selalu diizinkan tanpa konfirmasi. Job ekstraksi yang masih pending untuk room ini akan dibatalkan. Node yang sudah diekstrak dari room ini **tidak dihapus** — tetap ada di graph. Gunakan dialog Manage knowledge untuk menghapusnya secara eksplisit.
+
+#### Room yang terkunci
+
+Beberapa room tidak bisa diaktifkan untuk knowledge:
+
+- **Daftar privat** — room yang tercantum di variabel lingkungan `KNOWLEDGE_EXCLUDED_ROOM_IDS` server dikecualikan secara permanen. Toggle dinonaktifkan dengan penjelasan. Tidak ada apapun dari room ini yang pernah masuk ke knowledge, apapun pengaturannya.
+- **Room diarsip** — toggle room yang diarsip terkunci. Jika room diarsip saat knowledge sudah aktif, toggle tetap menyala tapi terkunci — masih bisa dimatikan, tapi tidak bisa dinyalakan lagi sampai room dipulihkan.
+
+#### Dialog Manage knowledge
+
+Klik **Manage knowledge** di seksi Knowledge pengaturan room untuk membuka dialog tiga tab.
+
+**Tab Documents**
+
+Menampilkan setiap dokumen yang ditambahkan sebagai sumber knowledge untuk room ini (via `stoa__knowledge_add`). Setiap baris menampilkan nama dokumen, ukuran file, jumlah section, siapa yang menambahkan, dan kapan terakhir diperbarui. Untuk menghapus dokumen, klik **Delete** di barisnya, lalu **Confirm delete**. Menghapus dokumen juga menghapus semua node yang sumber-satu-satunya adalah dokumen itu.
+
+**Tab Nodes**
+
+Menampilkan node knowledge yang punya setidaknya satu sumber di room ini. Kolom: judul, kategori, indikator stale, jumlah sumber (pesan dan dokumen), berapa room lain yang juga berkontribusi ke node ini, dan berapa kali node dipakai dalam pencarian. Gunakan **filter dokumen** di atas untuk menampilkan hanya node dari dokumen tertentu. **Kotak pencarian** memfilter berdasarkan judul (case-insensitive). Hasil dimuat 50 per halaman — klik **Load more** untuk halaman berikutnya.
+
+Untuk menghapus node, klik **Delete** di barisnya, lalu **Confirm delete**. Penghapusan node bersifat permanen. Catatan:
+- Node yang dihapus lewat dialog ini, atau terhapus tidak langsung karena pesan/thread/dokumen sumbernya dihapus, tidak akan muncul lagi dari pesan lama — cursor ekstraksi sudah melewati pesan itu. Menambahkan ulang dokumen yang berisi section untuk node itu akan membuatnya kembali.
+- Node yang sumber-satu-satunya adalah pesan (bukan dokumen) tidak bisa dibuat ulang oleh tindakan apapun setelah dihapus.
+
+**Tab Usage history**
+
+Menampilkan agent mana yang memakai node mana (dari sumber room ini), di mana, dan kapan. Setiap baris menampilkan nama agent, label sub-agent jika ada, room tempat query dijalankan, dan waktu dalam zona waktu lokal browser.
+
+Baris untuk node yang sudah dihapus dicoret dan ditandai **deleted**. Baris ini tetap disimpan agar kamu bisa mengaudit agent mana yang mengakses node sebelum dihapus — berguna saat node berisi informasi sensitif dan kamu ingin tahu siapa yang mungkin punya salinannya. Klik **Forget trace** di baris node yang dihapus untuk menghapus entri audit itu secara permanen. Ini tidak mempengaruhi node yang masih aktif.
+
+#### Mobile
+
+Pengaturan room (dan oleh karena itu seksi Knowledge) tidak bisa diakses di layar yang lebih sempit dari 768 px. Dialog itu sendiri responsif dan terbuka layar penuh di viewport sempit, tapi kamu memerlukan layar yang lebih lebar atau browser desktop untuk mencapai toggle Knowledge dan tombol Manage knowledge.
+
 ---
 
 ## Pengaturan

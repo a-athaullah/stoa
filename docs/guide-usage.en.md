@@ -1503,6 +1503,49 @@ Every successful search is recorded: which nodes were returned, which agent ran 
 
 Searches that return no results are not recorded.
 
+### Knowledge, deletion & privacy
+
+#### Enabling knowledge for a room
+
+Knowledge extraction is opt-in per room. Open the room settings (the **gear icon** in the room header), scroll to the **Knowledge** section, and toggle **Include in Knowledge**.
+
+- **Default: off.** A room must be explicitly enabled before its conversations are added to the knowledge graph.
+- **Enabling:** a confirmation prompt warns you that the room's existing conversation history will also be queued for extraction — not just new messages from that point on. Confirm to proceed.
+- **Disabling:** always allowed, with no confirmation. Pending extraction jobs for the room are cancelled. Nodes that were already extracted from this room are **not** deleted — they remain in the graph. Use the Manage knowledge dialog to remove them explicitly.
+
+#### Locked rooms
+
+Some rooms cannot be enabled for knowledge:
+
+- **Private list** — rooms listed in the server's `KNOWLEDGE_EXCLUDED_ROOM_IDS` environment variable are permanently excluded. The toggle is disabled with an explanation. Nothing from these rooms is ever added to knowledge, regardless of other settings.
+- **Archived rooms** — an archived room's toggle is locked. If a room is archived while knowledge is already enabled, the toggle remains on but locked — it can still be turned off, but not on again until the room is restored.
+
+#### Manage knowledge dialog
+
+Click **Manage knowledge** in the room settings Knowledge section to open a three-tab dialog.
+
+**Documents tab**
+
+Lists every document added as a knowledge source for this room (via `stoa__knowledge_add`). Each row shows the document name, file size, number of sections, who added it, and when it was last updated. To remove a document, click **Delete** on its row, then **Confirm delete**. Deleting a document also removes all nodes whose only source is that document.
+
+**Nodes tab**
+
+Lists knowledge nodes that have at least one source in this room. Columns: title, category, stale indicator, source count (messages and documents), how many other rooms also contribute to the node, and how many times the node has been used in searches. Use the **document filter** at the top to show only nodes from a specific document. The **search box** filters by title (case-insensitive). Results load 50 at a time — click **Load more** to fetch the next page.
+
+To remove a node, click **Delete** on its row, then **Confirm delete**. Deleting a node is permanent. Notes:
+- A node deleted via this dialog, or deleted indirectly by removing its source messages, threads, or documents, will not reappear from old messages — the extraction cursor has already passed those messages. Re-adding a document that contained sections for the node will recreate it.
+- Nodes whose only sources are messages (not documents) cannot be re-created by any user action after deletion.
+
+**Usage history tab**
+
+Shows which agents used which nodes (from this room's sources), where, and when. Each row shows the agent name, the sub-agent label if applicable, the room where the query ran, and the time in the browser's local time zone.
+
+Rows for nodes that have since been deleted are crossed out and marked **deleted**. These rows are retained so you can audit which agents accessed a node before it was removed — useful when the node contained sensitive information and you want to know who may have a copy. Click **Forget trace** on a deleted-node row to permanently remove that audit entry. This does not affect nodes that are still active.
+
+#### Mobile
+
+Room settings (and therefore the Knowledge section) are not accessible on screens narrower than 768 px. The dialog itself is responsive and opens full-screen on narrow viewports, but you need a wider screen or a desktop browser to reach the Knowledge toggle and the Manage knowledge button.
+
 ---
 
 ## Settings
