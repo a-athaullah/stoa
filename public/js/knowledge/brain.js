@@ -20,16 +20,18 @@ const KB_SCAFFOLD_TARGET = 1500;
 const KB_REFRESH_DEBOUNCE = 2000;
 const KB_DEPTH_BUCKETS = 96;
 const KB_EDGE_LEVELS = 6;
+const KB_LABEL_MAX = 12;
+const KB_LABEL_CHARS = 32;
 
 const KB_PALETTE = {
   dark: {
     cats: ['oklch(0.74 0.065 250)', 'oklch(0.78 0.07 78)', 'oklch(0.77 0.06 152)', 'oklch(0.73 0.065 320)'],
-    lit: 'oklch(0.93 0.05 85)', dust: 'oklch(0.66 0.03 250)', label: 'oklch(0.9 0.012 250)', ring: 'oklch(0.94 0.03 85)',
+    lit: 'oklch(0.93 0.05 85)', dust: 'oklch(0.66 0.03 250)', label: 'oklch(0.9 0.012 250)', knock: 'oklch(0.17 0.02 260)', ring: 'oklch(0.94 0.03 85)',
     halo: 0.2, node: 0.9, edge: 0.2, dust_a: 0.5,
   },
   light: {
     cats: ['oklch(0.5 0.085 252)', 'oklch(0.55 0.095 62)', 'oklch(0.5 0.075 152)', 'oklch(0.48 0.08 320)'],
-    lit: 'oklch(0.6 0.14 52)', dust: 'oklch(0.55 0.025 70)', label: 'oklch(0.3 0.02 60)', ring: 'oklch(0.42 0.1 52)',
+    lit: 'oklch(0.6 0.14 52)', dust: 'oklch(0.55 0.025 70)', label: 'oklch(0.3 0.02 60)', knock: 'oklch(0.97 0.01 85)', ring: 'oklch(0.42 0.1 52)',
     halo: 0.1, node: 0.85, edge: 0.2, dust_a: 0.42,
   },
 };
@@ -40,7 +42,7 @@ const kb = {
   graph: null, graphSeq: 0, graphError: null,
   usage: { seq: 0, range: null, counts: null, max: 0, error: null },
   feed: [], usedBy: new Map(), recentLoaded: false, recentSeq: 0, recentError: null,
-  pulses: [], scaffold: null,
+  pulses: [], scaffold: null, ranked: [], blocked: [],
   view: {
     yaw: -1.05, pitch: 0.18, zoom: 1, yawTo: null, pitchTo: null,
     drag: null, pauseUntil: 0, mouse: null, mouseMoved: false,
@@ -310,26 +312,58 @@ function kbCreateRenderer(canvas) {
     ctx.beginPath(); ctx.arc(SX[i], SY[i], Math.max(5, SR[i] + 4), 0, Math.PI * 2); ctx.stroke();
   }
 
-  function drawLabels(g, glow, view, labelIdx) {
+  // Greedy placement in priority order (selected, hover, lit, most used, hubs), at most KB_LABEL_MAX:
+  // a label is drawn right of its node, else left, only where its measured box clears the canvas
+  // edge, the panels over the canvas and every label already placed; otherwise it is skipped.
+  let lw = null, lwGraph = null, lwFont = '';
+  function labelText(g, i) {
+    const t = g.titles[i];
+    return t.length > KB_LABEL_CHARS ? t.slice(0, KB_LABEL_CHARS - 1).trimEnd() + '…' : t;
+  }
+  function drawLabels(g, glow, view, litIdx, ranked, blocked) {
     ctx.font = font;
     ctx.fillStyle = pal.label;
+    ctx.strokeStyle = pal.knock;
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
     ctx.textBaseline = 'middle';
-    const seen = new Set();
+    if (lwGraph !== g || lwFont !== font) { lw = new Float32Array(g.n).fill(-1); lwGraph = g; lwFont = font; }
+    const placed = [], seen = new Set(), pad = 3, lh = 15;
+    const free = (x0, y0, x1, y1) => {
+      if (x0 < 6 || y0 < 4 || x1 > W - 6 || y1 > H - 4) return false;
+      for (const b of blocked) if (x0 < b.x1 && x1 > b.x0 && y0 < b.y1 && y1 > b.y0) return false;
+      for (const b of placed) if (x0 < b.x1 + pad && x1 + pad > b.x0 && y0 < b.y1 && y1 > b.y0) return false;
+      return true;
+    };
     const put = (i, a) => {
-      if (i < 0 || seen.has(i)) return;
+      if (i < 0 || i >= g.n || seen.has(i) || placed.length >= KB_LABEL_MAX) return;
       seen.add(i);
-      const t = g.titles[i];
+      if (lw[i] < 0) lw[i] = ctx.measureText(labelText(g, i)).width;
+      const w = lw[i], gap = SR[i] + 6, y0 = SY[i] - lh / 2, y1 = SY[i] + lh / 2;
+      let x = SX[i] + gap;
+      if (!free(x, y0, x + w, y1)) {
+        x = SX[i] - gap - w;
+        if (!free(x, y0, x + w, y1)) return;
+      }
+      placed.push({ x0: x, y0, x1: x + w, y1 });
+      const t = labelText(g, i);
+      ctx.globalAlpha = a * 0.8;
+      ctx.strokeText(t, x, SY[i]);
       ctx.globalAlpha = a;
-      ctx.fillText(t.length > 42 ? t.slice(0, 41) + '…' : t, SX[i] + SR[i] + 6, SY[i]);
+      ctx.fillText(t, x, SY[i]);
     };
     put(view.selected, 0.95);
     put(view.hover, 0.95);
-    for (const i of labelIdx) if (glow[i] > 0.3) put(i, Math.min(0.9, 0.4 + glow[i] * 0.5));
+    if (litIdx.length) {
+      const lit = litIdx.slice().sort((a, b) => glow[b] - glow[a]);
+      for (const i of lit) put(i, Math.min(0.9, 0.4 + glow[i] * 0.5));
+    }
+    for (const i of ranked) { const d = dep(SZ[i]); if (d > 0.5) put(i, 0.45 + (d - 0.5) * 0.9); }
     for (const i of g.landmarks) { const d = dep(SZ[i]); if (d > 0.62) put(i, 0.3 + (d - 0.62) * 1.2); }
   }
 
   function frame(scene) {
-    const { view, graph: g, bright, glow, scaffoldCount, pulses, litIdx } = scene;
+    const { view, graph: g, bright, glow, scaffoldCount, pulses, litIdx, ranked, blocked } = scene;
     ctx.setTransform(D, 0, 0, D, 0, 0);
     ctx.clearRect(0, 0, W, H);
     ctx.globalCompositeOperation = 'source-over';
@@ -343,7 +377,7 @@ function kbCreateRenderer(canvas) {
       drawNodes(g, bright, glow);
       if (view.hover >= 0 && view.hover !== view.selected) drawRing(view.hover, false);
       if (view.selected >= 0) drawRing(view.selected, true);
-      drawLabels(g, glow, view, litIdx);
+      drawLabels(g, glow, view, litIdx, ranked, blocked);
     }
     ctx.globalAlpha = 1;
   }
@@ -430,7 +464,10 @@ function kbNeighbors(g, i, limit) {
 function kbApplyTargets() {
   const g = kb.graph;
   if (!g) return;
+  kb.ranked = [];
   if (kb.mode === 'history' && kb.usage.counts && kb.usage.range === kb.range) {
+    kb.ranked = [...kb.usage.counts].sort((a, b) => b[1] - a[1]).map(([id]) => g.idx.get(id))
+      .filter(i => i !== undefined).slice(0, KB_TOP_USED);
     const max = kb.usage.max, lmax = Math.log1p(max || 1);
     for (let i = 0; i < g.n; i++) {
       const c = kb.usage.counts.get(g.ids[i]) || 0;
@@ -542,7 +579,8 @@ function kbBuild() {
   kb.built = true;
 
   kbBindCanvas(canvas);
-  new ResizeObserver(kbLayout).observe(root);
+  const ro = new ResizeObserver(kbLayout);
+  for (const el of [root, head, legend, side, detail]) ro.observe(el);
   new MutationObserver(() => {
     const s = kbSchemeNow();
     if (s === kb.scheme) return;
@@ -566,7 +604,7 @@ function kbBuild() {
 // Center the brain in the space the side panel leaves free; sizes are read here, never per frame.
 function kbLayout() {
   if (!kb.built) return;
-  const { root, side, head } = kb.els;
+  const { root, side, head, legend } = kb.els;
   const r = root.getBoundingClientRect();
   if (!r.width || !r.height) return;
   kb.renderer.resize(r.width, r.height);
@@ -575,7 +613,8 @@ function kbLayout() {
   const v = kb.view;
   const stacked = s.top - r.top > r.height * 0.4;
   if (stacked) {
-    const top = h.bottom - r.top, bottom = s.top - r.top;
+    const l = legend.getBoundingClientRect();
+    const top = h.bottom - r.top, bottom = (l.height ? Math.min(s.top, l.top) : s.top) - r.top;
     v.cx = r.width / 2; v.cy = (top + bottom) / 2 + 8;
     v.size = Math.max(120, Math.min(r.width, bottom - top));
   } else {
@@ -583,7 +622,20 @@ function kbLayout() {
     v.cx = right * 0.52; v.cy = r.height / 2 + 24;
     v.size = Math.max(160, Math.min(right, r.height - 40));
   }
+  kbMeasureBlocked(r);
   kbKick();
+}
+
+// Panels drawn over the canvas, in canvas coordinates: node labels stay out of them.
+function kbMeasureBlocked(r) {
+  const out = [];
+  for (const el of [kb.els.head, kb.els.legend, kb.els.side, kb.els.detail]) {
+    if (el.hidden) continue;
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height) continue;
+    out.push({ x0: b.left - r.left - 6, y0: b.top - r.top - 4, x1: b.right - r.left + 6, y1: b.bottom - r.top + 4 });
+  }
+  kb.blocked = out;
 }
 
 function kbOnKey(e) {
@@ -674,6 +726,7 @@ function kbLoop(ts) {
   if (g) for (let i = 0; i < g.n; i++) if (g.glow[i] > 0.3) litIdx.push(i);
   kb.renderer.frame({
     view: kb.view, graph: g, bright: g ? g.bright : null, glow: g ? g.glow : null, pulses: kb.pulses, litIdx,
+    ranked: kb.ranked, blocked: kb.blocked,
     scaffoldCount: Math.max(0, KB_SCAFFOLD_TARGET - (g ? g.n : 0)),
   });
   if (kb.view.mouseMoved) {
@@ -774,7 +827,7 @@ async function kbLoadGraph() {
     kb.pulses = [];
     kb.view.hover = -1;
     kb.view.selected = selectedId != null && g.idx.has(selectedId) ? g.idx.get(selectedId) : -1;
-    if (selectedId != null && kb.view.selected < 0) kbCloseDetail(false);
+    if (kb.detail.id != null && !g.idx.has(Number(kb.detail.id))) kbCloseDetail(kb.els.detail.contains(document.activeElement));
     kbRenderCounts(data);
     kbApplyTargets();
     kbRenderSide();
@@ -990,6 +1043,7 @@ function kbCloseDetail(restoreFocus) {
   kb.els.detail.hidden = true;
   kb.els.detail.replaceChildren();
   kb.els.side.classList.remove('kb-under');
+  kb.els.root.classList.remove('kb-detail-open');
   kb.view.selected = -1;
   if (restoreFocus) kb.els.canvas.focus({ preventScroll: true });
   kbKick();
@@ -1004,6 +1058,7 @@ async function kbOpenDetail(id) {
   d.replaceChildren(kbDetailHead(i !== undefined ? g.titles[i] : `Node ${id}`, null), kbEl('div', 'kb-muted', 'loading…'));
   d.hidden = false;
   kb.els.side.classList.add('kb-under');
+  kb.els.root.classList.add('kb-detail-open');
   d.focus({ preventScroll: true });
   try {
     const n = await kbFetch(`/api/knowledge/nodes/${encodeURIComponent(id)}`);

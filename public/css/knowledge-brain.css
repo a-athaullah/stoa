@@ -162,7 +162,11 @@ button.kb-feed-body:hover { background: var(--kb-hover); }
   .kb-title { font-size: 22px; }
   .kb-controls { margin-top: 4px; }
   .kb-empty { left: 18px; right: 18px; top: 120px; max-width: none; }
-  .kb-legend { display: none; }
+  .kb-legend { left: 18px; right: 18px; bottom: calc(38% + 22px); }
+  .kb-legend-keys { gap: 6px 12px; }
+  .kb-legend-key { font-size: 11px; }
+  .kb-hint { display: none; }
+  .kb-detail-open .kb-legend { visibility: hidden; }
   .kb-side, .kb-detail { left: 12px; right: 12px; top: auto; bottom: 12px; width: auto; height: 38%; }
   .kb-side { background: var(--kb-panel); border: 1px solid var(--kb-line); border-radius: 12px; padding: 12px 14px; }
   .kb-detail { height: 55%; }
