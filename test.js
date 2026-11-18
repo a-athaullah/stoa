@@ -26886,7 +26886,7 @@ async function run() {
       assert.ok(!pre.prepare("SELECT 1 FROM sqlite_master WHERE name LIKE 'knowledge%'").get(), 'pre-migration DB has no knowledge objects');
       const sql = fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8');
       assert.deepStrictEqual(applyMigration(pre, MIG, sql), { status: 'applied' }, 'applies cleanly, nothing skipped');
-      const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors') ORDER BY name").all()
+      const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors') AND name NOT IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au') ORDER BY name").all()
         .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
       const after = objs(pre);
       assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_room', 'idx_knowledge_edges_b',
@@ -27562,13 +27562,130 @@ async function run() {
       } finally { kdb.close(); }
     });
 
+    await test('knowledge extraction — deleting the agent that holds a lease succeeds, the job goes back to pending and is leased again; a pending twin queued meanwhile supersedes the running job (busy, retry, restart, actor delete)', async () => {
+      const k = kxSetup();
+      try {
+        const temp = Number(k.kdb.prepare("INSERT INTO actors (name, type, adapter) VALUES ('kx-temp', 'ai', 'claude')").run().lastInsertRowid);
+        const rm = k.room(1, [k.human, k.agent, temp]);
+        const root = k.msg(rm, 'root');
+        k.msg(rm, 'reply', { threadId: root });
+        k.setPick(temp);
+        k.kx.enqueueConversation(rm.id, root, 'thread_complete');
+        await k.kx.tick();
+        const jobId = k.sent[0].job_id;
+        assert.deepStrictEqual(k.jobs().map(j => [j.status, j.leased_actor_id]), [['running', temp]]);
+        k.kdb.prepare('DELETE FROM room_participants WHERE actor_id=?').run(temp);
+        k.kdb.prepare('DELETE FROM actors WHERE id=?').run(temp);
+        assert.deepStrictEqual(k.jobs().map(j => [j.id, j.status, j.leased_actor_id, j.leased_at, j.attempts]), [[jobId, 'pending', null, null, 0]]);
+        k.setPick(k.agent);
+        await k.kx.tick();
+        assert.deepStrictEqual([k.sent.length, k.sent[1].job_id, k.sent[1].actorId, k.jobs()[0].status], [2, jobId, k.agent, 'running']);
+
+        // A trigger while the job runs queues a pending twin; every way back to pending gives way to it.
+        const twin = () => {
+          k.msg(rm, `late reply ${k.sent.length}`, { threadId: root });
+          assert.strictEqual(k.kx.enqueueConversation(rm.id, root, 'thread_complete'), true, 'twin queued beside the running job');
+        };
+        const queue = () => k.jobs().map(j => j.status);
+        twin();
+        await k.kx.handleResult(k.agent, { job_id: jobId, ok: false, busy: true });
+        assert.deepStrictEqual(queue(), ['pending'], 'busy: running job superseded, not a UNIQUE error');
+        assert.ok(k.logs.some(l => l.includes(`job ${jobId} superseded`)));
+
+        await k.kx.tick();
+        const j2 = k.sent[2].job_id;
+        twin();
+        await k.kx.handleResult(k.agent, { job_id: j2, ok: true, text: 'not json' });
+        assert.deepStrictEqual(queue(), ['pending'], 'failed attempt: superseded');
+
+        await k.kx.tick();
+        twin();
+        k.kx.start({ tickMs: 1e9, sweepMs: 1e9 });
+        k.kx.stop();
+        assert.deepStrictEqual(queue(), ['pending'], 'restart: superseded');
+
+        const t2 = Number(k.kdb.prepare("INSERT INTO actors (name, type, adapter) VALUES ('kx-temp2', 'ai', 'claude')").run().lastInsertRowid);
+        k.kdb.prepare('INSERT INTO room_participants (room_id, actor_id) VALUES (?, ?)').run(rm.id, t2);
+        k.setPick(t2);
+        await k.kx.tick();
+        twin();
+        k.kdb.prepare('DELETE FROM room_participants WHERE actor_id=?').run(t2);
+        k.kdb.prepare('DELETE FROM actors WHERE id=?').run(t2);
+        assert.deepStrictEqual(queue(), ['pending'], 'actor delete: superseded');
+
+        // Stale node jobs follow the same rule.
+        k.setPick(k.agent);
+        const { nodeId } = await k.seed(rm, 'Node', 'summary', ['n root', 'n reply']);
+        k.kdb.prepare('DELETE FROM knowledge_jobs').run();
+        k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(nodeId);
+        k.kx.sweep();
+        await k.kx.tick();
+        const sj = k.sent[k.sent.length - 1].job_id;
+        k.kdb.prepare("INSERT INTO knowledge_jobs (room_id, node_id, reason) VALUES (?, ?, 'stale')").run(rm.id, nodeId);
+        await k.kx.handleResult(k.agent, { job_id: sj, ok: false, busy: true });
+        assert.deepStrictEqual(k.jobs().map(j => [j.node_id, j.status]), [[nodeId, 'pending']]);
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge extraction — editing a source message makes its node stale (state / same-text updates do not); the sweep re-extracts from the new text; an edit while the agent works keeps the result from going active', async () => {
+      const k = kxSetup();
+      try {
+        const rm = k.room();
+        const { nodeId, root } = await k.seed(rm, 'Deploy', 'deploy uses port 3001', ['deploy root', 'deploy runs on port 3001']);
+        const [, reply] = k.sources(nodeId);
+        const status = () => k.nodes().find(n => n.id === nodeId)?.status;
+        k.kdb.prepare("UPDATE messages SET state='complete', completed_at=datetime('now') WHERE id=?").run(reply);
+        k.kdb.prepare("UPDATE messages SET content='deploy runs on port 3001' WHERE id=?").run(reply);
+        assert.strictEqual(status(), 'active', 'no content change → not stale');
+        const other = k.msg(rm, 'streaming', { state: 'streaming' });
+        k.kdb.prepare("UPDATE messages SET content='streaming more' WHERE id=?").run(other);
+        assert.strictEqual(status(), 'active', 'a message that is no source touches no node');
+
+        k.kdb.prepare("UPDATE messages SET content='deploy runs on port 4000' WHERE id=?").run(reply);
+        const n = k.nodes().find(x => x.id === nodeId);
+        assert.strictEqual(n.status, 'stale');
+        assert.ok(n.stale_at);
+        assert.deepStrictEqual(k.sources(nodeId), [root, reply], 'sources kept');
+        k.kdb.prepare("UPDATE messages SET content='deploy runs on port 4001' WHERE id=?").run(reply);
+        assert.strictEqual(k.nodes().find(x => x.id === nodeId).stale_at, n.stale_at, 'first stale_at kept');
+
+        k.kdb.prepare("UPDATE messages SET content='deploy runs on port 4000' WHERE id=?").run(reply);
+        assert.strictEqual(k.kx.sweep(), 1);
+        assert.deepStrictEqual(k.jobs().map(j => [j.reason, j.node_id]), [['stale', nodeId]]);
+        await k.kx.tick();
+        const p = k.sent[k.sent.length - 1].prompt;
+        assert.ok(p.includes('port 4000') && !p.includes('port 3001'), 'the new text is what gets summarized');
+
+        // Edited again while the agent works: its answer describes the old text → node stays stale.
+        k.kdb.prepare("UPDATE messages SET content='deploy runs on port 5000' WHERE id=?").run(reply);
+        await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('Deploy', 'deploy uses port 4000')]);
+        assert.deepStrictEqual(k.nodes().filter(x => x.id === nodeId).map(x => [x.summary, x.status]), [['deploy uses port 3001', 'stale']]);
+        assert.strictEqual(k.jobs().length, 0);
+        k.kx.sweep();
+        await k.kx.tick();
+        assert.ok(k.sent[k.sent.length - 1].prompt.includes('port 5000'));
+        await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('Deploy', 'deploy uses port 5000')]);
+        assert.deepStrictEqual(k.nodes().filter(x => x.id === nodeId).map(x => [x.summary, x.status]), [['deploy uses port 5000', 'active']]);
+
+        // Conversation job: a message edited mid-run → the new node is stored stale, for the sweep.
+        const r2 = k.msg(rm, 'cache root');
+        const r2reply = k.msg(rm, 'cache ttl is 60s', { threadId: r2 });
+        k.kx.enqueueConversation(rm.id, r2, 'thread_complete');
+        await k.kx.tick();
+        k.kdb.prepare("UPDATE messages SET content='cache ttl is 90s' WHERE id=?").run(r2reply);
+        await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('Cache', 'ttl 60s', 'ops')]);
+        assert.deepStrictEqual(k.nodes().filter(x => x.title === 'Cache').map(x => x.status), ['stale']);
+        assert.strictEqual(k.cursor(rm, r2), r2reply, 'cursor still moves');
+      } finally { k.kdb.close(); }
+    });
+
     await test('knowledge extraction — migration on the pre-migration schema creates exactly what db/schema.sqlite.sql has; FK cascades clear jobs and cursors', async () => {
       const fsK = require('fs'), pathK = require('path'), osK = require('os');
       const Database = require('better-sqlite3');
       const { splitSqlStatements, applyMigration, runMigrations } = require('./lib/migrations');
       const MIG = '20261118-knowledge-extraction.sql';
       const full = fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
-      const preSchema = splitSqlStatements(full).filter(st => !/knowledge_(jobs|cursors)/.test(st)).join(';\n') + ';\n';
+      const preSchema = splitSqlStatements(full).filter(st => !/knowledge_(jobs|cursors|messages_au)/.test(st)).join(';\n') + ';\n';
       const tmp = fsK.mkdtempSync(pathK.join(osK.tmpdir(), 'stoa-kxmig-'));
       const pre = new Database(':memory:');
       const { kdb: post } = _knowledgeBootDb();
@@ -27578,13 +27695,13 @@ async function run() {
         }
         pre.pragma('foreign_keys = ON');
         runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
-        const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN ('knowledge_jobs', 'knowledge_cursors') ORDER BY name").all()
+        const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN ('knowledge_jobs', 'knowledge_cursors') OR name IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au') ORDER BY name").all()
           .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
         assert.deepStrictEqual(objs(pre), [], 'pre-migration DB has no queue objects');
         assert.deepStrictEqual(applyMigration(pre, MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8')), { status: 'applied' });
         assert.deepStrictEqual(objs(pre).map(o => o.name), ['idx_knowledge_cursors_key', 'idx_knowledge_cursors_thread', 'idx_knowledge_jobs_actor',
           'idx_knowledge_jobs_conv', 'idx_knowledge_jobs_conv_pending', 'idx_knowledge_jobs_node', 'idx_knowledge_jobs_node_pending',
-          'idx_knowledge_jobs_status', 'idx_knowledge_jobs_thread', 'knowledge_cursors', 'knowledge_jobs']);
+          'idx_knowledge_jobs_status', 'idx_knowledge_jobs_thread', 'knowledge_cursors', 'knowledge_jobs', 'knowledge_jobs_actor_bd', 'knowledge_messages_au']);
         assert.deepStrictEqual(objs(pre), objs(post), 'migration ≡ baseline');
         const k = post;
         const h = k.prepare("INSERT INTO actors (name, type) VALUES ('h', 'human')").run().lastInsertRowid;

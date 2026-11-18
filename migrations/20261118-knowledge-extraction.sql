@@ -44,3 +44,27 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_conv ON knowledge_jobs(room_id, th
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_thread ON knowledge_jobs(thread_id) WHERE thread_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_node ON knowledge_jobs(node_id) WHERE node_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_actor ON knowledge_jobs(leased_actor_id) WHERE leased_actor_id IS NOT NULL;
+
+-- Deleting an actor that holds a lease: leased_actor_id ON DELETE SET NULL alone would leave a
+-- running job without its lease holder, which the running CHECK refuses (the DELETE would fail).
+-- So the job goes back to pending first; if a pending twin for the same conversation or node was
+-- queued meanwhile, the running job is deleted instead (the twin covers it, from the same cursor).
+-- Same rule as dropTwinned in lib/knowledge-extraction.js.
+CREATE TRIGGER IF NOT EXISTS knowledge_jobs_actor_bd BEFORE DELETE ON actors BEGIN
+  DELETE FROM knowledge_jobs WHERE status = 'running' AND leased_actor_id = old.id
+    AND EXISTS (SELECT 1 FROM knowledge_jobs p WHERE p.status = 'pending' AND CASE WHEN knowledge_jobs.node_id IS NULL
+      THEN p.node_id IS NULL AND p.room_id = knowledge_jobs.room_id AND COALESCE(p.thread_id, 0) = COALESCE(knowledge_jobs.thread_id, 0)
+      ELSE p.node_id = knowledge_jobs.node_id END);
+  UPDATE knowledge_jobs SET status = 'pending', leased_actor_id = NULL, leased_at = NULL, updated_at = datetime('now')
+    WHERE status = 'running' AND leased_actor_id = old.id;
+END;
+
+-- Editing a message's text makes every node built from it stale: the summary may no longer match.
+-- The source stays; re-extraction reads the new text. Only a real content change counts (state
+-- or other column updates, and writes of the same text, do not). Streaming replies are not
+-- sources yet (only complete messages are extracted), so their updates touch no node.
+CREATE TRIGGER IF NOT EXISTS knowledge_messages_au AFTER UPDATE OF content ON messages
+WHEN old.content IS NOT new.content BEGIN
+  UPDATE knowledge_nodes SET status = 'stale', stale_at = COALESCE(stale_at, datetime('now')), updated_at = datetime('now')
+    WHERE id IN (SELECT node_id FROM knowledge_sources WHERE message_id = new.id);
+END;
