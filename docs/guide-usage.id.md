@@ -1463,7 +1463,7 @@ Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
 Stoa membangun dan memelihara **knowledge graph** — memori bersama berisi fakta, keputusan, dan konteks yang diekstrak dari percakapan di room dan dokumen yang diunggah. Agent dan sub-agent mana pun (Claude Code, Codex, sub-agent) bisa menggunakannya kapan saja.
 
-Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya; belum ada upload dari UI untuk fitur ini.
+Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya, atau unggah dokumen langsung dari dialog **Manage knowledge** di pengaturan room.
 
 ### Mencari Knowledge
 
@@ -1504,6 +1504,59 @@ Setiap pencarian yang menghasilkan temuan dicatat: node mana yang dikembalikan, 
 
 Pencarian yang tidak menghasilkan temuan tidak dicatat.
 
+### Knowledge brain
+
+Halaman **Knowledge** (dapat diakses dari navigasi app) memvisualisasikan seluruh knowledge graph sebagai **bentuk otak 3D**. Setiap node adalah sebuah titik di dalam otak — node yang berdekatan memiliki topik serupa, berdasarkan kontennya. Posisi stabil di seluruh reload.
+
+**Navigasi:** drag untuk memutar; scroll untuk zoom. Otak berputar perlahan saat idle dan berhenti saat kamu berinteraksi.
+
+#### Mode Live
+
+Mode Live adalah tampilan default. Ketika agent atau sub-agent mencari knowledge graph, node yang cocok **menyala** dan efeknya menjalar melalui edge ke node tetangga. Feed di kanan menampilkan:
+
+- Siapa yang mencari — nama agent dan label sub-agent (jika ada)
+- Apa yang dicari — teks query
+- Room mana tempat query berasal
+
+> Teks query tidak disimpan di database. Feed menampilkan teks query hanya selama halaman terbuka — setelah reload, entri menampilkan siapa yang mencari dan dari room mana, tanpa teks query.
+
+Room yang ada di `KNOWLEDGE_EXCLUDED_ROOM_IDS` tampil di feed sebagai **"(private)"** — tanpa nama room, tanpa teks query.
+
+Hover pada node yang sedang menyala untuk melihat tooltip berisi agent dan room yang terakhir menggunakannya.
+
+#### Mode History
+
+Klik **History** di toggle Live / History. Mode History mewarnai kecerahan node berdasarkan frekuensi pemakaian:
+
+- Rentang: **24 j**, **7 h** (default), **30 h**
+- Node yang sering dipakai tampil terang; node yang tidak pernah dipakai tetap redup tapi terlihat.
+- Panel **Most used** menampilkan 10 node yang paling sering diakses. Klik baris untuk memfokuskan otak ke node tersebut.
+
+Peralihan antara Live dan History mulus tanpa reload data. Event live terus terakumulasi di background saat History ditampilkan.
+
+#### Detail node
+
+Klik node mana saja untuk membuka panel detail:
+
+- Judul, kategori, dan status (node stale ditandai)
+- Ringkasan konten node
+- Hitungan pemakaian — 24 j / 7 h / 30 h
+- Sumber — pesan (room, pratinjau, tautan buka thread) dan dokumen (nama, section). Sumber dari room di `KNOWLEDGE_EXCLUDED_ROOM_IDS` hanya tampil sebagai jumlah ("N sumber dari room privat") — tanpa nama atau pratinjau.
+- Pengguna terakhir — agent yang terakhir mengakses node ini.
+
+Tekan **Escape** atau klik area kosong untuk menutup panel.
+
+#### Mengunggah dokumen
+
+Unggah file `.md` atau `.txt` langsung dari pengaturan room:
+
+1. Buka pengaturan room (ikon **gear** di header room).
+2. Scroll ke seksi **Knowledge** dan klik **Manage knowledge**.
+3. Buka tab **Documents** dan klik **Upload .md / .txt**.
+4. Pilih file (maks 512 KB), tentukan **kategori**, dan konfirmasi.
+
+File diproses di background. Mengunggah file dengan nama yang sama seperti dokumen yang sudah ada akan memperbaruinya. File yang lebih dari 512 KB ditolak dengan pesan error.
+
 ### Knowledge, penghapusan & privasi
 
 #### Mengaktifkan knowledge untuk sebuah room
@@ -1527,7 +1580,7 @@ Klik **Manage knowledge** di seksi Knowledge pada popover System Prompt & Memory
 
 **Tab Documents**
 
-Menampilkan setiap dokumen yang ditambahkan sebagai sumber knowledge untuk room ini (via `stoa__knowledge_add`). Setiap baris menampilkan nama dokumen, ukuran file, jumlah section, siapa yang menambahkan, dan kapan terakhir diperbarui. Untuk menghapus dokumen, klik **Delete** di barisnya, lalu **Confirm delete**. Menghapus dokumen juga menghapus semua node yang sumber-satu-satunya adalah dokumen itu.
+Menampilkan setiap dokumen yang ditambahkan sebagai sumber knowledge untuk room ini. Klik **Upload .md / .txt** di bagian atas tab untuk menambahkan file baru (maks 512 KB) — pilih file, tentukan **kategori**, dan konfirmasi. File diproses di background; baris muncul setelah selesai. Mengunggah file dengan nama yang sama seperti dokumen yang sudah ada akan memperbaruinya. Setiap baris menampilkan nama dokumen, ukuran file, jumlah section, siapa yang menambahkan, dan kapan terakhir diperbarui. Untuk menghapus dokumen, klik **Delete** di barisnya, lalu **Confirm delete**. Menghapus dokumen juga menghapus semua node yang sumber-satu-satunya adalah dokumen itu.
 
 **Tab Nodes**
 

@@ -19,6 +19,7 @@ function initGlobalWs() {
       if (typeof skillsRefreshCache === 'function') skillsRefreshCache();
       if (typeof uaHandleUpdated === 'function') uaHandleUpdated();
       if (typeof knResync === 'function') knResync();
+      if (typeof kbResync === 'function') kbResync();
     };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -46,7 +47,9 @@ function initGlobalWs() {
         refreshRoomList();
       }
       if (['room_knowledge_changed', 'room_archived', 'room_restored', 'room_deleted'].includes(msg.type) && typeof knHandleRoomChanged === 'function') knHandleRoomChanged(msg.room_id, msg.type === 'room_deleted');
+      if (['knowledge_graph_changed', 'room_knowledge_changed', 'room_deleted'].includes(msg.type) && typeof kbHandleGraphChanged === 'function') kbHandleGraphChanged();
       if (msg.type === 'knowledge_used' && typeof knHandleUsed === 'function') knHandleUsed();
+      if (msg.type === 'knowledge_used' && typeof kbHandleUsed === 'function') kbHandleUsed(msg);
       if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }

@@ -277,6 +277,20 @@ GET /api/knowledge/usage?range=24h|7d|30d
 
 Knowledge graph history mode (card #39). Returns `{ range, nodes: [{ node_id, count }] }`: uses (`knowledge_usage` rows) per node since `datetime('now', -range)`, most used first, ties by node id. Every node that still exists, **stale included** (a stale node usually turns active again under the same id; a deleted node's usage is gone by cascade). Any other / missing `range` → 400 `range must be one of 24h, 7d, 30d`. Human session only (not in `lib/agent-scope.js`): no session → 401, agent secret → 403 `agent_scope_denied`. Reads only `idx_knowledge_usage_time (used_at, node_id)` (covering; the SQL groups by `+node_id` so the planner does not walk `idx_knowledge_usage_node` instead — `USAGE_SQL` in `lib/knowledge-search.js`, EXPLAIN-checked in test.js).
 
+### Knowledge brain (card #39) — session-only (not in `lib/agent-scope.js`)
+
+```
+GET  /api/knowledge/graph               → lib/knowledge-layout.js { nodes: [{ id, title, category, status, x, y, z, degree, uses_total }], edges: [[a, b, weight]], counts: { nodes, edges }, layout: { model, computed_at } }
+GET  /api/knowledge/nodes/:id           → lib/knowledge-admin.js nodeDetail (below); 400 bad id, 404 missing
+GET  /api/knowledge/usage/recent?limit= → { items: [{ node_ids, actor: { id, name }, sub_agent: { id, label } | null, room: { id, title } | null, used_at }] }; limit 1-50 (default 20), else 400
+POST /api/rooms/:id/knowledge/documents { name, content, category? } → same body as stoa__knowledge_add; 400 / 403 (room not eligible) / 404 / 413
+```
+
+- Graph: active + stale nodes, at most 20,000 (`uses_total DESC, id`), no summary; edges only between listed nodes (weight 3 decimals); x,y,z at 3 decimals inside the brain volume (`inside()` in lib/knowledge-layout.js, x left-right, y up, z front, ≈[-1, 1]). Positions are cached (`knowledge_node_layout`, basis in `knowledge_layout_basis`) and filled lazily on this read; `layout.model` = basis model when it is the index's model, else null. ~465 KB raw for 3,000 nodes with 45-char titles, gzip on the wire (lib/http-compress.js).
+- Node detail: `{ id, title, summary, category, status, stale_at, created_at, updated_at, uses: { '24h', '7d', '30d' }, sources, more_sources, hidden_sources, recent_users }`. Sources in id order: `{ type: 'message', room_id, room_title, room_archived, thread_id, message_id, preview }` (preview = whole message scrubbed, markdown made plain text by `plainText` in lib/knowledge-graph.js, whitespace folded, then ≤200 chars) or `{ type: 'document', document_id, name, section, room_id, room_title }`. A source in a room NOW on `KNOWLEDGE_EXCLUDED_ROOM_IDS` is only counted in `hidden_sources`; at most 20 listed, the rest in `more_sources`. `recent_users`: 10 newest uses, same shape as a recent item without node_ids (excluded room → `room: null`).
+- Recent: one item per search = consecutive `knowledge_usage` rows with the same actor / sub-agent / room / used_at (one search writes its rows in one transaction). Reads only the newest `limit × 20` rows (a search logs ≤20). The query text is not stored, so it is absent here.
+- Upload: owner human actor = `added_by_actor_id`. Same `store()` as the agent path in lib/knowledge-documents.js (name, size 512 KB → 413, NUL / lone surrogate → 400, eligibleRoom → 403, split, embed, upsert by name). Body read limit 6 × 512 KB + 64 KB (JSON escaping), larger → 413 and the socket is closed (readBody). Event `room_knowledge_changed { room_id, enabled }` unless the call changed nothing (`unchanged: true`).
+
 ### Room knowledge settings & management (card #38, lib/knowledge-admin.js)
 
 All human session only (not in `lib/agent-scope.js`): no session → 401, agent / sub-agent secret → 403 `agent_scope_denied`. Every id is validated in the lib (not a positive integer → 400); unknown room → 404.
@@ -566,10 +580,15 @@ Sent on every queue change and right after `agent_connect`. Server ownership-che
 Sent once per `stoa__knowledge_search` call that returned at least one note, through `broadcastGlobal` (human connections; agent connections never get it):
 
 ```json
-{ "type": "knowledge_used", "node_ids": [12, 7], "actor_id": 4, "sub_agent_id": null, "room_id": 2638, "at": "2026-11-19T01:02:03.000Z" }
+{ "type": "knowledge_used", "node_ids": [12, 7], "actor_id": 4, "sub_agent_id": null, "room_id": 2638,
+  "query": "deploy rollback", "actor_name": "Kira", "sub_agent_label": null, "room_title": "Stoa", "at": "2026-11-19T01:02:03.000Z" }
 ```
 
-`node_ids` in result order; `room_id` = the room of the calling MCP session (not the nodes' rooms); `sub_agent_id` set for a sub-agent session (`actor_id` is then its parent). One event with an array rather than one per node: a search returns up to 20 notes. Same data as the `knowledge_usage` rows written in that call.
+`node_ids` in result order; `room_id` = the room of the calling MCP session (not the nodes' rooms); `sub_agent_id` set for a sub-agent session (`actor_id` is then its parent). One event with an array rather than one per node: a search returns up to 20 notes. Same data as the `knowledge_usage` rows written in that call, plus (card #39, the brain's live feed) `query` (scrubbed, whitespace folded, ≤200 chars, never stored) and the current names. Search from a room on `KNOWLEDGE_EXCLUDED_ROOM_IDS` → `query: null`, `room_title: null` (feed shows "private").
+
+#### knowledge_graph_changed (server → browsers only)
+
+`{ "type": "knowledge_graph_changed", "reason": "extract" | "document_add" | "document_remove" | "node_delete" | "message_delete" | "room_delete", "room_id": 12 | null }` via `broadcastGlobal`, once per operation that wrote knowledge nodes or edges, after its commit (the brain refetches `GET /api/knowledge/graph`, debounced). Sources: lib/knowledge-extraction.js (a job that changed, attached, deleted or staled nodes), lib/knowledge-documents.js `store()` (agent `knowledge_add` and the panel upload; not when only the document row changed) and `remove()` (agent and panel), `deleteNode` in lib/knowledge-admin.js, and server.js message / thread / room delete when `knowledgeAdmin.sourcesIn()` found knowledge sources in what goes (knowledge_sources_ad then deletes or stales nodes). Failed and no-op operations send nothing. The room toggle changes no node and sends only `room_knowledge_changed`; a message edit stales nodes in a trigger without this event (its re-extraction sends `extract`).
 
 #### Live Run Events (server → room clients)
 

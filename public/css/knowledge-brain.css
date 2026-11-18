@@ -1,0 +1,177 @@
+/* ── Knowledge brain ─────────────────────────────────────────────────────────
+   Settings tab "Knowledge" (knowledge/brain.js). The page keeps its own quiet palette per scheme
+   (data-scheme on .kb-root follows the theme): ink-blue night for dark themes, paper for light ones.
+   Category colors here match KB_PALETTE in brain.js. */
+
+#s-tab-knowledge { padding: 0; overflow: hidden; position: relative; }
+
+.kb-root {
+  --kb-serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --kb-sans: var(--h-sans, system-ui, sans-serif);
+  position: relative; width: 100%; height: 100%; min-height: 420px; overflow: hidden;
+  font-family: var(--kb-sans); color: var(--kb-ink);
+  background: radial-gradient(ellipse at 38% 50%, var(--kb-bg-center), var(--kb-bg) 70%);
+}
+.kb-root[data-scheme="dark"] {
+  --kb-bg: oklch(0.155 0.018 262); --kb-bg-center: oklch(0.2 0.022 258);
+  --kb-ink: oklch(0.91 0.01 255); --kb-mute: oklch(0.72 0.015 255); --kb-faint: oklch(0.58 0.018 255);
+  --kb-line: oklch(0.32 0.02 258); --kb-panel: oklch(0.19 0.02 260 / 0.92); --kb-hover: oklch(0.26 0.022 258);
+  --kb-accent: oklch(0.86 0.06 82); --kb-error: oklch(0.75 0.11 30);
+  --kb-eng: oklch(0.74 0.065 250); --kb-ops: oklch(0.78 0.07 78); --kb-dec: oklch(0.77 0.06 152); --kb-res: oklch(0.73 0.065 320);
+}
+.kb-root[data-scheme="light"] {
+  --kb-bg: oklch(0.955 0.014 85); --kb-bg-center: oklch(0.985 0.008 85);
+  --kb-ink: oklch(0.27 0.02 60); --kb-mute: oklch(0.43 0.02 60); --kb-faint: oklch(0.53 0.02 60);
+  --kb-line: oklch(0.85 0.018 80); --kb-panel: oklch(0.975 0.01 85 / 0.94); --kb-hover: oklch(0.92 0.016 80);
+  --kb-accent: oklch(0.5 0.12 52); --kb-error: oklch(0.5 0.15 30);
+  --kb-eng: oklch(0.5 0.085 252); --kb-ops: oklch(0.55 0.095 62); --kb-dec: oklch(0.5 0.075 152); --kb-res: oklch(0.48 0.08 320);
+}
+
+.kb-canvas { position: absolute; inset: 0; display: block; cursor: grab; touch-action: none; }
+.kb-canvas.kb-pointer { cursor: pointer; }
+.kb-canvas.kb-dragging { cursor: grabbing; }
+.kb-canvas:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: -4px; }
+
+/* Header, top left */
+.kb-head { position: absolute; left: 32px; top: 26px; max-width: 380px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.kb-head > * { pointer-events: auto; }
+.kb-title { margin: 0; font-family: var(--kb-serif); font-weight: 400; font-size: 26px; line-height: 1.15; color: var(--kb-ink); letter-spacing: .005em; }
+.kb-counts { font-size: 12.5px; color: var(--kb-faint); font-variant-numeric: tabular-nums; min-height: 1em; }
+.kb-counts:empty { display: none; }
+.kb-controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.kb-msg { font-size: 12.5px; color: var(--kb-error); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+
+.kb-seg { display: inline-flex; padding: 2px; border: 1px solid var(--kb-line); border-radius: 999px; background: var(--kb-panel); }
+.kb-seg[hidden] { display: none; }
+.kb-seg-btn {
+  font: inherit; font-size: 12px; line-height: 1.3; padding: 4px 12px; border: none; border-radius: 999px;
+  background: transparent; color: var(--kb-mute); cursor: pointer; transition: background .15s, color .15s;
+}
+.kb-seg-btn:hover { color: var(--kb-ink); }
+.kb-seg-btn[aria-pressed="true"] { background: var(--kb-hover); color: var(--kb-ink); }
+.kb-seg-btn:focus-visible, .kb-link:focus-visible, .kb-close:focus-visible,
+.kb-row-btn:focus-visible, .kb-feed-body:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 1px; }
+
+.kb-link {
+  background: none; border: none; padding: 0; font: inherit; font-size: 12px; color: var(--kb-mute); cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--kb-line); text-underline-offset: 2px;
+}
+.kb-link:hover { color: var(--kb-ink); text-decoration-color: currentColor; }
+
+/* Empty state, left under the header: the scaffold brain stays visible beside it. */
+.kb-empty { position: absolute; left: 32px; top: 150px; max-width: 320px; }
+.kb-empty-title { font-family: var(--kb-serif); font-size: 18px; color: var(--kb-ink); margin-bottom: 6px; }
+.kb-empty-text { margin: 0; font-size: 13px; line-height: 1.55; color: var(--kb-mute); }
+
+/* Legend + hint, bottom left */
+.kb-legend { position: absolute; left: 32px; bottom: 24px; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.kb-legend.kb-legend-quiet .kb-legend-keys { display: none; }
+.kb-legend-keys { list-style: none; margin: 0; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; }
+.kb-legend-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--kb-mute); }
+.kb-hint { font-size: 11.5px; color: var(--kb-faint); }
+
+.kb-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--kb-res); }
+.kb-dot-eng { background: var(--kb-eng); }
+.kb-dot-ops { background: var(--kb-ops); }
+.kb-dot-dec { background: var(--kb-dec); }
+.kb-dot-res { background: var(--kb-res); }
+
+/* Right column: live feed / most used, and the node detail over it */
+.kb-side, .kb-detail {
+  position: absolute; right: 24px; top: 24px; bottom: 24px; width: 300px;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.kb-side.kb-under { visibility: hidden; }
+.kb-side-title { font-family: var(--kb-serif); font-size: 16px; color: var(--kb-ink); padding: 2px 0 10px; }
+.kb-side-note { font-size: 12.5px; line-height: 1.5; color: var(--kb-faint); }
+.kb-side-note.kb-error { color: var(--kb-error); }
+.kb-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; flex: 1 1 auto; scrollbar-width: thin; }
+
+.kb-feed-body {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: none;
+  border-left: 1px solid var(--kb-line); padding: 3px 4px 10px 12px; border-radius: 0 6px 6px 0;
+}
+button.kb-feed-body { cursor: pointer; }
+button.kb-feed-body:hover { background: var(--kb-hover); }
+.kb-feed-line { font-size: 12.5px; line-height: 1.45; color: var(--kb-mute); overflow-wrap: anywhere; }
+.kb-feed-line b { font-weight: 500; color: var(--kb-ink); }
+.kb-feed-line q { color: var(--kb-ink); }
+.kb-private { color: var(--kb-faint); font-style: italic; }
+.kb-feed-meta { display: flex; gap: 8px; font-size: 11.5px; color: var(--kb-faint); margin-top: 2px; min-width: 0; }
+.kb-feed-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.kb-feed-meta time { flex: 0 0 auto; }
+
+.kb-row-btn {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 8px; border: none; border-radius: 6px;
+  background: none; font: inherit; font-size: 12.5px; color: var(--kb-mute); text-align: left; cursor: pointer;
+}
+.kb-row-btn:hover { background: var(--kb-hover); color: var(--kb-ink); }
+.kb-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-row-n { flex: 0 0 auto; color: var(--kb-faint); font-variant-numeric: tabular-nums; }
+
+.kb-detail {
+  background: var(--kb-panel); border: 1px solid var(--kb-line); border-radius: 12px;
+  padding: 16px 18px 18px; overflow-y: auto; gap: 8px; scrollbar-width: thin;
+}
+.kb-detail[hidden] { display: none; }
+.kb-detail:focus { outline: none; }
+.kb-detail:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
+.kb-detail-head { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: start; }
+.kb-detail-title { margin: 0; font-family: var(--kb-serif); font-weight: 400; font-size: 19px; line-height: 1.25; color: var(--kb-ink); overflow-wrap: anywhere; }
+.kb-close {
+  width: 28px; height: 28px; margin: -4px -6px 0 0; display: grid; place-items: center; border: none; border-radius: 6px;
+  background: none; color: var(--kb-faint); cursor: pointer;
+}
+.kb-close:hover { background: var(--kb-hover); color: var(--kb-ink); }
+.kb-chips { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.kb-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1.4; padding: 1px 8px;
+  border: 1px solid var(--kb-line); border-radius: 999px; color: var(--kb-mute);
+}
+.kb-chip-stale { color: var(--kb-accent); border-color: currentColor; }
+.kb-summary { margin: 4px 0 0; font-size: 13px; line-height: 1.55; color: var(--kb-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.kb-detail-label { margin-top: 10px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--kb-faint); }
+.kb-uses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0; }
+.kb-use { border: 1px solid var(--kb-line); border-radius: 8px; padding: 6px 8px; }
+.kb-use dt { font-size: 11px; color: var(--kb-faint); }
+.kb-use dd { margin: 0; font-family: var(--kb-serif); font-size: 17px; color: var(--kb-ink); font-variant-numeric: tabular-nums; }
+.kb-sources, .kb-users { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.kb-source { border-left: 1px solid var(--kb-line); padding-left: 10px; min-width: 0; }
+.kb-source-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.kb-source-title { font-size: 12.5px; color: var(--kb-ink); overflow-wrap: anywhere; }
+.kb-source-preview { font-size: 12px; line-height: 1.45; color: var(--kb-mute); margin-top: 2px; overflow-wrap: anywhere; }
+.kb-user { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; }
+.kb-user-who { color: var(--kb-ink); }
+.kb-muted { font-size: 12px; color: var(--kb-faint); }
+.kb-error { font-size: 12.5px; color: var(--kb-error); }
+.kb-private-note { font-style: italic; }
+.kb-detail-foot { margin-top: 10px; }
+
+.kb-tip {
+  position: absolute; left: 0; top: 0; max-width: 260px; pointer-events: none; z-index: 2;
+  background: var(--kb-panel); border: 1px solid var(--kb-line); border-radius: 8px; padding: 7px 10px;
+  font-size: 12px; line-height: 1.4; color: var(--kb-mute);
+}
+.kb-tip-title { color: var(--kb-ink); font-weight: 500; overflow-wrap: anywhere; }
+.kb-tip-meta { color: var(--kb-faint); font-size: 11px; }
+.kb-tip-use { margin-top: 3px; }
+
+/* Narrow: the column becomes a sheet under the brain; the brain centres in what is left. */
+@media (max-width: 860px) {
+  .kb-head { left: 18px; top: 16px; right: 18px; max-width: none; }
+  .kb-title { font-size: 22px; }
+  .kb-controls { margin-top: 4px; }
+  .kb-empty { left: 18px; right: 18px; top: 120px; max-width: none; }
+  .kb-legend { left: 18px; right: 18px; bottom: calc(38% + 22px); }
+  .kb-legend-keys { gap: 6px 12px; }
+  .kb-legend-key { font-size: 11px; }
+  .kb-hint { display: none; }
+  .kb-detail-open .kb-legend { visibility: hidden; }
+  .kb-side, .kb-detail { left: 12px; right: 12px; top: auto; bottom: 12px; width: auto; height: 38%; }
+  .kb-side { background: var(--kb-panel); border: 1px solid var(--kb-line); border-radius: 12px; padding: 12px 14px; }
+  .kb-detail { height: 55%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kb-seg-btn { transition: none; }
+}

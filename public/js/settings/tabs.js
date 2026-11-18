@@ -1,7 +1,7 @@
 // ── Settings tab switching ────────────────────────────────────────────────────
 const SETTINGS_TAB_LABELS = {
   agents: 'AI Agent', server: 'server', general: 'general', themes: 'themes', docs: 'docs',
-  platforms: 'platforms', automation: 'automation', skills: 'skills', mcp: 'MCP', usage: 'usage', doctor: 'doctor',
+  platforms: 'platforms', automation: 'automation', skills: 'skills', knowledge: 'knowledge', mcp: 'MCP', usage: 'usage', doctor: 'doctor',
 };
 
 function sActivateTab(name) {
@@ -9,7 +9,7 @@ function sActivateTab(name) {
     const isActive = el.dataset.tab === name;
     el.classList.toggle('active', isActive);
   });
-  ['agents', 'server', 'general', 'themes', 'docs', 'platforms', 'automation', 'skills', 'mcp', 'usage', 'doctor'].forEach(t => {
+  ['agents', 'server', 'general', 'themes', 'docs', 'platforms', 'automation', 'skills', 'knowledge', 'mcp', 'usage', 'doctor'].forEach(t => {
     const el = document.getElementById('s-tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -32,6 +32,7 @@ function sActivateTab(name) {
   if (name === 'platforms')   sLoadPlatformsTab();
   if (name === 'automation') sLoadAutomationTab();
   if (name === 'skills')     sLoadSkillsTab();
+  if (name === 'knowledge')  sLoadKnowledgeTab();
   if (name === 'mcp')        sLoadMcpTab();
   if (name === 'usage')      sLoadUsageTab();
   if (name === 'doctor')     sLoadDoctorTab();

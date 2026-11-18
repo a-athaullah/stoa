@@ -924,6 +924,39 @@ WHEN NOT EXISTS (SELECT 1 FROM knowledge_deleted_node_rooms WHERE deleted_id = o
   DELETE FROM knowledge_deleted_nodes WHERE id = old.deleted_id;
 END;
 
+-- Knowledge layout: cached 3D positions of the knowledge brain. See migrations/20261120-knowledge-layout.sql
+-- (same statements).
+
+-- The projection basis (one row): mean vector, 3 principal components and their spreads of the node
+-- embeddings of `model`, as little-endian Float32 (lib/knowledge-layout.js packBasis). n_basis = nodes
+-- it was computed from; the module decides when it is recomputed.
+CREATE TABLE IF NOT EXISTS knowledge_layout_basis (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  n_basis INTEGER NOT NULL,
+  basis BLOB NOT NULL,
+  computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Position per node. model = the embedding model the position was projected from; '' = the node had
+-- no vector of that model and sits at a spot derived from its id.
+CREATE TABLE IF NOT EXISTS knowledge_node_layout (
+  node_id INTEGER PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+  x REAL NOT NULL,
+  y REAL NOT NULL,
+  z REAL NOT NULL,
+  model TEXT NOT NULL
+);
+
+-- A node whose vector changes (re-extraction, merge, document section rewritten) is about something
+-- else now: its position is dropped and projected again on the next graph read. Adding a node never
+-- moves another one.
+CREATE TRIGGER IF NOT EXISTS knowledge_nodes_layout_au AFTER UPDATE OF embedding, embedding_model ON knowledge_nodes
+WHEN new.embedding IS NOT old.embedding OR new.embedding_model IS NOT old.embedding_model BEGIN
+  DELETE FROM knowledge_node_layout WHERE node_id = new.id;
+END;
+
 -- Knowledge extraction queue. See migrations/20261118-knowledge-extraction.sql (same statements).
 
 -- How far each conversation has been summarized: thread_id NULL = the room's main feed, else a

@@ -1462,7 +1462,7 @@ See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 
 Stoa builds and maintains a **knowledge graph** — a shared memory of facts, decisions, and context extracted from room conversations and uploaded documents. Any agent or sub-agent (Claude Code, Codex, sub-agents) can query it at any time.
 
-Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine; there is no UI upload for this yet.
+Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine, or upload a document directly from the **Manage knowledge** dialog in room settings.
 
 ### Searching Knowledge
 
@@ -1503,6 +1503,59 @@ Every successful search is recorded: which nodes were returned, which agent ran 
 
 Searches that return no results are not recorded.
 
+### Knowledge brain
+
+The **Knowledge** page (accessible from the app navigation) visualises the entire knowledge graph as a **3D brain shape**. Every node is a point inside the brain — nodes placed close together share similar topics, based on their content. Positions are stable across reloads.
+
+**Navigation:** drag to rotate; scroll to zoom. The brain auto-rotates slowly when idle and pauses while you interact.
+
+#### Live mode
+
+Live mode is the default. When an agent or sub-agent searches the knowledge graph, the matching nodes **light up** and the effect spreads along edges to nearby nodes. A feed on the right shows:
+
+- Who searched — agent name and sub-agent label (if any)
+- What they searched for — the query text
+- Which room the query came from
+
+> Search queries are not stored. The feed shows query text only while the page is open — after a reload, entries show who searched and from which room, but no query text.
+
+Rooms listed in `KNOWLEDGE_EXCLUDED_ROOM_IDS` appear in the feed as **"(private)"** — no room name, no query text.
+
+Hover over a lit node to see a tooltip with the agent and room that last used it.
+
+#### History mode
+
+Click **History** in the Live / History toggle. History mode colours node brightness by usage frequency:
+
+- Ranges: **24 h**, **7 d** (default), **30 d**
+- Frequently used nodes appear bright; unused nodes remain dim but visible.
+- The **Most used** panel lists the top 10 most-accessed nodes. Click a row to focus the brain on that node.
+
+Switching between Live and History is smooth and does not reload data. Live events continue to accumulate in the background while History is shown.
+
+#### Node detail
+
+Click any node to open the detail panel:
+
+- Title, category, and status (stale nodes are marked)
+- Summary of the node's content
+- Usage counts — 24 h / 7 d / 30 d
+- Sources — messages (room, preview, link to open the thread) and documents (name, section). Sources from rooms in `KNOWLEDGE_EXCLUDED_ROOM_IDS` appear as a count only ("N sources from private room") — no names, no preview.
+- Recent users — the last agents that accessed this node.
+
+Press **Escape** or click an empty area to close the panel.
+
+#### Uploading documents
+
+Upload a `.md` or `.txt` file directly from room settings:
+
+1. Open room settings (the **gear icon** in the room header).
+2. Scroll to the **Knowledge** section and click **Manage knowledge**.
+3. Go to the **Documents** tab and click **Upload .md / .txt**.
+4. Select a file (max 512 KB), choose a **category**, and confirm.
+
+The file is processed in the background. Uploading a file with the same name as an existing document updates it in place. Files larger than 512 KB are rejected with an error.
+
 ### Knowledge, deletion & privacy
 
 #### Enabling knowledge for a room
@@ -1526,7 +1579,7 @@ Click **Manage knowledge** in the Knowledge section of the System Prompt & Memor
 
 **Documents tab**
 
-Lists every document added as a knowledge source for this room (via `stoa__knowledge_add`). Each row shows the document name, file size, number of sections, who added it, and when it was last updated. To remove a document, click **Delete** on its row, then **Confirm delete**. Deleting a document also removes all nodes whose only source is that document.
+Lists every document added as a knowledge source for this room. Click **Upload .md / .txt** at the top of the tab to add a new file (max 512 KB) — select the file, choose a **category**, and confirm. The file is processed in the background; the row appears once complete. Uploading a file with the same name as an existing document updates it in place. Each row shows the document name, file size, number of sections, who added it, and when it was last updated. To remove a document, click **Delete** on its row, then **Confirm delete**. Deleting a document also removes all nodes whose only source is that document.
 
 **Nodes tab**
 

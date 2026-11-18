@@ -292,6 +292,8 @@ const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
 const { createKnowledgeSearch } = require('./lib/knowledge-search');
 const { createKnowledgeAdmin } = require('./lib/knowledge-admin');
+const { createKnowledgeLayout } = require('./lib/knowledge-layout');
+const { KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1938,6 +1940,7 @@ const knowledge = createKnowledgeExtraction({
     ws.send(JSON.stringify(data));
     return true;
   },
+  notify: (data) => broadcastGlobal(data),
   excludedRoomIds: process.env.KNOWLEDGE_EXCLUDED_ROOM_IDS || '',
   idleHours: Math.max(1, parseFloat(process.env.KNOWLEDGE_IDLE_HOURS) || 6),
   mergeSim: parseFloat(process.env.KNOWLEDGE_MERGE_SIM) || 0.93,
@@ -1949,12 +1952,16 @@ if (!SMOKE_BOOT) knowledge.start();
 // session's own connector (readAgentKnowledgeFile) and stores it in the room's knowledge base.
 const knowledgeDocs = createKnowledgeDocuments({
   db, semantic: semanticIndex, eligibleRoom: (roomId) => knowledge.eligibleRoom(roomId),
-  readFile: (ident, filePath) => readAgentKnowledgeFile(ident, filePath),
+  readFile: (ident, filePath) => readAgentKnowledgeFile(ident, filePath), notify: (data) => broadcastGlobal(data),
   edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
 });
 // stoa__knowledge_search + GET /api/knowledge/usage (lib/knowledge-search.js). knowledge_used goes to
 // the owner's browsers only (broadcastGlobal), never to agent connections.
-const knowledgeSearch = createKnowledgeSearch({ db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data) });
+const knowledgeSearch = createKnowledgeSearch({
+  db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
+});
+// Knowledge brain positions + GET /api/knowledge/graph (lib/knowledge-layout.js), session-only.
+const knowledgeLayout = createKnowledgeLayout({ db, model: semanticIndex.model });
 // Room knowledge settings + management panel (lib/knowledge-admin.js); routes are session-only.
 const knowledgeAdmin = createKnowledgeAdmin({
   db, eligibleRoom: (room) => knowledge.eligibleRoom(room), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
@@ -2833,7 +2840,10 @@ const server = http.createServer(async (req, res) => {
       mcpGateway.forgetRoom(roomId);
       db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     });
+    // Its messages and documents go with it: their knowledge sources too (knowledge_sources_ad).
+    const knowledgeTouched = knowledgeAdmin.sourcesIn({ roomId });
     deleteRoom();
+    if (knowledgeTouched) knowledgeAdmin.graphDeleted('room_delete', roomId);
     activeThreadsSent.delete(roomId);
     broadcastGlobal({ type: 'room_deleted', room_id: roomId });
     res.writeHead(204); return res.end();
@@ -2845,6 +2855,7 @@ const server = http.createServer(async (req, res) => {
     const msg = db.prepare('SELECT room_id, thread_id FROM messages WHERE id=?').get(msgId);
     if (!msg) { res.writeHead(404); return res.end(); }
     const hasReplies = db.prepare('SELECT 1 FROM messages WHERE thread_id=? LIMIT 1').get(msgId);
+    const knowledgeTouched = knowledgeAdmin.sourcesIn({ messageId: msgId, thread: !!hasReplies && msg.thread_id === null });
     if (hasReplies && msg.thread_id === null) {
       const cascade = url.searchParams.get('cascade') === '1';
       if (!cascade) {
@@ -2855,6 +2866,7 @@ const server = http.createServer(async (req, res) => {
     // The messages_fts_ad trigger removes the FTS entry. A second manual 'delete' here used to
     // corrupt the external-content index (integrity-check: "database disk image is malformed").
     db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
+    if (knowledgeTouched) knowledgeAdmin.graphDeleted('message_delete', msg.room_id);
     broadcast(msg.room_id, { type: 'message_deleted', message_id: msgId, cascade: !!hasReplies });
     res.writeHead(204); return res.end();
   }
@@ -2902,6 +2914,17 @@ const server = http.createServer(async (req, res) => {
     return json(res, r.body, r.status);
   }
 
+  // Knowledge brain (card #39), session-only like the usage above: lib/knowledge-layout.js (graph) and
+  // lib/knowledge-admin.js (node detail, recent searches) validate everything.
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/graph') {
+    const r = knowledgeLayout.graph();
+    return json(res, r.body, r.status);
+  }
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/usage/recent') {
+    const r = knowledgeAdmin.recentUsage(url.searchParams);
+    return json(res, r.body, r.status);
+  }
+
   // Room knowledge settings and management panel (card #38). Session-only (not in lib/agent-scope.js):
   // it lists what every agent looked up and deletes knowledge, an owner view. lib/knowledge-admin.js
   // validates every id.
@@ -2916,14 +2939,22 @@ const server = http.createServer(async (req, res) => {
     }
     else if (sub === 'documents' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.documents(roomRaw);
     else if (sub === 'documents' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.removeDocument(roomRaw, itemRaw);
+    else if (sub === 'documents' && !itemRaw && req.method === 'POST') {
+      // Upload from the panel (card #39). JSON escaping can make text up to 6× longer (\u00XX); the
+      // text itself is held to KNOWLEDGE_DOC_MAX_BYTES by lib/knowledge-documents.js (413).
+      let raw;
+      try { raw = await readBody(req, KNOWLEDGE_DOC_MAX_BYTES * 6 + 64 * 1024); } catch { return json(res, { error: 'request body too large' }, 413); }
+      const owner = db.prepare("SELECT id FROM actors WHERE type='human' ORDER BY id LIMIT 1").get();
+      r = await knowledgeAdmin.uploadDocument(roomRaw, parseJsonBody(raw), owner?.id ?? null);
+    }
     else if (sub === 'nodes' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.nodes(roomRaw, url.searchParams);
     else if (sub === 'usage' && !itemRaw && req.method === 'GET') r = knowledgeAdmin.usage(roomRaw, url.searchParams);
     else if (sub === 'deleted' && itemRaw && req.method === 'DELETE') r = knowledgeAdmin.forgetDeleted(roomRaw, itemRaw);
     if (r) return json(res, r.body, r.status);
   }
-  const kNode = req.method === 'DELETE' && url.pathname.match(/^\/api\/knowledge\/nodes\/([^/]+)$/);
+  const kNode = (req.method === 'DELETE' || req.method === 'GET') && url.pathname.match(/^\/api\/knowledge\/nodes\/([^/]+)$/);
   if (kNode) {
-    const r = knowledgeAdmin.deleteNode(kNode[1], url.searchParams.get('room_id'));
+    const r = req.method === 'GET' ? knowledgeAdmin.nodeDetail(kNode[1]) : knowledgeAdmin.deleteNode(kNode[1], url.searchParams.get('room_id'));
     return json(res, r.body, r.status);
   }
 
