@@ -161,6 +161,10 @@ function waitUp(port, tries = 50) {
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
     STOA_ENV_FILE: tmpEnv,
+    // The test server is never a production server, whatever the live .env says (it has
+    // NODE_ENV=production): a production boot serves the /dist bundle instead of the per-module
+    // files the index.html test checks, and rebuilds public/dist in the checkout under test.
+    NODE_ENV: 'development',
     // MCP upstream work dirs (<root>/<server id>) apart from the live server's: ids overlap with the DB copy.
     STOA_MCP_WORK_DIR: tmpMcpDir,
     // Uploads + connector media apart from the live server's: the upload GC would judge the live files
