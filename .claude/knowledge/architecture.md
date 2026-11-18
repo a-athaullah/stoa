@@ -248,7 +248,7 @@ Turns finished conversations in opted-in rooms into knowledge nodes via a backgr
 | Thread marked complete | `lib/room-messages.js` → `enqueueConversation(roomId, threadId, 'thread_complete')` |
 | Task card moved to Finished | `lib/room-tasks.js` → `enqueueConversation(roomId, threadId, 'task_done')` |
 | Conversation quiet for `KNOWLEDGE_IDLE_HOURS` (default 6 h) | `sweep()` → `enqueueConversation(..., 'idle')` every 15 min |
-| Node's source message deleted or last source lost | `knowledge_sources_ad` trigger → `enqueueStale(nodeId)` |
+| Node goes stale (a source deleted: trigger `knowledge_sources_ad`; a source message's content edited: trigger `knowledge_messages_au`) | triggers only set `status='stale'`; `sweep()` (every 15 min) picks stale nodes by `stale_at` → `enqueueStale(nodeId)` (reason `stale`) |
 
 ### Queue and lease
 
@@ -308,9 +308,10 @@ AND roomId NOT IN KNOWLEDGE_EXCLUDED_ROOM_IDS (env, comma-separated ids)
 | `KNOWLEDGE_IDLE_HOURS` | 6 | Hours of quiet before an idle sweep job is created |
 | `KNOWLEDGE_EXCLUDED_ROOM_IDS` | (empty) | Comma-separated room ids to never extract from |
 | `KNOWLEDGE_MODEL` | (empty, uses agent default) | Model passed to the one-shot claude process |
-| `KNOWLEDGE_TIMEOUT_MS` | 300000 (5 min) | Per-job timeout |
 | `KNOWLEDGE_MERGE_SIM` | 0.93 | Cosine threshold to merge into an existing node |
 | `KNOWLEDGE_EDGE_SIM` | 0.85 | Cosine threshold to draw an edge |
+
+The per-job timeout is not configurable: the server sends `timeout_ms` = 5 min (`createKnowledge({ timeoutMs })` default) and the connector clamps it to at most 10 min. The lease expires after timeout + 2 min.
 
 ---
 

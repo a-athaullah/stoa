@@ -503,8 +503,6 @@ CREATE TABLE mcp_approval_exemptions (
 
 **Deletion is enforced in the DB, not server.js.** Trigger `knowledge_sources_ad` (AFTER DELETE ON knowledge_sources, fires for FK-cascaded rows too): node with no source left → DELETE (edges/usage cascade); otherwise → `status='stale'`, `stale_at = COALESCE(stale_at, now)` (queue position kept), `updated_at=now`. So delete message / delete thread (multi-row `DELETE WHERE thread_id`) / delete room (messages, then rooms → documents) all clean up with no knowledge-specific code. Deleting a node cascades its sources; the trigger then matches nothing.
 
-**Deletion is enforced in the DB, not server.js.** Trigger `knowledge_sources_ad` (AFTER DELETE ON knowledge_sources): node with no source left → DELETE; otherwise → mark stale.
-
 **Rules for later cards:**
 - Search/retrieval MUST filter `status='active'` (a stale summary may still describe deleted content).
 - Re-extraction queue: `WHERE status='stale' ORDER BY stale_at` (index-ordered); on success set `status='active', stale_at=NULL` together (CHECK enforces the pair).
