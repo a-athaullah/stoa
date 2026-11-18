@@ -27370,10 +27370,12 @@ async function run() {
         .run(rm.id, rm.p[by], content, threadId, state, `-${ago} seconds`).lastInsertRowid);
       const sent = [];
       const logs = [];
+      const notes = [];
       const semantic = { ready: true, model: 'kx-test-model', embed: async (texts) => texts.map(vecOf) };
       let pick = agent;
       const kx = createKnowledgeExtraction({
         db: kdb, semantic, pickAgent: () => pick, sendToAgent: (actorId, data) => { sent.push({ actorId, ...data }); return true; },
+        notify: (m) => notes.push(m),
         log: { log: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) },
         excludedRoomIds: excluded, idleHours,
       });
@@ -27394,7 +27396,7 @@ async function run() {
         await answer(job, [node(title, summary)]);
         return { root, nodeId: kdb.prepare('SELECT MAX(id) AS id FROM knowledge_nodes').get().id };
       };
-      return { kdb, kx, human, agent, other, room, msg, sent, logs, jobs, nodes, sources, edges, cursor, answer, node, seed, setPick: (a) => { pick = a; } };
+      return { kdb, kx, human, agent, other, room, msg, sent, logs, notes, jobs, nodes, sources, edges, cursor, answer, node, seed, setPick: (a) => { pick = a; } };
     };
 
     await test('knowledge extraction — thread complete / task done enqueue once per conversation; not a thread root → nothing', async () => {
@@ -27971,7 +27973,7 @@ async function run() {
       let file = null;
       const semantic = { ready: true, model: 'kx-test-model', embed: async (texts) => texts.map(vecOf) };
       const docs = createKnowledgeDocuments({
-        db: k.kdb, semantic, eligibleRoom: (id) => k.kx.eligibleRoom(id), log: { log() {}, error() {} },
+        db: k.kdb, semantic, eligibleRoom: (id) => k.kx.eligibleRoom(id), log: { log() {}, error() {} }, notify: (m) => k.notes.push(m),
         readFile: async (ident, p) => { reads.push(p); return typeof file === 'function' ? file(p) : file; },
       });
       const rm = k.room();
@@ -28709,11 +28711,12 @@ async function run() {
     const kbSetup = () => {
       const d = kdSetup();
       const ex = d.room();
-      const notes = [];
+      // One sink for extraction, both document instances and the admin, like broadcastGlobal.
+      const notes = d.notes;
       const excluded = (id) => id === ex.id;
       // As in server.js: the room is ineligible because it is excluded (kxSetup's own list is empty).
       const docs = createKnowledgeDocuments({ db: d.kdb, semantic: d.semantic, eligibleRoom: (id) => !excluded(id) && d.kx.eligibleRoom(id),
-        readFile: async () => ({ status: 500, error: 'not used' }), log: { log() {}, error() {} } });
+        readFile: async () => ({ status: 500, error: 'not used' }), log: { log() {}, error() {} }, notify: (m) => notes.push(m) });
       const admin = createKnowledgeAdmin({ db: d.kdb, eligibleRoom: (r) => d.kx.eligibleRoom(r), excludedRoom: excluded,
         docs, notify: (m) => notes.push(m), log: { log() {}, error() {} } });
       const params = (o) => new URLSearchParams(o);
@@ -28810,13 +28813,13 @@ async function run() {
       assert.deepStrictEqual(r.body, { document_id: r.body.document_id, name: 'brain.md', sections: 2, added: 2, updated: 0, removed: 0, unchanged_sections: 0 });
       assert.deepStrictEqual(k.docNodes(r.body.document_id).map(x => [x.title, x.category, x.section]), [['brain.md: Alpha', 'dec', 'Alpha'], ['brain.md: Beta', 'dec', 'Beta']]);
       assert.deepStrictEqual(k.kdb.prepare('SELECT added_by_actor_id, updated_by_actor_id, room_id FROM knowledge_documents WHERE id=?').get(r.body.document_id), { added_by_actor_id: k.human, updated_by_actor_id: k.human, room_id: k.rm.id });
-      assert.deepStrictEqual(k.notes, [{ type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
+      assert.deepStrictEqual(k.notes, [{ type: 'knowledge_graph_changed', reason: 'document_add', room_id: k.rm.id }, { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
       const again = await up({ name: 'brain.md', content: '# Alpha\nfirst part\n# Beta\nchanged' });
       assert.deepStrictEqual([again.body.document_id, again.body.updated, again.body.added], [r.body.document_id, 2, 0], 'both rewritten: the category is part of a section');
       assert.deepStrictEqual(k.docNodes(r.body.document_id).map(x => x.category), ['res', 'res'], 'category defaults like the agent path');
       const same = await up({ name: 'brain.md', content: '# Alpha\nfirst part\n# Beta\nchanged' });
       assert.strictEqual(same.body.unchanged, true);
-      assert.strictEqual(k.notes.length, 2, 'no event when nothing changed');
+      assert.strictEqual(k.notes.length, 4, 'no event when nothing changed');
       // The agent adds under the same name: one document, updated (the shared write path).
       const viaAgent = await k.add('# Alpha\nfirst part', { name: 'brain.md' });
       assert.deepStrictEqual([viaAgent.status, viaAgent.body.document_id, viaAgent.body.removed], [200, r.body.document_id, 1]);
@@ -28837,6 +28840,102 @@ async function run() {
       assert.deepStrictEqual(await up({ name: 'a.md', content: 'x' }, 99999999), { status: 404, body: { error: 'room not found' } });
       assert.strictEqual((await up({ name: 'a.md', content: 'x' }, 'abc')).status, 400);
       assert.strictEqual(k.kdb.prepare('SELECT COUNT(*) AS n FROM knowledge_documents').get().n, 2, 'no failed call wrote anything');
+    });
+
+    await test('knowledge brain — knowledge_graph_changed: exactly one per operation that wrote nodes or edges (extract incl. a stale node deleted, document add agent/upload, document remove, node delete), none for failed or no-op ones; sourcesIn tells a room / message / thread delete that touches knowledge', async () => {
+      const k = kbSetup();
+      const ev = (reason, room) => ({ type: 'knowledge_graph_changed', reason, room_id: room });
+      const graphNotes = () => k.notes.filter(m => m.type === 'knowledge_graph_changed');
+      const conv = k.room();
+      // Extraction: two nodes from one job → one event.
+      const { root, nodeId } = await k.seed(conv, 'Queue uses WAL', 'single writer VEC[1,0,0,0,0,0,0,0]');
+      assert.deepStrictEqual(graphNotes(), [ev('extract', conv.id)]);
+      // Zero nodes (cursor moves only), a dropped answer (room switched off): none.
+      const r2 = k.msg(conv, 'small talk');
+      k.msg(conv, 'nothing to keep', { threadId: r2 });
+      k.kx.enqueueConversation(conv.id, r2, 'thread_complete');
+      await k.kx.tick();
+      await k.answer(k.sent[k.sent.length - 1].job_id, []);
+      const r3 = k.msg(conv, 'another');
+      k.msg(conv, 'reply', { threadId: r3 });
+      k.kx.enqueueConversation(conv.id, r3, 'thread_complete');
+      await k.kx.tick();
+      k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(conv.id);
+      await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('leak', 'not stored')]);
+      k.kdb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(conv.id);
+      assert.strictEqual(graphNotes().length, 1, 'no-op and dropped jobs send nothing');
+      // Stale re-extraction answering no node deletes it: a graph change without a new vector.
+      k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(nodeId);
+      k.kx.enqueueStale(nodeId);
+      await k.kx.tick();
+      await k.answer(k.sent[k.sent.length - 1].job_id, []);
+      assert.strictEqual(k.kdb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(nodeId), undefined, 'stale node deleted');
+      assert.deepStrictEqual(graphNotes(), [ev('extract', conv.id), ev('extract', conv.id)]);
+
+      // Documents: agent add and upload share store(); same content again, failures → none.
+      k.notes.length = 0;
+      const a1 = await k.add('# One\nfirst\n# Two\nsecond', { name: 'g.md' });
+      assert.strictEqual(a1.status, 200, JSON.stringify(a1.body));
+      assert.strictEqual((await k.add('# One\nfirst\n# Two\nsecond', { name: 'g.md' })).body.unchanged, true);
+      const ws = await k.add('# One\nfirst\n# Two\nsecond\n\n', { name: 'g.md' });
+      assert.deepStrictEqual([ws.status, ws.body.unchanged, ws.body.added, ws.body.updated, ws.body.removed], [200, undefined, 0, 0, 0], 'new hash, same sections: the document row only');
+      assert.strictEqual((await k.add('x', { name: 'g.md', category: 'zzz' })).status, 400);
+      assert.strictEqual((await k.add('x', { name: 'g.md' }, { ...k.ident, roomId: k.room(0).id })).status, 403, 'knowledge off');
+      assert.deepStrictEqual(graphNotes(), [ev('document_add', k.rm.id)]);
+      const u1 = await k.admin.uploadDocument(String(k.rm.id), { name: 'u.md', content: '# U\nuploaded' }, k.human);
+      assert.strictEqual(u1.status, 200);
+      assert.deepStrictEqual(k.notes.slice(1), [ev('document_add', k.rm.id), { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
+      // Remove: one event; a missing / other room's document → none.
+      k.notes.length = 0;
+      assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 200);
+      assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 404);
+      assert.strictEqual(k.admin.removeDocument(String(conv.id), String(u1.body.document_id)).status, 404);
+      assert.strictEqual(k.docs.remove(k.rm.id, a1.body.document_id).status, 404, 'agent path too');
+      assert.deepStrictEqual(k.notes, [ev('document_remove', k.rm.id)]);
+      // Node delete from a panel: one event; not from that room / missing → none.
+      k.notes.length = 0;
+      const uNode = k.docNodes(u1.body.document_id)[0].id;
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(conv.id)).status, 404);
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 200);
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 404);
+      assert.deepStrictEqual(k.notes, [ev('node_delete', k.rm.id)]);
+      // The room toggle changes no node: no graph event.
+      k.notes.length = 0;
+      assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
+      assert.deepStrictEqual(k.notes.map(m => m.type), ['room_knowledge_changed']);
+
+      // sourcesIn, asked by server.js before a delete.
+      const t = k.room();
+      const tRoot = k.msg(t, 'thread root');
+      const tReply = k.msg(t, 'thread reply', { threadId: tRoot });
+      const plain = k.msg(t, 'no knowledge here');
+      const n = Number(k.kdb.prepare("INSERT INTO knowledge_nodes (title, summary, category) VALUES ('T', 't', 'eng')").run().lastInsertRowid);
+      assert.strictEqual(k.admin.sourcesIn({ roomId: t.id }), false, 'nothing yet');
+      k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(n, tReply);
+      assert.deepStrictEqual([k.admin.sourcesIn({ roomId: t.id }), k.admin.sourcesIn({ messageId: tReply }), k.admin.sourcesIn({ messageId: plain }),
+        k.admin.sourcesIn({ messageId: tRoot }), k.admin.sourcesIn({ messageId: tRoot, thread: true })], [true, true, false, false, true]);
+      const docRoom = k.room();
+      assert.strictEqual(k.admin.sourcesIn({ roomId: docRoom.id }), false);
+      assert.strictEqual((await k.admin.uploadDocument(String(docRoom.id), { name: 'd.md', content: 'doc only' }, k.human)).status, 200);
+      assert.strictEqual(k.admin.sourcesIn({ roomId: docRoom.id }), true, 'a document source counts');
+      k.kdb.close();
+    });
+
+    await test('knowledge brain — node detail preview: markdown becomes plain text (emphasis, strong, code, heading, quote, link → its text, image → alt) before the cut; snake_case and "2 * 3" stay', async () => {
+      const k = kbSetup();
+      const node = Number(k.kdb.prepare("INSERT INTO knowledge_nodes (title, summary, category) VALUES ('Pay', 'p', 'ops')").run().lastInsertRowid);
+      const src = (content) => k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(node, k.msg(k.rm, content));
+      src('*"Charged twice for order #10482"*.');
+      src('## Refund steps\n> **Do not** retry `charge_id` twice; see [the runbook](https://x.test/rb) and ![chart](c.png).\n\n```sh\nstripe refunds create\n```\n~~old way~~ __bold__ _it_ my_var_name 2 * 3');
+      src('**' + 'a'.repeat(198) + '** tail');
+      const d = k.admin.nodeDetail(String(node));
+      assert.strictEqual(d.status, 200);
+      assert.deepStrictEqual(d.body.sources.map(x => x.preview), [
+        '"Charged twice for order #10482".',
+        'Refund steps Do not retry charge_id twice; see the runbook and chart. stripe refunds create old way bold it my_var_name 2 * 3',
+        'a'.repeat(198) + ' t',
+      ]);
+      k.kdb.close();
     });
   }
   {
@@ -31258,6 +31357,71 @@ async function run() {
         mDb.prepare('DELETE FROM room_participants WHERE room_id=?').run(EXCL);
         mDb.prepare('DELETE FROM rooms WHERE id=?').run(EXCL);
         mDb.prepare("UPDATE sqlite_sequence SET seq=(SELECT MAX(id) FROM rooms) WHERE name='rooms'").run();
+        await req('DELETE', `/api/rooms/${room}`);
+      }
+    });
+
+    await test('knowledge brain — HTTP: knowledge_graph_changed once per document upload / document delete / node delete / message delete / thread delete / room delete that touched knowledge, none for a message without sources or a failed delete', async () => {
+      const r = await req('POST', '/api/rooms', { title: '__kb-graph-events__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      assert.strictEqual(r.status, 200, r.raw);
+      const room = r.body.id;
+      testRoomIds.push(room);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const got = [];
+      humanWs.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'knowledge_graph_changed' && m.room_id === room) got.push(m.reason); });
+      const next = (reason) => waitForWsMessage(humanWs, m => m.type === 'knowledge_graph_changed' && m.room_id === room && m.reason === reason, 3000);
+      try {
+        humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
+        assert.strictEqual((await req('PUT', `/api/rooms/${room}/knowledge`, { enabled: true })).status, 200);
+        let e = next('document_add');
+        const up = await req('POST', `/api/rooms/${room}/knowledge/documents`, { name: 'ev.md', content: '# A\nalpha part\n# B\nbeta part' });
+        assert.strictEqual(up.status, 200, up.raw);
+        assert.deepStrictEqual(await e, { type: 'knowledge_graph_changed', reason: 'document_add', room_id: room });
+        const [nA, nB] = mDb.prepare('SELECT node_id FROM knowledge_sources WHERE document_id=? ORDER BY id').all(up.body.document_id).map(x => x.node_id);
+
+        e = next('node_delete');
+        assert.strictEqual((await req('DELETE', `/api/knowledge/nodes/${nB}?room_id=${room}`)).status, 200);
+        await e;
+        assert.strictEqual((await req('DELETE', `/api/knowledge/nodes/${nB}?room_id=${room}`)).status, 404);
+
+        // A message that is a node's only source: deleting it deletes the node (knowledge_sources_ad).
+        const plain = kpMsg(room, agA.actorId, 'nothing learned');
+        assert.strictEqual((await req('DELETE', `/api/messages/${plain}`)).status, 204);
+        const lone = kpNode('__kb-ev-lone__');
+        const srcMsg = kpMsg(room, agA.actorId, 'lone source');
+        kpSrcMsg(lone, srcMsg);
+        e = next('message_delete');
+        assert.strictEqual((await req('DELETE', `/api/messages/${srcMsg}`)).status, 204);
+        await e;
+        assert.strictEqual(mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(lone), undefined, 'node went with its only source');
+        // Thread root whose reply is a source: refused without cascade (nothing), then deleted with it.
+        const root = kpMsg(room, agA.actorId, 'thread root');
+        const reply = Number(mDb.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'reply source', 'complete', ?)")
+          .run(room, kpParticipant(room, agA.actorId), root).lastInsertRowid);
+        const tn = kpNode('__kb-ev-thread__');
+        kpSrcMsg(tn, reply);
+        assert.strictEqual((await req('DELETE', `/api/messages/${root}`)).status, 409);
+        e = next('message_delete');
+        assert.strictEqual((await req('DELETE', `/api/messages/${root}?cascade=1`)).status, 204);
+        await e;
+
+        e = next('document_remove');
+        assert.strictEqual((await req('DELETE', `/api/rooms/${room}/knowledge/documents/${up.body.document_id}`)).status, 200);
+        await e;
+        assert.strictEqual(mDb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(nA), undefined);
+        assert.strictEqual((await req('DELETE', `/api/rooms/${room}/knowledge/documents/${up.body.document_id}`)).status, 404);
+
+        // Room delete: with a source left in it → one event; the room had its messages and a document.
+        const again = await req('POST', `/api/rooms/${room}/knowledge/documents`, { name: 'ev2.md', content: 'gamma' });
+        assert.strictEqual(again.status, 200, again.raw);
+        e = next('room_delete');
+        assert.strictEqual((await req('DELETE', `/api/rooms/${room}`)).status, 204);
+        await e;
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) AS n FROM knowledge_documents WHERE room_id=?').get(room).n, 0);
+        assert.deepStrictEqual(got, ['document_add', 'node_delete', 'message_delete', 'message_delete', 'document_remove', 'document_add', 'room_delete'],
+          'one per operation, none for the plain message or the failed deletes');
+      } finally {
+        humanWs.close();
         await req('DELETE', `/api/rooms/${room}`);
       }
     });
