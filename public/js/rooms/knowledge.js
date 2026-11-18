@@ -8,6 +8,12 @@ const KN_LOCK_TEXT = {
   excluded: 'This room is on the private list (KNOWLEDGE_EXCLUDED_ROOM_IDS). Nothing from it is ever added to knowledge.',
   archived: 'This room is archived. Restore it before including it in knowledge.',
 };
+// A locked room can still be on (it was included before it was archived or made private): it can
+// only be turned off, and nothing new is extracted while the lock holds.
+const KN_LOCK_TEXT_ON = {
+  excluded: 'This room is on the private list (KNOWLEDGE_EXCLUDED_ROOM_IDS), so nothing new is extracted from it. It is still marked as included: you can turn it off, but not back on.',
+  archived: 'This room is archived, so nothing new is extracted from it while it stays archived. It is still included: you can turn it off, but turning it back on needs the room restored first.',
+};
 
 let _knSection = null;   // { roomId, el, seq }
 let _knModal = null;     // manager dialog state
@@ -114,7 +120,7 @@ function knRenderSection(data) {
 
   const desc = knEl('div', 'kn-desc');
   if (locked) {
-    desc.textContent = KN_LOCK_TEXT[data.lock_reason] || 'Knowledge is locked for this room.';
+    desc.textContent = (enabled ? KN_LOCK_TEXT_ON : KN_LOCK_TEXT)[data.lock_reason] || 'Knowledge is locked for this room.';
     desc.classList.add('kn-locked');
   } else {
     desc.textContent = enabled
@@ -134,8 +140,10 @@ function knRenderSection(data) {
   manage.type = 'button';
   manage.addEventListener('click', () => {
     const room = s.room;
+    // The popover closes under the dialog, so focus returns to the strip button that opened it.
+    const anchor = typeof _rsbActiveBtn !== 'undefined' ? _rsbActiveBtn : null;
     if (typeof closeRsbPopover === 'function') closeRsbPopover();
-    knOpenManager(room);
+    knOpenManager(room, anchor);
   });
 
   sw.addEventListener('click', async () => {
@@ -184,9 +192,9 @@ const KN_TABS = [
   { key: 'usage', label: 'Usage history' },
 ];
 
-function knOpenManager(room) {
+function knOpenManager(room, returnFocus) {
   knCloseManager();
-  const opener = document.activeElement;
+  const opener = returnFocus || document.activeElement;
   const overlay = knEl('div', 'kn-overlay');
   const dlg = knEl('div', 'kn-dialog');
   dlg.setAttribute('role', 'dialog');
@@ -227,9 +235,11 @@ function knOpenManager(room) {
     panes[t.key] = p;
   }
   tabs.addEventListener('keydown', (e) => {
-    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
     const i = KN_TABS.findIndex(t => t.key === _knModal.tab);
-    const next = KN_TABS[(i + (e.key === 'ArrowRight' ? 1 : KN_TABS.length - 1)) % KN_TABS.length].key;
+    const n = KN_TABS.length;
+    const to = { ArrowRight: (i + 1) % n, ArrowLeft: (i + n - 1) % n, Home: 0, End: n - 1 }[e.key];
+    if (to === undefined) return;
+    const next = KN_TABS[to].key;
     knSwitchTab(next);
     tabBtns[next].focus();
     e.preventDefault();
@@ -274,7 +284,9 @@ function knCloseManager() {
   _knModal = null;
   document.removeEventListener('keydown', m.onKey, true);
   m.overlay.remove();
-  if (m.opener && m.opener.isConnected) m.opener.focus({ preventScroll: true });
+  // The room strip can re-render while the dialog is open: fall back to its current Memory button.
+  const target = m.opener && m.opener.isConnected ? m.opener : document.querySelector('#room-sidebar .h-rsb-btn[data-tooltip="Memory"]');
+  if (target) target.focus({ preventScroll: true });
 }
 
 function knSetStatus(text, isError) {
@@ -333,6 +345,7 @@ async function knLoadDocs() {
     if (m !== _knModal || seq !== m.docs.seq) return;
     m.docs.list = Array.isArray(data.documents) ? data.documents : [];
     knRenderDocs(!!data.truncated);
+    knSyncDocFilter();
   } catch (e) {
     if (m !== _knModal || seq !== m.docs.seq) return;
     m.docsDirty = true;
@@ -367,9 +380,9 @@ function knRenderDocs(truncated) {
       try {
         await knFetch(`/api/rooms/${m.room.id}/knowledge/documents/${d.id}`, { method: 'DELETE' });
         if (m !== _knModal) return;
-        if (m.nodes.documentId === String(d.id)) { m.nodes.documentId = ''; m.nodes.built = false; }
         m.docs.list = m.docs.list.filter(x => x.id !== d.id);
         knRenderDocs(truncated);
+        knSyncDocFilter();
         knSetStatus(`Deleted "${d.name}" and the nodes that came only from it.`);
         knAfterDelete('documents');
       } catch (e) { knSetStatus(e.message || 'Failed to delete document', true); }
@@ -390,20 +403,6 @@ function knBuildNodesPane() {
   const bar = knEl('div', 'kn-filters');
   const sel = knEl('select', 'kn-input');
   sel.setAttribute('aria-label', 'Filter by document');
-  const all = knEl('option', null, 'All sources');
-  all.value = '';
-  sel.appendChild(all);
-  for (const d of m.docs.list) {
-    const o = knEl('option', null, d.name || `Document ${d.id}`);
-    o.value = String(d.id);
-    sel.appendChild(o);
-  }
-  if (m.nodes.documentId && ![...sel.options].some(o => o.value === m.nodes.documentId)) {
-    const o = knEl('option', null, `Document ${m.nodes.documentId}`);
-    o.value = m.nodes.documentId;
-    sel.appendChild(o);
-  }
-  sel.value = m.nodes.documentId;
   sel.addEventListener('change', () => { m.nodes.documentId = sel.value; knLoadNodes(true); });
   const search = knEl('input', 'kn-input kn-search');
   search.type = 'search';
@@ -421,8 +420,31 @@ function knBuildNodesPane() {
   more.hidden = true;
   more.addEventListener('click', () => knLoadNodes(false));
   pane.replaceChildren(bar, count, list, more);
-  m.nodes.refs = { count, list, more };
+  m.nodes.refs = { sel, count, list, more };
   m.nodes.built = true;
+  knSyncDocFilter();
+}
+
+// The document filter mirrors m.docs.list. A filtered document that is gone (deleted here, or in
+// another tab) drops the filter back to "All sources" and marks the node list for a reload.
+function knSyncDocFilter() {
+  const m = _knModal;
+  if (!m || !m.nodes.built) return;
+  const sel = m.nodes.refs.sel;
+  const all = knEl('option', null, 'All sources');
+  all.value = '';
+  const opts = [all];
+  for (const d of m.docs.list) {
+    const o = knEl('option', null, d.name || `Document ${d.id}`);
+    o.value = String(d.id);
+    opts.push(o);
+  }
+  sel.replaceChildren(...opts);
+  if (m.nodes.documentId && !opts.some(o => o.value === m.nodes.documentId)) {
+    m.nodes.documentId = '';
+    m.nodesDirty = true;
+  }
+  sel.value = m.nodes.documentId;
 }
 
 async function knLoadNodes(reset) {
@@ -452,7 +474,18 @@ async function knLoadNodes(reset) {
     if (m !== _knModal || seq !== st.seq) return;
     m.nodesDirty = true;
     st.refs.count.textContent = '';
-    knSetStatus(e.message || 'Failed to load nodes', true);
+    if (reset) {
+      st.items = [];
+      st.total = 0;
+      st.refs.more.hidden = true;
+      st.refs.list.replaceChildren(knEl('li', 'kn-error kn-load-error', e.message || 'Failed to load nodes'));
+    } else knSetStatus(e.message || 'Failed to load more nodes', true);
+    // A 404 under a document filter means the document is gone: re-read the documents (the filter
+    // drops it and falls back to all sources), then load the nodes again.
+    if (e.status === 404 && st.documentId) {
+      m.docsDirty = true;
+      knLoadDocs().then(() => { if (m === _knModal && m.tab === 'nodes' && m.nodesDirty && !st.documentId) knLoadNodes(true); });
+    }
   } finally {
     if (m === _knModal && seq === st.seq) st.refs.more.disabled = false;
   }

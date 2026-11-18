@@ -41,7 +41,7 @@
   transition: background .12s, color .12s, border-color .12s;
 }
 .kn-btn:hover:not(:disabled) { background: var(--h-surface-hi); color: var(--h-ink); }
-.kn-btn:focus-visible, .kn-link:focus-visible, .kn-tab:focus-visible, .kn-close:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
+.kn-btn:focus-visible, .kn-link:focus-visible, .kn-close:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
 .kn-btn:disabled { opacity: .5; cursor: default; }
 /* Two-click delete: the ghost holds the longest label so the width never changes. */
 .kn-btn[data-ghost]::after { content: attr(data-ghost); visibility: hidden; height: 0; }
@@ -74,11 +74,14 @@
 }
 .kn-close:hover { background: var(--h-surface-hi); color: var(--h-ink); }
 
-.kn-tabs { display: flex; gap: 22px; padding: 0 24px; border-bottom: 1px solid var(--h-border); overflow-x: auto; scrollbar-width: none; }
+.kn-tabs { display: flex; gap: 14px; padding: 0 20px; border-bottom: 1px solid var(--h-border); overflow-x: auto; scrollbar-width: none; }
+/* The tab strip scrolls (overflow clips), so the focus ring sits inside the tab's 4px side padding. */
 .kn-tab {
-  flex: 0 0 auto; padding: 8px 0 9px; margin-bottom: -1px; border: none; border-bottom: 2px solid transparent;
+  flex: 0 0 auto; padding: 8px 4px 9px; margin-bottom: -1px; border: none; border-bottom: 2px solid transparent;
   background: none; font-family: var(--h-sans); font-size: 13px; color: var(--h-ink-faint); cursor: pointer;
+  border-radius: 4px 4px 0 0; outline: none;
 }
+.kn-tab:focus-visible { outline: 2px solid var(--h-accent); outline-offset: -2px; }
 .kn-tab:hover { color: var(--h-ink-mute); }
 .kn-tab[aria-selected="true"] { color: var(--h-ink); border-bottom-color: var(--h-ink); }
 
@@ -117,6 +120,7 @@ select.kn-input { max-width: 260px; }
 .kn-chip-stale { color: var(--h-amber); border-color: color-mix(in srgb, var(--h-amber) 40%, var(--h-border)); }
 .kn-chip-deleted { color: var(--h-red); border-color: color-mix(in srgb, var(--h-red) 40%, var(--h-border)); }
 .kn-usage-deleted .kn-item-title { color: var(--h-ink-mute); text-decoration: line-through; text-decoration-color: var(--h-hairline); }
+.kn-load-error { padding: 14px 0; }
 .kn-empty { padding: 28px 0; text-align: center; font-family: var(--h-serif); font-style: italic; font-size: 14px; color: var(--h-ink-faint); }
 .kn-more { margin: 12px auto 0; display: grid; }
 .kn-more[hidden] { display: none; }
@@ -126,7 +130,7 @@ select.kn-input { max-width: 260px; }
   .kn-overlay { padding: 0; align-items: stretch; }
   .kn-dialog { width: 100%; height: 100%; border-radius: 0; border: none; }
   .kn-head { padding: 16px 16px 10px; }
-  .kn-tabs { padding: 0 16px; gap: 18px; }
+  .kn-tabs { padding: 0 12px; gap: 10px; }
   .kn-status { margin: 10px 16px 0; }
   .kn-body { padding: 12px 16px 18px; }
   .kn-close { width: 36px; height: 36px; margin: -6px -10px 0 0; }
