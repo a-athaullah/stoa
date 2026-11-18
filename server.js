@@ -289,6 +289,7 @@ const { findMentions } = require('./lib/mentions');
 const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
 const { createSemanticIndex } = require('./lib/semantic-index');
 const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
+const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1942,6 +1943,13 @@ const knowledge = createKnowledgeExtraction({
   model: process.env.KNOWLEDGE_MODEL || '',
 });
 if (!SMOKE_BOOT) knowledge.start();
+// Knowledge documents (lib/knowledge-documents.js): stoa__knowledge_add reads the file through the
+// session's own connector (readAgentKnowledgeFile) and stores it in the room's knowledge base.
+const knowledgeDocs = createKnowledgeDocuments({
+  db, semantic: semanticIndex, eligibleRoom: (roomId) => knowledge.eligibleRoom(roomId),
+  readFile: (ident, filePath) => readAgentKnowledgeFile(ident, filePath),
+  edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
+});
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
 const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
@@ -2012,7 +2020,7 @@ const mcpGateway = createMcpGateway({
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, slackHistory,
       connectionAllowed: (ident, connId) => agentScopeAllowed(ident.actorId, { scope: 'connection', id: connId }, ident.subAgentId ?? null),
-      readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles,
+      readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles, knowledgeDocs,
       requestThreadComplete: (roomId, rootId, ident) => threadCompleteDefer.request(roomId, rootId, { fromTurn: true, actorId: ident.actorId, subAgentId: ident.subAgentId ?? null }),
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
       mcpServers: {
@@ -6212,6 +6220,25 @@ function uploadAgentFiles(ident, paths) {
   });
 }
 
+// stoa__knowledge_add: the document lives on the agent's machine, so its own stoa.js reads it (only for
+// a session it runs: room / thread / sub-agent of the MCP token; checks in lib/knowledge-file.js) and
+// answers with the text. Only the agent that was asked may answer its request id; the text is checked
+// again by lib/knowledge-documents.js. → { name, content } or { status, error }.
+const KNOWLEDGE_FILE_TIMEOUT_MS = Math.max(1000, parseInt(process.env.KNOWLEDGE_FILE_TIMEOUT_MS, 10) || 30_000);
+const pendingKnowledgeFiles = new Map(); // request_id → { actorId, done }
+function readAgentKnowledgeFile(ident, filePath) {
+  const ws = agentClients.get(ident.actorId);
+  if (!ws || ws.readyState !== 1) return Promise.resolve({ status: 409, error: 'agent offline' });
+  if (!agentFeatures.get(ident.actorId)?.has('knowledge_add')) return Promise.resolve({ status: 409, error: 'your Stoa client is too old to add knowledge documents (update the agent)' });
+  const rid = crypto.randomBytes(8).toString('hex');
+  return new Promise(resolve => {
+    const timer = setTimeout(() => done({ status: 504, error: `your Stoa client did not read the file within ${Math.round(KNOWLEDGE_FILE_TIMEOUT_MS / 1000)} s` }), KNOWLEDGE_FILE_TIMEOUT_MS);
+    const done = (r) => { clearTimeout(timer); pendingKnowledgeFiles.delete(rid); resolve(r); };
+    pendingKnowledgeFiles.set(rid, { actorId: ident.actorId, done });
+    ws.send(JSON.stringify({ type: 'knowledge_file_read', request_id: rid, path: filePath, room_id: ident.roomId, thread_id: ident.threadId ?? null, sub_agent_id: ident.subAgentId ?? null }));
+  });
+}
+
 // An upload the agent reports must be a file it really put in uploads/; anything else is a failure.
 const sendFilesText = (v, max) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, max);
 function sendFilesAnswer(rawAttachments, rawFailures) {
@@ -7080,6 +7107,16 @@ wss.on('connection', (ws, req) => {
         op.done(typeof msg.error === 'string' || !Array.isArray(msg.attachments)
           ? { unavailable: sendFilesText(msg.error || 'jawaban agent tidak valid', 300) }
           : sendFilesAnswer(msg.attachments, msg.failures));
+      }
+      return;
+    }
+
+    if (msg.type === 'knowledge_file_read_result' && agentActorId) {
+      const op = pendingKnowledgeFiles.get(msg.request_id);
+      if (op && op.actorId === agentActorId) {
+        op.done(typeof msg.content === 'string' && typeof msg.name === 'string'
+          ? { name: msg.name, content: msg.content }
+          : { status: 400, error: sendFilesText(msg.error || 'your Stoa client sent no file content', 300) });
       }
       return;
     }

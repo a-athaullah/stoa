@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.8.0";
+var CLIENT_VERSION = "0.9.0";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -250,6 +250,7 @@ if (require.main === module && ACTOR_TYPE === "ai") {
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
 var { detectSupervisor } = require("./lib/supervisor");
 var { readAvatarFile } = require("./lib/avatar-image");
+var { readKnowledgeFile } = require("./lib/knowledge-file");
 var { extractSendMarkers, failureNotes } = require("./lib/send-markers");
 var { unshippedAgentRequires } = require("./lib/agent-bundle-check");
 var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
@@ -1278,7 +1279,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract", "knowledge_add"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -1534,6 +1535,24 @@ async function handleAgentMessage(msg) {
       (r) => send({ type: "send_files_result", request_id: rid, attachments: r.attachments, failures: r.failures }),
       (e) => send({ type: "send_files_result", request_id: rid, error: e.message })
     );
+    return;
+  }
+  if (msg.type === "knowledge_file_read") {
+    // stoa__knowledge_add: read one text document for the server. Same session rule as send_files;
+    // the checks (type, size from stat before reading, UTF-8, NUL) are in lib/knowledge-file.js.
+    const rid = msg.request_id;
+    const workdir = sendFilesWorkdir(msg);
+    if (!workdir) {
+      send({ type: "knowledge_file_read_result", request_id: rid, error: "no session of this room runs on the agent machine" });
+      return;
+    }
+    if (typeof msg.path !== "string" || !msg.path.trim()) {
+      send({ type: "knowledge_file_read_result", request_id: rid, error: "path required" });
+      return;
+    }
+    const p = expandHome(msg.path.trim());
+    const r = readKnowledgeFile(path.isAbsolute(p) ? p : path.resolve(workdir, p));
+    send(r.error ? { type: "knowledge_file_read_result", request_id: rid, error: r.error } : { type: "knowledge_file_read_result", request_id: rid, name: r.name, content: r.content });
     return;
   }
   if (msg.type === "avatar_file_read") {

@@ -6412,6 +6412,86 @@ process.stdin.on('end', () => process.exit(0));
     }
   });
 
+  await uta('knowledge-file readKnowledgeFile — regular .md/.markdown/.txt only, size from stat before reading, strict UTF-8, no NUL; symlink to a directory refused', async () => {
+    const { readKnowledgeFile, decodeKnowledgeText, nameError, KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-kf-'));
+    const reads = [];
+    const spy = { readFile: (p) => { reads.push(pathM.basename(p)); return fsM.readFileSync(p); } };
+    try {
+      const put = (n, data) => { fsM.writeFileSync(pathM.join(dir, n), data); return pathM.join(dir, n); };
+      assert.deepStrictEqual(readKnowledgeFile(put('a.md', '# Hi\nthere'), spy), { name: 'a.md', content: '# Hi\nthere' });
+      assert.deepStrictEqual(readKnowledgeFile(put('B.MARKDOWN', 'x'), spy).name, 'B.MARKDOWN');
+      assert.deepStrictEqual(readKnowledgeFile(put('c.txt', 'é'), spy).content, 'é');
+      const big = pathM.join(dir, 'big.md');
+      fsM.writeFileSync(big, '');
+      fsM.truncateSync(big, KNOWLEDGE_DOC_MAX_BYTES + 1);
+      const edge = pathM.join(dir, 'edge.md');
+      fsM.writeFileSync(edge, '');
+      fsM.truncateSync(edge, KNOWLEDGE_DOC_MAX_BYTES);
+      fsM.mkdirSync(pathM.join(dir, 'folder.md'));
+      fsM.symlinkSync(pathM.join(dir, 'folder.md'), pathM.join(dir, 'link.md'));
+      fsM.symlinkSync(pathM.join(dir, 'a.md'), pathM.join(dir, 'alias.md'));
+      reads.length = 0;
+      const cases = [
+        [big, 'file is larger than 512 KB'],
+        [pathM.join(dir, 'folder.md'), 'not a regular file'],
+        [pathM.join(dir, 'link.md'), 'not a regular file'],
+        [put('bad.md', Buffer.from([0x23, 0x20, 0xc3, 0x28])), 'file is not valid UTF-8 text'],
+        [put('nul.md', 'a\u0000b'), 'file is not text (NUL byte)'],
+        [put('x.pdf', 'text'), 'only .md, .markdown, .txt files can be added'],
+        [put('noext', 'text'), 'only .md, .markdown, .txt files can be added'],
+        [pathM.join(dir, 'gone.md'), 'file not found'],
+        ['rel.md', 'path must be absolute'],
+      ];
+      for (const [p, error] of cases) assert.deepStrictEqual(readKnowledgeFile(p, spy), { error }, p);
+      assert.deepStrictEqual(reads, ['bad.md', 'nul.md'], 'over the limit, directories and wrong types are never read');
+      assert.deepStrictEqual(readKnowledgeFile(edge, spy), { error: 'file is not text (NUL byte)' }, 'exactly the limit passes the size check');
+      assert.deepStrictEqual(readKnowledgeFile(pathM.join(dir, 'alias.md'), spy).content, '# Hi\nthere', 'a symlink to a regular file is read');
+      // The file grew between stat and read: the bytes are checked again.
+      assert.deepStrictEqual(readKnowledgeFile(put('grow.md', 'x'), { readFile: () => Buffer.alloc(KNOWLEDGE_DOC_MAX_BYTES + 1, 0x61) }), { error: 'file is larger than 512 KB' });
+      assert.deepStrictEqual(decodeKnowledgeText(Buffer.from([0xef, 0xbb, 0xbf, 0x61])), { text: 'a' }, 'a UTF-8 BOM is dropped');
+      for (const bad of ['', 'a/b.md', 'a\\b.md', 'tab\t.md', 'x.html', ' a.md', 'n'.repeat(198) + '.md', 7]) assert.ok(nameError(bad), JSON.stringify(bad));
+      assert.strictEqual(nameError('Notes v2.md'), null);
+    } finally { fsM.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await uta('stoa.js knowledge_file_read — only for a session it runs; relative path resolved against that session\'s workdir; refusals answered with the reason', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-kfr-'));
+    fsM.mkdirSync(pathM.join(dir, 'docs'));
+    fsM.writeFileSync(pathM.join(dir, 'docs', 'guide.md'), '# Guide\nbody');
+    fsM.writeFileSync(pathM.join(dir, 'other.md'), 'other');
+    const keys = [`${pathM.resolve(dir)}::911::t:77`, `${pathM.resolve(dir)}::911::t:0::sub:5`];
+    for (const k of keys) stoa.sessionPool.set(k, {});
+    const sent = [];
+    stoa.__setDeps({ send: (m) => sent.push(m) });
+    try {
+      const ask = (rid, extra) => stoa.handleAgentMessage({ type: 'knowledge_file_read', request_id: rid, room_id: 911, thread_id: 77, sub_agent_id: null, ...extra });
+      await ask('rel', { path: 'docs/guide.md' });
+      await ask('abs', { path: pathM.join(dir, 'other.md') });
+      await ask('sub', { path: 'docs/guide.md', thread_id: null, sub_agent_id: 5 });
+      await ask('dir', { path: 'docs' });
+      await ask('nopath', { path: '  ' });
+      for (const [rid, extra] of [['room', { room_id: 912 }], ['thread', { thread_id: 78 }], ['subx', { thread_id: null, sub_agent_id: 6 }], ['str', { room_id: '911' }]]) {
+        await ask(rid, { path: pathM.join(dir, 'other.md'), ...extra });
+      }
+      const byId = Object.fromEntries(sent.map(m => [m.request_id, m]));
+      assert.ok(sent.every(m => m.type === 'knowledge_file_read_result'));
+      assert.deepStrictEqual([byId.rel.name, byId.rel.content], ['guide.md', '# Guide\nbody']);
+      assert.deepStrictEqual([byId.abs.name, byId.abs.content], ['other.md', 'other']);
+      assert.strictEqual(byId.sub.content, '# Guide\nbody', 'the sub-agent session');
+      assert.deepStrictEqual([byId.dir.error, byId.dir.content], ['only .md, .markdown, .txt files can be added', undefined]);
+      assert.strictEqual(byId.nopath.error, 'path required');
+      for (const rid of ['room', 'thread', 'subx', 'str']) assert.deepStrictEqual([byId[rid].error, byId[rid].content], ['no session of this room runs on the agent machine', undefined], rid);
+    } finally {
+      for (const k of keys) stoa.sessionPool.delete(k);
+      stoa.__resetDeps();
+      fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await uta('stoa.js send_files — uploads for a session it runs (relative to its workdir), refuses any other room/thread/sub-agent', async () => {
     const stoa = require('./stoa.js');
     const fsM = require('fs'), osM = require('os'), pathM = require('path');
@@ -26835,6 +26915,18 @@ async function run() {
       { schemaSql: schemaSql ?? fsK.readFileSync(pathK.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
     return { kdb, results };
   };
+  // db/schema.sqlite.sql as it was before migrations/20261119-knowledge-documents.sql (#34 shape of
+  // knowledge_documents / knowledge_sources, without the document indexes).
+  const _knowledgeDocsPreSchema = () => {
+    const { splitSqlStatements } = require('./lib/migrations');
+    const full = require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+    const old = full
+      .replace("  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  bytes INTEGER,\n  updated_at TEXT,\n  updated_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL\n);", "  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n);")
+      .replace('  section TEXT,\n  section_hash TEXT,\n', '');
+    const out = splitSqlStatements(old).filter(st => !/idx_knowledge_(documents_name|documents_updated_by|sources_doc_section)/.test(st)).join(';\n') + ';\n';
+    assert.ok(!/\bsection_hash\b|\bupdated_by_actor_id\b/.test(out), 'baseline document columns found and removed');
+    return out;
+  };
   const _knowledgeFixture = (kdb) => {
     const actor = kdb.prepare("INSERT INTO actors (name, type) VALUES ('k-human', 'human')").run().lastInsertRowid;
     const room = () => {
@@ -26875,22 +26967,26 @@ async function run() {
     const preSchema = splitSqlStatements(noColumn).filter(s => !/knowledge_/.test(s)).join(';\n') + ';\n';
     const tmp = fsK.mkdtempSync(pathK.join(osK.tmpdir(), 'stoa-kmig-'));
     const pre = new Database(':memory:');
-    const { kdb: post } = _knowledgeBootDb();
+    // Later knowledge migrations are checked by their own tests below. The documents migration
+    // (ALTER TABLE ... ADD COLUMN) is applied on both sides, so the stored CREATE TABLE text matches.
+    const DOC_MIG = '20261119-knowledge-documents.sql';
+    const { kdb: post } = _knowledgeBootDb(_knowledgeDocsPreSchema());
     try {
       for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) {
-        // Later knowledge migrations (extraction queue) are checked by their own test below.
-        if (f !== MIG && f !== '20261118-knowledge-extraction.sql') fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+        if (![MIG, DOC_MIG, '20261118-knowledge-extraction.sql'].includes(f)) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
       }
       pre.pragma('foreign_keys = ON');
       runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
       assert.ok(!pre.prepare("SELECT 1 FROM sqlite_master WHERE name LIKE 'knowledge%'").get(), 'pre-migration DB has no knowledge objects');
       const sql = fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8');
       assert.deepStrictEqual(applyMigration(pre, MIG, sql), { status: 'applied' }, 'applies cleanly, nothing skipped');
+      assert.deepStrictEqual(applyMigration(pre, DOC_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', DOC_MIG), 'utf8')), { status: 'applied' });
       const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors') AND name NOT IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au') ORDER BY name").all()
         .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
       const after = objs(pre);
-      assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_room', 'idx_knowledge_edges_b',
-        'idx_knowledge_nodes_status', 'idx_knowledge_sources_document', 'idx_knowledge_sources_message', 'idx_knowledge_usage_actor',
+      assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_name', 'idx_knowledge_documents_room',
+        'idx_knowledge_documents_updated_by', 'idx_knowledge_edges_b', 'idx_knowledge_nodes_status', 'idx_knowledge_sources_doc_section',
+        'idx_knowledge_sources_document', 'idx_knowledge_sources_message', 'idx_knowledge_usage_actor',
         'idx_knowledge_usage_node', 'idx_knowledge_usage_room', 'idx_knowledge_usage_sub_agent', 'knowledge_documents', 'knowledge_edges',
         'knowledge_nodes', 'knowledge_sources', 'knowledge_sources_ad', 'knowledge_usage']);
       assert.deepStrictEqual(after, objs(post), 'migration ≡ baseline');
@@ -27725,6 +27821,317 @@ async function run() {
         assert.deepStrictEqual([count('knowledge_jobs'), count('knowledge_cursors')], [0, 0], 'room delete clears the queue');
       } finally { pre.close(); post.close(); fsK.rmSync(tmp, { recursive: true, force: true }); }
     });
+
+    // ── Knowledge documents (lib/knowledge-documents.js), on the same boot schema and vectors.
+    const { createKnowledgeDocuments, splitSections } = require('./lib/knowledge-documents');
+    const kdSetup = (opts = {}) => {
+      const k = kxSetup(opts);
+      const reads = [];
+      let file = null;
+      const semantic = { ready: true, model: 'kx-test-model', embed: async (texts) => texts.map(vecOf) };
+      const docs = createKnowledgeDocuments({
+        db: k.kdb, semantic, eligibleRoom: (id) => k.kx.eligibleRoom(id), log: { log() {}, error() {} },
+        readFile: async (ident, p) => { reads.push(p); return typeof file === 'function' ? file(p) : file; },
+      });
+      const rm = k.room();
+      const ident = { actorId: k.agent, roomId: rm.id, threadId: null, subAgentId: null };
+      const add = (content, args = {}, who = ident) => { file = { name: 'guide.md', content }; return docs.add(who, { path: 'guide.md', ...args }); };
+      const docNodes = (docId) => k.kdb.prepare(`SELECT n.id, n.title, n.summary, n.category, n.status, s.section, s.section_hash FROM knowledge_sources s
+        JOIN knowledge_nodes n ON n.id=s.node_id WHERE s.document_id=? ORDER BY s.id`).all(docId);
+      const counts = () => k.kdb.prepare(`SELECT (SELECT COUNT(*) FROM knowledge_documents) AS docs, (SELECT COUNT(*) FROM knowledge_nodes) AS nodes,
+        (SELECT COUNT(*) FROM knowledge_sources) AS sources, (SELECT COUNT(*) FROM knowledge_edges) AS edges`).get();
+      return { ...k, docs, semantic, reads, rm, ident, add, docNodes, counts, setFile: (f) => { file = f; } };
+    };
+    const GUIDE = [
+      'Intro line before any heading.',
+      '',
+      '# Setup',
+      'Install node 20.',
+      '',
+      '```sh',
+      '# not a heading: a shell comment in a fence',
+      'npm ci',
+      '```',
+      '~~~',
+      '## also not a heading',
+      '~~~',
+      '## Database',
+      'SQLite with WAL.',
+      '# Setup',
+      'Second setup section.',
+      '## Empty',
+      '',
+      '# Deploy ##',
+      'Push to master.',
+      'Setext title',
+      '============',
+      '#hashtag is text',
+    ].join('\n');
+
+    await test('knowledge documents — split: ATX headings outside ``` and ~~~ fences, heading path, repeated path #2, intro, empty skipped, closing #s, long section in parts', async () => {
+      const s = splitSections(GUIDE);
+      assert.deepStrictEqual(s.map(x => x.key), ['(intro)', 'Setup', 'Setup > Database', 'Setup #2', 'Deploy']);
+      assert.ok(s[1].text.includes('# not a heading: a shell comment in a fence') && s[1].text.includes('## also not a heading'), 'fenced lines stay text of their section');
+      assert.strictEqual(s[2].text, 'SQLite with WAL.');
+      assert.strictEqual(s[4].text, 'Push to master.\nSetext title\n============\n#hashtag is text', 'setext and #word are text');
+      const long = splitSections(`# Big\n${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}\n\n${'c'.repeat(9000)}`);
+      assert.deepStrictEqual(long.map(x => [x.key, x.text.length]), [['Big [part 1]', 3000], ['Big [part 2]', 3000], ['Big [part 3]', 4000], ['Big [part 4]', 4000], ['Big [part 5]', 1000]]);
+      assert.deepStrictEqual(splitSections('```\n# a\n'), [{ key: '(intro)', text: '```\n# a' }], 'an unclosed fence runs to the end');
+      assert.deepStrictEqual(splitSections('#\nx\n#   ###\ny').map(x => x.key), ['(untitled)', '(untitled) #2']);
+      const t0 = process.hrtime.bigint();
+      splitSections('#'.repeat(6) + ' ' + ' \t'.repeat(200000) + '#'.repeat(200000));
+      assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 500, 'linear on a 600 KB heading line');
+    });
+
+    await test('knowledge documents — add: one node per section with document source + section key, title "name: path", summary = section text, category default res; added_by / bytes / timestamps', async () => {
+      const k = kdSetup();
+      try {
+        const r = await k.add(GUIDE);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        assert.deepStrictEqual(r.body, { document_id: r.body.document_id, name: 'guide.md', sections: 5, added: 5, updated: 0, removed: 0, unchanged_sections: 0 });
+        assert.deepStrictEqual(k.reads, ['guide.md']);
+        const ns = k.docNodes(r.body.document_id);
+        assert.deepStrictEqual(ns.map(n => [n.section, n.title, n.category, n.status]), [
+          ['(intro)', 'guide.md: (intro)', 'res', 'active'], ['Setup', 'guide.md: Setup', 'res', 'active'],
+          ['Setup > Database', 'guide.md: Setup > Database', 'res', 'active'], ['Setup #2', 'guide.md: Setup #2', 'res', 'active'], ['Deploy', 'guide.md: Deploy', 'res', 'active']]);
+        assert.strictEqual(ns[2].summary, 'SQLite with WAL.');
+        assert.ok(ns.every(n => /^[0-9a-f]{64}$/.test(n.section_hash)));
+        const d = k.kdb.prepare('SELECT * FROM knowledge_documents').get();
+        assert.deepStrictEqual([d.name, d.room_id, d.added_by_actor_id, d.updated_by_actor_id, d.bytes, d.content_hash],
+          ['guide.md', k.rm.id, k.agent, k.agent, Buffer.byteLength(GUIDE), require('crypto').createHash('sha256').update(GUIDE).digest('hex')]);
+        assert.ok(d.created_at && d.updated_at);
+        const emb = k.kdb.prepare('SELECT embedding_model, length(embedding) AS b FROM knowledge_nodes WHERE id=?').get(ns[0].id);
+        assert.deepStrictEqual(emb, { embedding_model: 'kx-test-model', b: 8 * 4 });
+        const named = await k.add('# Ops\nrestart with pm2', { name: 'Runbook.MARKDOWN', category: 'ops' });
+        assert.strictEqual(named.status, 200);
+        assert.deepStrictEqual(k.docNodes(named.body.document_id).map(n => [n.title, n.category]), [['Runbook.MARKDOWN: Ops', 'ops']]);
+        const list = k.docs.list(k.rm.id).body.documents;
+        assert.deepStrictEqual(list.map(x => [x.name, x.sections, x.added_by, x.updated_by, x.bytes]), [['Runbook.MARKDOWN', 1, 'kx-agent', 'kx-agent', 22], ['guide.md', 5, 'kx-agent', 'kx-agent', Buffer.byteLength(GUIDE)]], 'by name');
+        assert.deepStrictEqual(Object.keys(list[0]).sort(), ['added_by', 'bytes', 'created_at', 'id', 'name', 'sections', 'updated_at', 'updated_by']);
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — re-ingest: same file → unchanged, nothing written; one section changed + one new + one gone → unchanged ids kept, changed rewritten, new added, gone deleted; one document per name', async () => {
+      const k = kdSetup();
+      try {
+        const v1 = '# A\nalpha\n# B\nbeta\n# C\ngamma';
+        const first = await k.add(v1);
+        const ids = Object.fromEntries(k.docNodes(first.body.document_id).map(n => [n.section, n.id]));
+        const docBefore = k.kdb.prepare('SELECT updated_at, content_hash FROM knowledge_documents').get();
+        k.kdb.prepare("UPDATE knowledge_documents SET updated_at='2000-01-01 00:00:00'").run();
+        const same = await k.add(v1);
+        assert.deepStrictEqual(same.body, { document_id: first.body.document_id, unchanged: true, name: 'guide.md', sections: 3, added: 0, updated: 0, removed: 0, unchanged_sections: 3 });
+        assert.strictEqual(k.kdb.prepare('SELECT updated_at FROM knowledge_documents').get().updated_at, '2000-01-01 00:00:00', 'no write at all');
+        k.kdb.prepare("UPDATE knowledge_nodes SET updated_at='2000-01-01 00:00:00'").run();
+        const v2 = '# A\nalpha\n# B\nbeta, revised\n# D\ndelta';
+        const second = await k.add(v2, {}, { ...k.ident, actorId: k.other });
+        assert.deepStrictEqual(second.body, { document_id: first.body.document_id, name: 'guide.md', sections: 3, added: 1, updated: 1, removed: 1, unchanged_sections: 1 });
+        const now = k.docNodes(first.body.document_id);
+        assert.deepStrictEqual(now.map(n => [n.section, n.summary]), [['A', 'alpha'], ['B', 'beta, revised'], ['D', 'delta']]);
+        assert.strictEqual(now[0].id, ids.A, 'unchanged section keeps its node');
+        assert.strictEqual(now[1].id, ids.B, 'changed section rewrites its node in place');
+        assert.ok(!k.kdb.prepare('SELECT 1 FROM knowledge_nodes WHERE id=?').get(ids.C), 'gone section: node deleted by the trigger');
+        const touched = k.kdb.prepare("SELECT id FROM knowledge_nodes WHERE updated_at != '2000-01-01 00:00:00' ORDER BY id").all().map(r => r.id);
+        assert.deepStrictEqual(touched, [ids.B, now[2].id], 'only the changed and the new node are written');
+        const d = k.kdb.prepare('SELECT COUNT(*) AS n, MAX(content_hash) AS h, MAX(added_by_actor_id) AS a, MAX(updated_by_actor_id) AS u, MAX(updated_at) AS t FROM knowledge_documents WHERE room_id=? AND name=?').get(k.rm.id, 'guide.md');
+        assert.deepStrictEqual([d.n, d.h !== docBefore.content_hash, d.a, d.u], [1, true, k.agent, k.other], 'one row; added_by stays, updated_by is the new writer');
+        assert.notStrictEqual(d.t, '2000-01-01 00:00:00');
+        const recat = await k.add(v2, { category: 'eng' });
+        assert.deepStrictEqual([recat.body.updated, recat.body.unchanged_sections, recat.body.unchanged], [3, 0, undefined], 'same bytes, other category → every section rewritten');
+        assert.deepStrictEqual(k.docNodes(first.body.document_id).map(n => n.category), ['eng', 'eng', 'eng']);
+        k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(ids.A);
+        const healed = await k.add(v2, { category: 'eng' });
+        assert.deepStrictEqual([healed.body.updated, k.kdb.prepare('SELECT status, stale_at FROM knowledge_nodes WHERE id=?').get(ids.A)], [1, { status: 'active', stale_at: null }], 're-ingest writes a stale node active again');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — delete: its nodes and their edges go; another room\'s document → 404 like a missing one; list is per room', async () => {
+      const k = kdSetup();
+      try {
+        const seeded = await k.seed(k.rm, 'conv node', 'VEC[1,0,0,0,0,0,0,0] conversation');
+        const r = await k.add('# Near\nVEC[1,0.1,0,0,0,0,0,0] doc text\n# Far\nVEC[0,0,0,0,0,0,0,1] other');
+        const [near] = k.docNodes(r.body.document_id);
+        const ends = [Math.min(seeded.nodeId, near.id), Math.max(seeded.nodeId, near.id)];
+        assert.deepStrictEqual(k.edges().map(e => [e.node_a, e.node_b]), [ends], 'document node linked to the conversation node (cosine ≥ 0.85)');
+        const rm2 = k.room();
+        const r2 = await k.add('# Other\nother room', {}, { ...k.ident, roomId: rm2.id });
+        assert.deepStrictEqual(k.docs.list(k.rm.id).body.documents.map(d => d.id), [r.body.document_id]);
+        assert.deepStrictEqual(k.docs.remove(k.rm.id, r2.body.document_id), { status: 404, body: { error: 'document not found' } });
+        assert.deepStrictEqual(k.docs.remove(k.rm.id, 99999), { status: 404, body: { error: 'document not found' } });
+        assert.strictEqual(k.docs.remove(k.rm.id, 'x').status, 400);
+        assert.deepStrictEqual(k.docs.remove(k.rm.id, r.body.document_id), { status: 200, body: { deleted: r.body.document_id, sections_removed: 2 } });
+        assert.deepStrictEqual(k.counts(), { docs: 1, nodes: 2, sources: 3, edges: 0 }, 'conversation node + other room doc node remain; edge gone');
+        k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(rm2.id);
+        assert.strictEqual(k.docs.list(rm2.id).body.documents.length, 1, 'list works when the room is no longer eligible');
+        assert.strictEqual(k.docs.remove(rm2.id, r2.body.document_id).status, 200, 'and delete too');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — refused, nothing written: connector error, oversized / NUL text from a forged connector, empty, >300 sections, bad name / category / path', async () => {
+      const k = kdSetup();
+      try {
+        const { KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
+        const cases = [
+          [{ status: 400, error: 'file is not valid UTF-8 text' }, {}, 400, 'file is not valid UTF-8 text'],
+          [{ name: 'big.md', content: 'é'.repeat(KNOWLEDGE_DOC_MAX_BYTES / 2 + 1) }, {}, 413, 'document is larger than 512 KB'],
+          [{ name: 'nul.md', content: '# a\nb\u0000c' }, {}, 400, 'document is not text (NUL byte)'],
+          [{ name: 'empty.md', content: ' \n\n# Only a heading\n## And another\n' }, {}, 400, 'document has no text'],
+          [{ name: 'many.md', content: Array.from({ length: 301 }, (_, i) => `# H${i}\nx`).join('\n') }, {}, 400, 'document has 301 sections (max 300); split it into smaller files'],
+          [{ name: 'bin.pdf', content: 'x' }, {}, 400, 'file name: only .md, .markdown, .txt files can be added (pass name)'],
+          [{ name: 'ok.md', content: 'x' }, { name: '../x.md' }, 400, 'name must not contain / \\ or control characters'],
+          [{ name: 'ok.md', content: 'x' }, { name: 'a\u0007.md' }, 400, 'name must not contain / \\ or control characters'],
+          [{ name: 'ok.md', content: 'x' }, { name: 'notes.pdf' }, 400, 'only .md, .markdown, .txt files can be added'],
+          [{ name: 'ok.md', content: 'x' }, { name: `${'n'.repeat(198)}.md` }, 400, 'name longer than 200 characters'],
+          [{ name: 'ok.md', content: 'x' }, { name: ' a.md' }, 400, 'name must not start or end with spaces'],
+          [{ name: 'ok.md', content: 'x' }, { category: 'misc' }, 400, 'category must be one of eng, ops, dec, res'],
+          [{ name: 'ok.md', content: 'x' }, { path: '' }, 400, 'path required (at most 4096 characters)'],
+          [{ name: 'ok.md' }, {}, 502, 'the agent sent no file content'],
+        ];
+        for (const [f, args, status, error] of cases) {
+          k.setFile(f);
+          const r = await k.docs.add(k.ident, { path: 'p.md', ...args });
+          assert.deepStrictEqual([r.status, r.body.error], [status, error], JSON.stringify(args) + ' ' + String(f.name));
+        }
+        assert.deepStrictEqual(k.counts(), { docs: 0, nodes: 0, sources: 0, edges: 0 });
+        k.setFile({ name: 'ok.md', content: 'é'.repeat(KNOWLEDGE_DOC_MAX_BYTES / 2) });
+        assert.strictEqual((await k.docs.add(k.ident, { path: 'p.md' })).status, 200, 'exactly the limit is accepted');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — secrets and home paths scrubbed from title and summary (the raw text is not stored)', async () => {
+      const k = kdSetup();
+      try {
+        const r = await k.add('# Keys sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv\nThe token is ghp_abcdefghijklmnop1234 in /Users/someone/secret.txt');
+        const [n] = k.docNodes(r.body.document_id);
+        const stored = JSON.stringify(k.kdb.prepare('SELECT * FROM knowledge_nodes').all()) + JSON.stringify(k.kdb.prepare('SELECT * FROM knowledge_documents').all()) + JSON.stringify(k.kdb.prepare('SELECT * FROM knowledge_sources').all());
+        assert.ok(!/sk-ant-api03-AbCd|ghp_abcdef|someone/.test(stored), stored);
+        assert.match(n.title, /\[redacted\]/);
+        assert.match(n.summary, /\[redacted\]/);
+        const twins = await k.add('# Keys ghp_aaaaaaaaaaaaaaaa1111\nx\n# Keys ghp_bbbbbbbbbbbbbbbb2222\ny', { name: 'twins.md' });
+        assert.deepStrictEqual(k.docNodes(twins.body.document_id).map(x => x.section), ['Keys [redacted]', 'Keys [redacted] #2'], 'headings scrubbed before keys: no clash');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — privacy: flag off, archived, excluded room → 403 before the file is asked for; room turned off while embedding → nothing written', async () => {
+      const k = kdSetup({ excluded: '' });
+      try {
+        k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(k.rm.id);
+        assert.deepStrictEqual(await k.add('# a\nb'), { status: 403, body: { error: 'knowledge is not enabled for this room' } });
+        k.kdb.prepare("UPDATE rooms SET knowledge_enabled=1, archived_at=datetime('now') WHERE id=?").run(k.rm.id);
+        assert.strictEqual((await k.add('# a\nb')).status, 403);
+        assert.deepStrictEqual(k.reads, [], 'connector never asked');
+        k.kdb.prepare('UPDATE rooms SET archived_at=NULL WHERE id=?').run(k.rm.id);
+        const embed = k.semantic.embed;
+        k.semantic.embed = async (texts) => { k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(k.rm.id); return embed(texts); };
+        assert.strictEqual((await k.add('# a\nb')).status, 403);
+        assert.deepStrictEqual(k.counts(), { docs: 0, nodes: 0, sources: 0, edges: 0 });
+      } finally { k.kdb.close(); }
+      const ex = kdSetup({ excluded: '' });
+      try {
+        const docs = createKnowledgeDocuments({
+          db: ex.kdb, semantic: ex.semantic, log: { log() {}, error() {} }, readFile: async () => { throw new Error('must not read'); },
+          eligibleRoom: (id) => createKnowledgeExtraction({ db: ex.kdb, semantic: ex.semantic, pickAgent: () => null, sendToAgent: () => false, log: { log() {}, error() {} }, excludedRoomIds: String(ex.rm.id) }).eligibleRoom(id),
+        });
+        assert.strictEqual((await docs.add(ex.ident, { path: 'a.md' })).status, 403, 'excluded room, even with the flag on');
+      } finally { ex.kdb.close(); }
+    });
+
+    await test('knowledge documents — index not ready / embed fails → 503, nothing written; a second add of the same name while one runs → 409', async () => {
+      const k = kdSetup();
+      try {
+        k.semantic.ready = false;
+        assert.deepStrictEqual(await k.add('# a\nb'), { status: 503, body: { error: 'the knowledge index is not ready yet; try again in a few minutes' } });
+        k.semantic.ready = true;
+        const embed = k.semantic.embed;
+        k.semantic.embed = async () => null;
+        assert.strictEqual((await k.add('# a\nb')).status, 503);
+        assert.deepStrictEqual(k.counts(), { docs: 0, nodes: 0, sources: 0, edges: 0 });
+        let release;
+        k.semantic.embed = (texts) => new Promise(res => { release = () => res(embed(texts)); });
+        const p1 = k.add('# a\nfirst');
+        await new Promise(r => setImmediate(r));
+        const p2 = k.add('# a\nsecond');
+        assert.deepStrictEqual(await p2, { status: 409, body: { error: 'this document is being added already; try again when that call is done' } });
+        release();
+        assert.strictEqual((await p1).status, 200);
+        assert.deepStrictEqual(k.docNodes(k.kdb.prepare('SELECT id FROM knowledge_documents').get().id).map(n => n.summary), ['first']);
+        k.semantic.embed = embed;
+        assert.strictEqual((await k.add('# a\nsecond')).body.updated, 1, 'lock released');
+        // 17 new sections: embedded in batches of 16.
+        const sizes = [];
+        k.semantic.embed = async (texts) => { sizes.push(texts.length); return embed(texts); };
+        assert.strictEqual((await k.add(Array.from({ length: 17 }, (_, i) => `# S${i}\nbody ${i}`).join('\n'), { name: 'batch.md' })).status, 200);
+        assert.deepStrictEqual(sizes, [16, 1]);
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — conversation extraction never uses a document node: not a candidate, not a merge target (even at cosine 1); edges still link them', async () => {
+      const k = kdSetup();
+      try {
+        const d = await k.add('# Queue\nVEC[1,0,0,0,0,0,0,0] queue design from the doc');
+        const [docNode] = k.docNodes(d.body.document_id);
+        const root = k.msg(k.rm, 'VEC[1,0,0,0,0,0,0,0] we talked about the queue');
+        k.msg(k.rm, 'reply', { threadId: root });
+        k.kx.enqueueConversation(k.rm.id, root, 'thread_complete');
+        await k.kx.tick();
+        const sent = k.sent[k.sent.length - 1];
+        assert.ok(!sent.prompt.includes('queue design from the doc'), 'document node not offered as a candidate');
+        await k.answer(sent.job_id, [k.node('Queue (conversation)', 'VEC[1,0,0,0,0,0,0,0] same vector as the doc node')]);
+        const conv = k.nodes().find(n => n.title === 'Queue (conversation)');
+        assert.ok(conv && conv.id !== docNode.id, 'inserted, not attached to the document node');
+        assert.deepStrictEqual(k.sources(docNode.id), [null], 'the document node has only its document source');
+        assert.deepStrictEqual(k.docNodes(d.body.document_id).map(n => n.summary), ['VEC[1,0,0,0,0,0,0,0] queue design from the doc'], 'summary untouched');
+        assert.ok(k.edges().some(e => e.node_a === Math.min(conv.id, docNode.id) && e.node_b === Math.max(conv.id, docNode.id)), 'edge between them');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — migration on a DB that already has the #34 tables: columns + indexes added, rows kept, ≡ baseline; unique name per room and section per document', async () => {
+      const fsK = require('fs'), pathK = require('path'), osK = require('os');
+      const Database = require('better-sqlite3');
+      const { applyMigration, runMigrations } = require('./lib/migrations');
+      const MIG = '20261119-knowledge-documents.sql';
+      const preSchema = _knowledgeDocsPreSchema();
+      const tmp = fsK.mkdtempSync(pathK.join(osK.tmpdir(), 'stoa-kdmig-'));
+      const pre = new Database(':memory:');
+      const { kdb: post } = _knowledgeBootDb();
+      try {
+        for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) if (f !== MIG) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+        pre.pragma('foreign_keys = ON');
+        runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
+        const cols = (d, t) => d.prepare(`SELECT name FROM pragma_table_info('${t}')`).all().map(c => c.name);
+        assert.ok(!cols(pre, 'knowledge_documents').includes('bytes') && !cols(pre, 'knowledge_sources').includes('section'), 'pre: #34 shape');
+        const k = _knowledgeFixture(pre);
+        const rm = k.room();
+        const doc = k.doc(rm);
+        const n = k.node('kept');
+        k.srcDoc(n, doc);
+        assert.deepStrictEqual(applyMigration(pre, MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8')), { status: 'applied' });
+        const objs = (d) => d.prepare("SELECT name FROM sqlite_master WHERE tbl_name IN ('knowledge_documents', 'knowledge_sources') AND type='index' ORDER BY name").all().map(o => o.name);
+        assert.deepStrictEqual(objs(pre), objs(post));
+        const colInfo = (d, t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') ORDER BY cid`).all();
+        for (const t of ['knowledge_documents', 'knowledge_sources']) assert.deepStrictEqual(colInfo(pre, t), colInfo(post, t), t);
+        const fk = (d) => d.prepare("SELECT \"table\", \"from\", on_delete FROM pragma_foreign_key_list('knowledge_documents') ORDER BY \"from\"").all();
+        assert.deepStrictEqual(fk(pre), fk(post));
+        assert.deepStrictEqual(pre.prepare('SELECT name, bytes, updated_at FROM knowledge_documents').get(), { name: 'a.md', bytes: null, updated_at: null }, 'row kept');
+        assert.strictEqual(pre.prepare('SELECT COUNT(*) AS c FROM knowledge_sources WHERE node_id=?').get(n).c, 1);
+        for (const d of [pre, post]) {
+          const f = _knowledgeFixture(d);
+          const r = f.room();
+          const editor = d.prepare("INSERT INTO actors (name, type) VALUES ('editor', 'human')").run().lastInsertRowid;
+          const id = d.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id, updated_by_actor_id) VALUES ('x.md', 'h', ?, ?)").run(r.id, editor).lastInsertRowid;
+          assert.throws(() => d.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id) VALUES ('x.md', 'h', ?)").run(r.id), /UNIQUE/, 'one document per name per room');
+          d.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id) VALUES ('x.md', 'h', ?)").run(f.room().id);
+          const a = f.node(), b = f.node();
+          d.prepare("INSERT INTO knowledge_sources (node_id, document_id, section) VALUES (?, ?, 'S')").run(a, id);
+          assert.throws(() => d.prepare("INSERT INTO knowledge_sources (node_id, document_id, section) VALUES (?, ?, 'S')").run(b, id), /UNIQUE/, 'one source per section');
+          d.prepare('DELETE FROM actors WHERE id=?').run(editor);
+          assert.strictEqual(d.prepare('SELECT updated_by_actor_id FROM knowledge_documents WHERE id=?').get(id).updated_by_actor_id, null, 'ON DELETE SET NULL');
+          assert.match(d.prepare("EXPLAIN QUERY PLAN SELECT id FROM knowledge_documents WHERE room_id=1 AND name='x.md'").all().map(r => r.detail).join(' '), /idx_knowledge_documents_name/);
+        }
+        const again = applyMigration(pre, MIG + '.again', fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8'));
+        assert.deepStrictEqual([again.status, again.skipped.length], ['reconciled', 5], 'idempotent');
+      } finally { pre.close(); post.close(); fsK.rmSync(tmp, { recursive: true, force: true }); }
+    });
   }
   {
     const { EventEmitter } = require('events');
@@ -28466,6 +28873,7 @@ async function run() {
     const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list', 'connection_messages_read',
+      'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set', 'rooms_list',
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
@@ -28473,7 +28881,7 @@ async function run() {
       'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update',
       'thread_complete', 'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
-    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'connection_messages_read', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
+    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'connection_messages_read', 'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
       'self_avatar_set', 'self_get', 'self_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_complete', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
@@ -29632,6 +30040,94 @@ async function run() {
       } finally {
         await announceA();
         try { fsM.unlinkSync(pathM.join(__dirname, 'uploads', up.body.url.slice('/uploads/'.length))); } catch {}
+      }
+    });
+
+    await test('MCP stoa tools — knowledge_add / _documents_list / _document_delete: room flag gate, the session\'s own client reads the file, forged answers, sub-agent session, other room, old client, timeout', async () => {
+      const announce = async (features) => {
+        const ready = waitForWsMessage(agA.ws, m => m.type === 'agent_ready', 3000);
+        agA.ws.send(JSON.stringify({ type: 'agent_connect', actor_id: agA.actorId, secret: agA.secret, ...(features ? { features } : {}) }));
+        await ready;
+      };
+      const asked = [];
+      const spy = (raw) => { const m = JSON.parse(raw); if (m.type === 'knowledge_file_read') asked.push(m); };
+      const docsOf = (roomId) => mDb.prepare('SELECT id, name, added_by_actor_id, updated_by_actor_id FROM knowledge_documents WHERE room_id=? ORDER BY id').all(roomId);
+      const nodesOf = (docId) => mDb.prepare(`SELECT n.title, n.summary, n.category, n.embedding_model, s.section FROM knowledge_sources s
+        JOIN knowledge_nodes n ON n.id=s.node_id WHERE s.document_id=? ORDER BY s.id`).all(docId);
+      const flag = mDb.prepare('SELECT knowledge_enabled FROM rooms WHERE id=?').get(roomA).knowledge_enabled;
+      agA.ws.on('message', spy);
+      try {
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(roomA);
+        await announce(['knowledge_add']);
+        assert.strictEqual(await stoaErr(tokA, 'knowledge_add', { path: 'docs/guide.md' }), 'knowledge is not enabled for this room');
+        await new Promise(r => setTimeout(r, 100));
+        assert.deepStrictEqual(asked, [], 'no knowledge_file_read for a room that is not opted in');
+
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomA);
+        const ask = waitForWsMessage(agA.ws, m => m.type === 'knowledge_file_read', 3000);
+        const pending = stoaCall(tokA, 'knowledge_add', { path: 'docs/guide.md', category: 'ops' });
+        const m = await ask;
+        assert.deepStrictEqual([m.path, m.room_id, m.thread_id, m.sub_agent_id], ['docs/guide.md', roomA, threadA, null]);
+        agB.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: m.request_id, name: 'evil.md', content: '# Evil\nforged by another agent' }));
+        await new Promise(r => setTimeout(r, 200));
+        agA.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: m.request_id, name: 'guide.md', content: '# Deploy\nUse pm2 restart.\n# Rollback\ngit revert, then deploy.' }));
+        const r = await pending;
+        assert.strictEqual(r.isError, false, r.text);
+        assert.deepStrictEqual(r.body, { document_id: r.body.document_id, name: 'guide.md', sections: 2, added: 2, updated: 0, removed: 0, unchanged_sections: 0 });
+        assert.deepStrictEqual(nodesOf(r.body.document_id), [
+          { title: 'guide.md: Deploy', summary: 'Use pm2 restart.', category: 'ops', embedding_model: 'hash-trigram-384', section: 'Deploy' },
+          { title: 'guide.md: Rollback', summary: 'git revert, then deploy.', category: 'ops', embedding_model: 'hash-trigram-384', section: 'Rollback' }], 'the forged answer of another agent is ignored');
+        assert.deepStrictEqual(docsOf(roomA).map(d => [d.name, d.added_by_actor_id]), [['guide.md', agA.actorId]]);
+
+        // Sub-agent session: asked for its own session; recorded under the parent agent. Re-adding updates.
+        const askSub = waitForWsMessage(agA.ws, x => x.type === 'knowledge_file_read' && x.sub_agent_id === sub.id, 3000);
+        const pSub = stoaCall(tokSub, 'knowledge_add', { path: '/abs/guide.md', name: 'guide.md', category: 'ops' });
+        const ms = await askSub;
+        agA.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: ms.request_id, name: 'guide.md', content: '# Deploy\nUse pm2 restart.\n# Rollback\ngit revert, then redeploy.' }));
+        const rs = await pSub;
+        assert.deepStrictEqual([rs.body.document_id, rs.body.updated, rs.body.unchanged_sections], [r.body.document_id, 1, 1], rs.text);
+        assert.deepStrictEqual(docsOf(roomA).map(d => [d.name, d.added_by_actor_id, d.updated_by_actor_id]), [['guide.md', agA.actorId, agA.actorId]]);
+
+        // Connector refusal, and a forged oversized answer: nothing written.
+        const askBad = waitForWsMessage(agA.ws, x => x.type === 'knowledge_file_read' && x.path === 'a.pdf', 3000);
+        const pBad = stoaErr(tokA, 'knowledge_add', { path: 'a.pdf' });
+        agA.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: (await askBad).request_id, error: 'only .md, .markdown, .txt files can be added' }));
+        assert.strictEqual(await pBad, 'only .md, .markdown, .txt files can be added');
+        const askBig = waitForWsMessage(agA.ws, x => x.type === 'knowledge_file_read' && x.path === 'big.md', 3000);
+        const pBig = stoaErr(tokA, 'knowledge_add', { path: 'big.md' });
+        agA.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: (await askBig).request_id, name: 'big.md', content: 'x'.repeat(512 * 1024 + 1) }));
+        assert.strictEqual(await pBig, 'document is larger than 512 KB');
+        assert.strictEqual(docsOf(roomA).length, 1);
+
+        // List and delete: sub-agent session may list; another room's token cannot see or delete it.
+        const list = await stoaOk(tokSub, 'knowledge_documents_list');
+        assert.deepStrictEqual(list.documents.map(d => [d.id, d.name, d.sections, d.added_by]), [[r.body.document_id, 'guide.md', 2, '__test-mcp-a']]);
+        assert.deepStrictEqual((await stoaOk(tokB, 'knowledge_documents_list')).documents.filter(d => d.id === r.body.document_id), []);
+        assert.strictEqual(await stoaErr(tokB, 'knowledge_document_delete', { id: r.body.document_id }), 'document not found');
+        assert.strictEqual(docsOf(roomA).length, 1);
+        // Left the room since the session opened: refused like any room tool.
+        const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
+        const direct = Object.fromEntries(stoaMcpTools({ db: mDb, broadcast: () => {}, messages: {}, memory: {}, prompts: {}, subAgents: {}, automations: {}, knowledgeDocs: { add: async () => assert.fail('reached'), list: () => assert.fail('reached'), remove: () => assert.fail('reached') } }).map(t => [t.name, t]));
+        for (const [tool, args] of [['knowledge_add', { path: 'a.md' }], ['knowledge_documents_list', {}], ['knowledge_document_delete', { id: r.body.document_id }]]) {
+          const d = await direct[tool].call({ actorId: agB.actorId, roomId: roomA, threadId: null, subAgentId: null }, args);
+          assert.deepStrictEqual([d.isError, JSON.parse(d.content[0].text).error], [true, 'agent_scope_denied'], tool);
+        }
+        assert.deepStrictEqual(await stoaOk(tokA, 'knowledge_document_delete', { id: r.body.document_id }), { deleted: r.body.document_id, sections_removed: 2 });
+        assert.deepStrictEqual([docsOf(roomA).length, nodesOf(r.body.document_id).length], [0, 0]);
+
+        // Client without the feature, offline-like silence (timeout).
+        await announce(['skills', 'skill_sync', 'send_files']);
+        assert.strictEqual(await stoaErr(tokA, 'knowledge_add', { path: 'x.md' }), 'your Stoa client is too old to add knowledge documents (update the agent)');
+        await announce(['knowledge_add']);
+        const t0 = Date.now();
+        assert.strictEqual(await stoaErr(tokA, 'knowledge_add', { path: 'silent.md' }), 'your Stoa client did not read the file within 2 s');
+        assert.ok(Date.now() - t0 >= 1900, 'waited for KNOWLEDGE_FILE_TIMEOUT_MS');
+        assert.strictEqual(docsOf(roomA).length, 0);
+      } finally {
+        agA.ws.off('message', spy);
+        mDb.prepare('DELETE FROM knowledge_documents WHERE room_id=?').run(roomA);
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=? WHERE id=?').run(flag, roomA);
+        await announce();
       }
     });
 
