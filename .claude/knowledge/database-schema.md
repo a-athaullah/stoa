@@ -508,6 +508,28 @@ CREATE TABLE mcp_approval_exemptions (
 - Re-extraction queue: `WHERE status='stale' ORDER BY stale_at` (index-ordered); on success set `status='active', stale_at=NULL` together (CHECK enforces the pair).
 - Edges: always insert `(min(id), max(id))`.
 
+**`knowledge_documents` columns added by `migrations/20261119-knowledge-documents.sql` (Knowledge 3/6):**
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `bytes` | INTEGER | File size in bytes at last ingest |
+| `updated_at` | TEXT | Set on every add/re-ingest; no default (code always writes it) |
+| `updated_by_actor_id` | INTEGER → actors SET NULL | Actor who last updated; partial index `WHERE updated_by_actor_id IS NOT NULL` |
+
+New indexes on `knowledge_documents`:
+- `UNIQUE idx_knowledge_documents_name (room_id, name)` — document identity in a room
+- `idx_knowledge_documents_updated_by (updated_by_actor_id) WHERE NOT NULL`
+
+**`knowledge_sources` columns added by the same migration:**
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `section` | TEXT | Heading path key, e.g. `H1 > H2`, `(intro)`, `H1 > H2 [part 2]`; set only on document sources |
+| `section_hash` | TEXT | SHA-256 of `category + "\n" + title + "\n" + summary` (scrubbed, as stored), so a category or title change also counts as changed; used by re-ingest to detect unchanged sections |
+
+New index on `knowledge_sources`:
+- `UNIQUE idx_knowledge_sources_doc_section (document_id, section) WHERE document_id IS NOT NULL`
+
 ### knowledge_cursors
 
 `migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).

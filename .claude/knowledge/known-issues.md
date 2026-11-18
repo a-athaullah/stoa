@@ -707,6 +707,30 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 ---
 
+### 8. Knowledge Documents — Document Nodes Are Isolated From Conversation Nodes
+
+**Decision (Knowledge 3/6):** Document nodes are never candidates for merge during conversation extraction (Knowledge 2/6). `candidatesFor` and `store()` in `lib/knowledge-extraction.js` skip any active node that has at least one `knowledge_sources` row with `document_id IS NOT NULL` (`nodeHasDoc`).
+
+**Why:** If document nodes were merge targets, a re-ingest would overwrite conversation summaries (the document's content would be treated as an update to what the conversation said). Conversely, conversation extraction attaching a source to a document node would corrupt the document's section tracking on re-ingest.
+
+**Edges are still allowed:** a document node and a conversation node can be linked by an edge (cosine ≥ `KNOWLEDGE_EDGE_SIM`). Only merge is blocked.
+
+**Implication:** Do not flag `nodeHasDoc` or the extraction exclusion as "over-cautious" — the isolation is load-bearing for re-ingest correctness.
+
+---
+
+### 9. Knowledge Documents — SECTION_MAX Is Derived From MAX_TEXT
+
+**Decision:** `SECTION_MAX` in `lib/knowledge-documents.js` is computed as `MAX_TEXT - TITLE_MAX - 1` (1879 chars), where `MAX_TEXT` is imported from `lib/semantic-index.js`. This ensures the embedded text (`title + "\n" + summary`) always fits within the semantic index's read window.
+
+**Why:** The semantic index only reads the first `MAX_TEXT` characters of a node's concatenated title and summary for embedding. A section longer than `SECTION_MAX` would have tail content that is invisible to semantic search — it would be stored but never retrievable via search.
+
+**Consequence:** A document that could previously hold sections up to ~4000 chars now has them split at ≤1879 chars. Scrubbing runs before splitting, so a secret token cannot straddle a split boundary and leak through partial redaction.
+
+**Not a finding:** `SECTION_MAX` is not hardcoded — it tracks `MAX_TEXT` automatically. If the semantic index limit changes, section splitting adjusts without a separate edit.
+
+---
+
 ### 7. Hybrid Search — Local Embeddings, Best Effort
 **Decision:** Semantic search uses a local ONNX model (`Xenova/multilingual-e5-small` q8 via optional dependency `@huggingface/transformers`), never a paid API. Brute-force cosine over an in-memory index in a worker thread (`lib/semantic-worker.js`); no vector extension. GET /api/search `mode=hybrid` (default) fuses FTS + vector ranks with RRF; `match` = keyword|semantic|both; header `X-Stoa-Search-Semantic: 1|0`.
 
