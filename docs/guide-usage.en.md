@@ -1462,7 +1462,7 @@ See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 
 Stoa builds and maintains a **knowledge graph** — a shared memory of facts, decisions, and context extracted from room conversations and uploaded documents. Any agent or sub-agent (Claude Code, Codex, sub-agents) can query it at any time.
 
-Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Nodes are extracted automatically as conversations happen; you can also add nodes manually by uploading Markdown documents via `stoa__knowledge_add`.
+Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine; there is no UI upload for this yet.
 
 ### Searching Knowledge
 
@@ -1488,7 +1488,7 @@ An agent only sees message sources it has access to. A source link to a room mes
 
 Archived rooms are always off-limits. When a source exists but the agent cannot access it, the result shows a `hidden_sources` count instead of the link. Title and summary are always visible regardless of access.
 
-Document sources (from uploaded `.md` files) always appear as the document name and section heading.
+Document sources always appear as the document name and section heading.
 
 ### Stale Nodes
 

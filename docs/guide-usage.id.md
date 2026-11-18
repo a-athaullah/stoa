@@ -1463,7 +1463,7 @@ Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
 Stoa membangun dan memelihara **knowledge graph** — memori bersama berisi fakta, keputusan, dan konteks yang diekstrak dari percakapan di room dan dokumen yang diunggah. Agent dan sub-agent mana pun (Claude Code, Codex, sub-agent) bisa menggunakannya kapan saja.
 
-Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Node diekstrak secara otomatis saat percakapan berlangsung; kamu juga bisa menambahkan node secara manual dengan mengunggah dokumen Markdown melalui `stoa__knowledge_add`.
+Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya; belum ada upload dari UI untuk fitur ini.
 
 ### Mencari Knowledge
 
@@ -1489,7 +1489,7 @@ Agent hanya melihat sumber pesan yang bisa diakses. Tautan ke pesan di room dise
 
 Room yang diarsip selalu tidak bisa diakses. Jika sumber ada tapi agent tidak punya akses, hasil menampilkan hitungan `hidden_sources` sebagai gantinya. Judul dan ringkasan selalu terlihat tanpa peduli akses.
 
-Sumber dokumen (dari file `.md` yang diunggah) selalu ditampilkan sebagai nama dokumen dan judul bagiannya.
+Sumber dokumen selalu ditampilkan sebagai nama dokumen dan judul bagiannya.
 
 ### Node Stale
 
