@@ -525,7 +525,7 @@ New indexes on `knowledge_documents`:
 | Column | Type | Notes |
 |--------|------|-------|
 | `section` | TEXT | Heading path key, e.g. `H1 > H2`, `(intro)`, `H1 > H2 [part 2]`; set only on document sources |
-| `section_hash` | TEXT | SHA-256 of the stored (scrubbed) section text; used by re-ingest to detect unchanged sections |
+| `section_hash` | TEXT | SHA-256 of `category + "\n" + title + "\n" + summary` (scrubbed, as stored), so a category or title change also counts as changed; used by re-ingest to detect unchanged sections |
 
 New index on `knowledge_sources`:
 - `UNIQUE idx_knowledge_sources_doc_section (document_id, section) WHERE document_id IS NOT NULL`
