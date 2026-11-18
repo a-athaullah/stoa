@@ -9004,15 +9004,18 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
-  await test('GET /api/rooms/:id/messages — system_event filter: only compact markers and reauth, not offline notifications', async () => {
+  await test('GET /api/rooms/:id/messages — system_event filter: only the kept notices, not offline notifications', async () => {
     if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
     const r = await req('GET', `/api/rooms/${firstRoomId}/messages`);
     assert.strictEqual(r.status, 200);
+    // The notices lib/room-messages.js FEED_STATES keeps; the first room comes from the live DB copy,
+    // so any of them can show up (e.g. "<agent> updated the room system prompt · config").
+    const KEPT = [' · session compacted', ' · reauth', ' · automation', ' · schedule', ' · config'];
     for (const msg of r.body) {
       if (msg.state === 'system_event') {
-        const allowed = msg.content.endsWith('· session compacted') || msg.content.endsWith('· reauth');
-        assert.ok(allowed,
-          `system_event message must be compact marker or reauth, got: "${msg.content}"`);
+        const allowed = KEPT.some((s) => msg.content.endsWith(s)) || msg.broadcast_reason != null;
+        assert.ok(allowed, `system_event message must be a kept notice, got: "${msg.content}"`);
+        assert.ok(!/ is offline — /.test(msg.content), `offline notification leaked: "${msg.content}"`);
       }
     }
   });
