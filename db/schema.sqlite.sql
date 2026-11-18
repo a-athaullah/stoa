@@ -772,10 +772,17 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   content_hash TEXT NOT NULL,
   added_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
   room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  bytes INTEGER,
+  updated_at TEXT,
+  updated_by_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_room ON knowledge_documents(room_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_actor ON knowledge_documents(added_by_actor_id) WHERE added_by_actor_id IS NOT NULL;
+-- Knowledge documents (migrations/20261119-knowledge-documents.sql): name identifies a document in its
+-- room (re-adding it updates it); updated_at has no default (ADD COLUMN), the code writes it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_documents_name ON knowledge_documents(room_id, name);
+CREATE INDEX IF NOT EXISTS idx_knowledge_documents_updated_by ON knowledge_documents(updated_by_actor_id) WHERE updated_by_actor_id IS NOT NULL;
 
 -- One row per (node, message) or (node, document); exactly one of the two is set.
 CREATE TABLE IF NOT EXISTS knowledge_sources (
@@ -784,12 +791,16 @@ CREATE TABLE IF NOT EXISTS knowledge_sources (
   message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
   document_id INTEGER REFERENCES knowledge_documents(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  section TEXT,
+  section_hash TEXT,
   CHECK((message_id IS NULL) <> (document_id IS NULL)),
   UNIQUE(node_id, message_id),
   UNIQUE(node_id, document_id)
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_sources_message ON knowledge_sources(message_id) WHERE message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_sources_document ON knowledge_sources(document_id) WHERE document_id IS NOT NULL;
+-- Document sources: section key and the sha256 of its stored text (lib/knowledge-documents.js).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_sources_doc_section ON knowledge_sources(document_id, section) WHERE document_id IS NOT NULL;
 
 -- Undirected edge stored once: node_a < node_b.
 CREATE TABLE IF NOT EXISTS knowledge_edges (
