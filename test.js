@@ -27874,8 +27874,12 @@ async function run() {
       assert.ok(s[1].text.includes('# not a heading: a shell comment in a fence') && s[1].text.includes('## also not a heading'), 'fenced lines stay text of their section');
       assert.strictEqual(s[2].text, 'SQLite with WAL.');
       assert.strictEqual(s[4].text, 'Push to master.\nSetext title\n============\n#hashtag is text', 'setext and #word are text');
-      const long = splitSections(`# Big\n${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}\n\n${'c'.repeat(9000)}`);
-      assert.deepStrictEqual(long.map(x => [x.key, x.text.length]), [['Big [part 1]', 3000], ['Big [part 2]', 3000], ['Big [part 3]', 4000], ['Big [part 4]', 4000], ['Big [part 5]', 1000]]);
+      const { SECTION_MAX } = require('./lib/knowledge-documents');
+      const { MAX_TEXT } = require('./lib/semantic-index');
+      assert.strictEqual(SECTION_MAX, MAX_TEXT - 120 - 1, 'title (max 120) + newline + section fit what the index embeds');
+      const long = splitSections(`# Big\n${'a'.repeat(1000)}\n\n${'b'.repeat(800)}\n\n${'c'.repeat(2 * SECTION_MAX + 242)}`);
+      assert.deepStrictEqual(long.map(x => [x.key, x.text.length]), [['Big [part 1]', 1802], ['Big [part 2]', SECTION_MAX], ['Big [part 3]', SECTION_MAX], ['Big [part 4]', 242]],
+        'paragraphs joined while they fit; a longer one cut hard');
       assert.deepStrictEqual(splitSections('```\n# a\n'), [{ key: '(intro)', text: '```\n# a' }], 'an unclosed fence runs to the end');
       assert.deepStrictEqual(splitSections('#\nx\n#   ###\ny').map(x => x.key), ['(untitled)', '(untitled) #2']);
       const t0 = process.hrtime.bigint();
@@ -27908,6 +27912,34 @@ async function run() {
         const list = k.docs.list(k.rm.id).body.documents;
         assert.deepStrictEqual(list.map(x => [x.name, x.sections, x.added_by, x.updated_by, x.bytes]), [['Runbook.MARKDOWN', 1, 'kx-agent', 'kx-agent', 22], ['guide.md', 5, 'kx-agent', 'kx-agent', Buffer.byteLength(GUIDE)]], 'by name');
         assert.deepStrictEqual(Object.keys(list[0]).sort(), ['added_by', 'bytes', 'created_at', 'id', 'name', 'sections', 'updated_at', 'updated_by']);
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge documents — every node\'s embedded text (title + "\\n" + summary) fits MAX_TEXT of the semantic index, longest title and redactions included; a cut never splits a secret', async () => {
+      const k = kdSetup();
+      try {
+        const { MAX_TEXT } = require('./lib/semantic-index');
+        const embedded = [];
+        const embed = k.semantic.embed;
+        k.semantic.embed = async (texts) => { embedded.push(...texts); return embed(texts); };
+        const token = 'ghp_abcdefghijklmnop1234567890';
+        const para = (n) => 'w'.repeat(n);
+        // One paragraph with no blank line: hard cuts at SECTION_MAX; the token straddles the first cut.
+        const { SECTION_MAX } = require('./lib/knowledge-documents');
+        const body = `${para(SECTION_MAX - 10)} ${token} ${para(3000)} /Users/someone/x.md ${para(2500)}\n\n${para(1500)}`;
+        const name = `${'n'.repeat(196)}.md`;
+        const r = await k.add(`# ${'H'.repeat(300)}\n## Sub sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv\n${body}`, { name });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const ns = k.docNodes(r.body.document_id);
+        assert.ok(ns.length >= 4, `split into parts (${ns.length})`);
+        for (const n of ns) {
+          assert.ok(n.title.length <= 120, `title ${n.title.length}`);
+          assert.ok(`${n.title}\n${n.summary}`.length <= MAX_TEXT, `${n.section}: ${n.title.length + 1 + n.summary.length} > ${MAX_TEXT}`);
+        }
+        assert.strictEqual(embedded.length, ns.length);
+        assert.ok(embedded.every(e => e.length <= MAX_TEXT), 'what is sent to the index is never truncated by it');
+        const all = ns.map(n => n.title + n.summary).join('');
+        assert.ok(!all.includes('ghp_') && !all.includes('abcdefghijklmnop') && !all.includes('sk-ant') && !all.includes('someone'), 'no piece of a secret survives a cut');
       } finally { k.kdb.close(); }
     });
 
