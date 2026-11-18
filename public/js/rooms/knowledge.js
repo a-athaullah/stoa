@@ -4,6 +4,11 @@
 // session-only (lib/knowledge-admin.js). Every server string goes through textContent.
 
 const KN_PAGE = 50;
+// Same limits as lib/knowledge-file.js (KNOWLEDGE_DOC_EXTS / KNOWLEDGE_DOC_MAX_BYTES); the server
+// checks them again and its error is shown as is.
+const KN_DOC_EXTS = ['.md', '.markdown', '.txt'];
+const KN_DOC_MAX_BYTES = 512 * 1024;
+const KN_CATEGORIES = [['res', 'Research'], ['eng', 'Engineering'], ['ops', 'Operations'], ['dec', 'Decisions']];
 const KN_LOCK_TEXT = {
   excluded: 'This room is on the private list (KNOWLEDGE_EXCLUDED_ROOM_IDS). Nothing from it is ever added to knowledge.',
   archived: 'This room is archived. Restore it before including it in knowledge.',
@@ -268,7 +273,7 @@ function knOpenManager(room, returnFocus) {
 
   _knModal = {
     room, overlay, dlg, status, panes, tabBtns, onKey, opener, tab: null,
-    docs: { seq: 0, list: [] },
+    docs: { seq: 0, list: [], listEl: null },
     nodes: { seq: 0, items: [], total: 0, q: '', documentId: '', built: false },
     usage: { seq: 0, items: [], before: null, nodeId: null, nodeTitle: '', built: false },
     usageDirty: true, nodesDirty: true, docsDirty: true,
@@ -319,8 +324,8 @@ function knModalReloadActive() {
   knSwitchTab(m.tab);
 }
 
-// Anything deleted changes the counts in the popover section and the other tabs.
-function knAfterDelete(except) {
+// Anything added or deleted changes the counts in the popover section, the other tabs and the brain.
+function knAfterChange(except) {
   const m = _knModal;
   if (m) {
     if (except !== 'documents') m.docsDirty = true;
@@ -328,15 +333,77 @@ function knAfterDelete(except) {
     if (except !== 'usage') m.usageDirty = true;
   }
   if (_knSection && _knSection.el.isConnected) knLoadSection();
+  if (typeof kbHandleGraphChanged === 'function') kbHandleGraphChanged();
 }
 
 function knEmpty(text) { return knEl('div', 'kn-empty', text); }
 
 // ── Documents tab
 
+// Upload bar (kept across reloads) above the list that knRenderDocs rewrites.
+function knBuildDocsPane() {
+  const m = _knModal;
+  const bar = knEl('div', 'kn-filters kn-upload');
+  const input = knEl('input');
+  input.type = 'file';
+  input.accept = KN_DOC_EXTS.join(',');
+  input.hidden = true;
+  const btn = knEl('button', 'kn-btn', 'Upload .md / .txt');
+  btn.type = 'button';
+  btn.dataset.ghost = 'Uploading…';
+  btn.addEventListener('click', () => input.click());
+  const cat = knEl('select', 'kn-input');
+  cat.setAttribute('aria-label', 'Category of the uploaded document');
+  for (const [v, label] of KN_CATEGORIES) {
+    const o = knEl('option', null, label);
+    o.value = v;
+    cat.appendChild(o);
+  }
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (file) knUploadDoc(file, cat.value, btn);
+  });
+  bar.append(btn, cat, input);
+  const list = knEl('div', 'kn-docs-list');
+  m.panes.documents.replaceChildren(bar, list);
+  m.docs.listEl = list;
+}
+
+async function knUploadDoc(file, category, btn) {
+  const m = _knModal;
+  if (!m) return;
+  const name = file.name || '';
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
+  if (!KN_DOC_EXTS.includes(ext)) { knSetStatus(`Only ${KN_DOC_EXTS.join(', ')} files can be added.`, true); return; }
+  if (file.size > KN_DOC_MAX_BYTES) { knSetStatus(`"${name}" is larger than ${KN_DOC_MAX_BYTES / 1024} KB.`, true); return; }
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  knSetStatus('');
+  try {
+    const content = await file.text();
+    const r = await knFetch(`/api/rooms/${m.room.id}/knowledge/documents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, content, category }),
+    });
+    if (m !== _knModal) return;
+    const sections = Number(r.sections) || 0;
+    knSetStatus(r.unchanged
+      ? `"${name}" is already up to date.`
+      : `Added "${name}": ${knPlural(sections, 'section', 'sections')} (${Number(r.added) || 0} new, ${Number(r.updated) || 0} updated, ${Number(r.removed) || 0} removed).`);
+    knAfterChange('documents');
+    knLoadDocs();
+  } catch (e) {
+    if (m === _knModal) knSetStatus(e.message || 'Failed to upload the document', true);
+  } finally {
+    if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Upload .md / .txt'; }
+  }
+}
+
 async function knLoadDocs() {
   const m = _knModal;
-  const pane = m.panes.documents;
+  if (!m.docs.listEl) knBuildDocsPane();
+  const pane = m.docs.listEl;
   const seq = ++m.docs.seq;
   m.docsDirty = false;
   if (!pane.firstChild) pane.appendChild(knEl('div', 'kn-muted', 'loading…'));
@@ -355,10 +422,10 @@ async function knLoadDocs() {
 
 function knRenderDocs(truncated) {
   const m = _knModal;
-  const pane = m.panes.documents;
+  const pane = m.docs.listEl;
   const list = m.docs.list;
   if (!list.length) {
-    pane.replaceChildren(knEmpty('No documents in this room. Agents add .md documents with knowledge_add.'));
+    pane.replaceChildren(knEmpty('No documents in this room. Upload a .md or .txt file, or let an agent add one with knowledge_add.'));
     return;
   }
   const ul = knEl('ul', 'kn-list');
@@ -384,7 +451,7 @@ function knRenderDocs(truncated) {
         knRenderDocs(truncated);
         knSyncDocFilter();
         knSetStatus(`Deleted "${d.name}" and the nodes that came only from it.`);
-        knAfterDelete('documents');
+        knAfterChange('documents');
       } catch (e) { knSetStatus(e.message || 'Failed to delete document', true); }
     }));
     li.append(main, actions);
@@ -532,7 +599,7 @@ function knNodeRow(n) {
       knSetStatus(uses
         ? `Deleted "${n.title}". Its usage history is kept under Usage history until you forget the trace.`
         : `Deleted "${n.title}".`);
-      knAfterDelete('nodes');
+      knAfterChange('nodes');
     } catch (e) { knSetStatus(e.message || 'Failed to delete node', true); }
   }));
   li.append(main, actions);
