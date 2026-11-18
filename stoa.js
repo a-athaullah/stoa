@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.7.3";
+var CLIENT_VERSION = "0.8.0";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -255,6 +255,7 @@ var { unshippedAgentRequires } = require("./lib/agent-bundle-check");
 var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
 var { createWorkJournal } = require("./lib/work-journal");
 var { buildErrorDetail } = require("./lib/harness-error");
+var { createKnowledgeRunner } = require("./lib/knowledge-agent");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -1277,7 +1278,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -1414,6 +1415,10 @@ async function handleAgentMessage(msg) {
   }
   if (msg.type === "recovery_result") {
     handleRecoveryResult(msg);
+    return;
+  }
+  if (msg.type === "knowledge_extract") {
+    knowledgeRunner().handle(msg);
     return;
   }
   if (msg.type === "force_update") {
@@ -3118,6 +3123,22 @@ var _fetchOverride = null;
 // leave only once ws.send reports the frame written. One sent while the socket is down is replayed
 // after the next reconnect; the server ignores a replay it already applied. Stream tokens and
 // progress are not worth replaying and are still dropped while disconnected.
+// Knowledge extraction (lib/knowledge-agent.js): one job at a time, never while room runs fill
+// max_concurrent or a claude CLI update waits (the server retries a busy answer later).
+var _knowledgeRunner = null;
+function knowledgeRunner() {
+  if (!_knowledgeRunner) {
+    _knowledgeRunner = createKnowledgeRunner({
+      spawn: (...a) => (_knowledgeSpawn || require("child_process").spawn)(...a),
+      send: (data) => send(data),
+      busy: () => activeTriggers.size >= MAX_CONCURRENT || harnessUpdates.has("claude"),
+      ...(_knowledgeWorkDir ? { workDir: _knowledgeWorkDir } : {})
+    });
+  }
+  return _knowledgeRunner;
+}
+var _knowledgeSpawn = null;
+var _knowledgeWorkDir = null;
 var OUTBOX_TYPES = /* @__PURE__ */ new Set(["agent_complete", "agent_error"]);
 var OUTBOX_MAX = 50;
 var outbox = [];
@@ -3214,9 +3235,17 @@ function __setDeps(overrides) {
   if (overrides.journalDir) workJournal = openWorkJournal(overrides.journalDir);
   if (overrides.JOURNAL_BG_SETTLE_MS != null) JOURNAL_BG_SETTLE_MS = overrides.JOURNAL_BG_SETTLE_MS;
   if (overrides.JOURNAL_HEARTBEAT_MS != null) JOURNAL_HEARTBEAT_MS = overrides.JOURNAL_HEARTBEAT_MS;
+  if (overrides.knowledgeSpawn) _knowledgeSpawn = overrides.knowledgeSpawn;
+  if (overrides.knowledgeWorkDir) {
+    _knowledgeWorkDir = overrides.knowledgeWorkDir;
+    _knowledgeRunner = null;
+  }
 }
 function __resetDeps() {
   _sendOverride = null;
+  _knowledgeSpawn = null;
+  _knowledgeWorkDir = null;
+  _knowledgeRunner = null;
   _getSessionOverride = null;
   _prepareResumeOverride = null;
   _fetchOverride = null;

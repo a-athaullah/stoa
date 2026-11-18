@@ -288,6 +288,7 @@ const { createThreadBroadcast } = require('./lib/thread-broadcast');
 const { findMentions } = require('./lib/mentions');
 const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
 const { createSemanticIndex } = require('./lib/semantic-index');
+const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1869,6 +1870,8 @@ const roomTasks = createRoomTasks({
   // stoa__task_complete (every completion_mode) also marks the card's thread complete, the same write and
   // event as the owner's PUT /threads/:id/complete. roomMessages is created below; only called at runtime.
   completeThread: (roomId, rootId, opts) => threadCompleteDefer.request(roomId, rootId, opts),
+  // knowledge is created below; only called at runtime.
+  onDone: (roomId, threadId) => knowledge.enqueueConversation(roomId, threadId, 'task_done'),
 });
 // Task board runner (lib/room-tasks-runner.js). The callbacks run after boot, so the run machinery
 // defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
@@ -1910,7 +1913,35 @@ const roomMessages = createRoomMessages({
   db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
   cascadeMentions: cascadeMentionsFromProactive, enqueueParentWake, uploadsDir: UPLOADS_DIR,
   onAgentPost: (roomId, threadId, actorId, subAgentId, info) => threadCompleteDefer.agentPosted(roomId, threadId, actorId, subAgentId, info),
+  onThreadCompleted: (roomId, rootId) => knowledge.enqueueConversation(roomId, rootId, 'thread_complete'),
 });
+// Knowledge extraction (lib/knowledge-extraction.js). The summary is written by an agent of the
+// room in a one-off run without tools (knowledge_extract → knowledge_extract_result); only a
+// current connector that announced the feature and runs claude gets a job. Primary agent first.
+const knowledge = createKnowledgeExtraction({
+  db,
+  semantic: semanticIndex,
+  pickAgent: (roomId) => {
+    const primary = roomPrimaryActorId(roomId);
+    const agents = db.prepare(`SELECT a.id, a.adapter FROM room_participants rp JOIN actors a ON a.id=rp.actor_id AND a.type='ai'
+      WHERE rp.room_id=? ORDER BY (a.id=?) DESC, rp.id`).all(roomId, primary ?? 0);
+    const able = (a) => agentReadyForWake(a.id) && agentFeatures.get(a.id)?.has('knowledge_extract')
+      && ((a.adapter || 'claude') === 'claude' || (agentHarnesses.get(a.id) || []).includes('claude'));
+    return agents.find(able)?.id ?? null;
+  },
+  sendToAgent: (actorId, data) => {
+    const ws = agentClients.get(actorId);
+    if (!ws || ws.readyState !== 1) return false;
+    ws.send(JSON.stringify(data));
+    return true;
+  },
+  excludedRoomIds: process.env.KNOWLEDGE_EXCLUDED_ROOM_IDS || '',
+  idleHours: Math.max(1, parseFloat(process.env.KNOWLEDGE_IDLE_HOURS) || 6),
+  mergeSim: parseFloat(process.env.KNOWLEDGE_MERGE_SIM) || 0.93,
+  edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
+  model: process.env.KNOWLEDGE_MODEL || '',
+});
+if (!SMOKE_BOOT) knowledge.start();
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
 const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
@@ -6499,6 +6530,7 @@ wss.on('connection', (ws, req) => {
       }
       drainRetriggers(agentActorId);
       sessionRecovery.drain(agentActorId);
+      knowledge.kick();
       // CLAUDE.md import: request import for unmigrated workdirs
       const unmigratedWds = db.prepare(
         'SELECT id, path FROM agent_workdirs WHERE actor_id=? AND claude_md_migrated_at IS NULL'
@@ -6666,6 +6698,12 @@ wss.on('connection', (ws, req) => {
         const results = sessionRecovery.report(agentActorId, msg);
         ws.send(JSON.stringify({ type: 'recovery_result', results }));
       } catch (e) { console.error('[recovery] report failed:', e.message); }
+      return;
+    }
+
+    // ── Agent answers a knowledge_extract job (lib/knowledge-extraction.js checks the lease)
+    if (msg.type === 'knowledge_extract_result' && agentActorId) {
+      knowledge.handleResult(agentActorId, msg).catch(e => console.error('[knowledge] result error:', e.message));
       return;
     }
 

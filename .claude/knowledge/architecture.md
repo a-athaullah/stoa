@@ -235,6 +235,86 @@ After a connector process dies mid-work, its journal entries are recovered once 
 
 **Logs** (`[recovery]`): `restart: N sesi akan dipulihkan (Actor #X, M entri dilaporkan)`, then one line per entry: `dipulihkan` / `dilewati` / `dibuang` / `dihentikan` with the reason; `trigger:`, `terputus:`, `gagal:` while draining. The connector logs `restart: N journal entries reported` and one line per verdict.
 
+## Knowledge Extraction
+
+`lib/knowledge-extraction.js` (server), `lib/knowledge-agent.js` (connector), `migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).
+
+Turns finished conversations in opted-in rooms into knowledge nodes via a background queue. Never runs per-message — only on discrete events.
+
+### Trigger events
+
+| Event | Code path |
+|-------|-----------|
+| Thread marked complete | `lib/room-messages.js` → `enqueueConversation(roomId, threadId, 'thread_complete')` |
+| Task card moved to Finished | `lib/room-tasks.js` → `enqueueConversation(roomId, threadId, 'task_done')` |
+| Conversation quiet for `KNOWLEDGE_IDLE_HOURS` (default 6 h) | `sweep()` → `enqueueConversation(..., 'idle')` every 15 min |
+| Node goes stale (a source deleted: trigger `knowledge_sources_ad`; a source message's content edited: trigger `knowledge_messages_au`) | triggers only set `status='stale'`; `sweep()` (every 15 min) picks stale nodes by `stale_at` → `enqueueStale(nodeId)` (reason `stale`) |
+
+### Queue and lease
+
+1. `enqueueConversation` / `enqueueStale` inserts a row into `knowledge_jobs` (`INSERT OR IGNORE` — duplicate trigger = no-op). Non-idle triggers replace a `failed` tombstone first so a repaired conversation can be retried.
+2. `tick()` (every 30 s) picks `pending` jobs ordered by id, up to 5 per tick. For each job, the server:
+   - Checks `eligibleRoom()` (see Privacy).
+   - Reads messages after the cursor (`knowledge_cursors.through_message_id`), capped at 200 messages / 60 KB.
+   - Embeds the segment, finds up to 5 candidate nodes (cosine similarity, active only, sources in an eligible room).
+   - Sets `status='running'`, records `leased_actor_id`, sends `knowledge_extract` WS event to the agent.
+3. The agent runs a one-shot claude process (`knowledge-agent.js`) and answers `knowledge_extract_result`. Only the leased actor's result is accepted.
+4. The server validates the output strictly (`parseExtraction`), embeds the summaries, and stores everything in one transaction:
+   - `update_node_id` set by the agent → update that candidate node.
+   - No `update_node_id` but cosine ≥ 0.93 to an existing active node → merge (attach sources, update `updated_at`).
+   - Otherwise → insert new node.
+   - Edges recomputed for changed nodes (cosine ≥ 0.85, up to 8 per node).
+   - Cursor advances to the last message in the segment.
+   - Messages edited during the run → their nodes marked stale for the next sweep.
+5. Job deleted on success. If `more=true` (segment hit the byte/count cap), a new job is enqueued immediately.
+
+### One-shot summarizer (connector side)
+
+`lib/knowledge-agent.js` spawns `claude` with:
+- `--tools ""` — no tools
+- `--strict-mcp-config` without `--mcp-config` — no MCP server at all
+- `--disable-slash-commands`, `--no-session-persistence`
+- `cwd = ~/.stoa/knowledge-work` (empty, isolated, no CLAUDE.md)
+- env stripped of all `STOA_*` vars — no credentials
+
+The process is killed via `SIGKILL` once the answer arrives or the timeout fires (default 5 min, max 10 min). It is not in `sessionPool` or the work journal. If the connector is at its `max_concurrent` run limit, it replies `{ busy: true }` and the server retries the job after 60 s.
+
+### Lease expiry and retries
+
+- Lease timeout = `timeout_ms + 2 min`. Expired leases are detected on each `tick()`.
+- Failed attempt: `attempts + 1`. Backoff: `2^attempts × 60s`.
+- After 3 failed attempts: `status='failed'` (tombstone). Idle sweep skips failed jobs. A new trigger event (thread_complete / task_done) clears the tombstone and re-enqueues.
+
+### Privacy
+
+`eligibleRoom(roomId)` is the single privacy gate, checked at enqueue, at send, and before storing results:
+
+```
+rooms.knowledge_enabled = 1
+AND rooms.archived_at IS NULL
+AND roomId NOT IN KNOWLEDGE_EXCLUDED_ROOM_IDS (env, comma-separated ids)
+```
+
+- Rooms not opted in are never read.
+- Archived rooms are excluded even if previously opted in.
+- `KNOWLEDGE_EXCLUDED_ROOM_IDS` for operator-level exclusions.
+- Stale-node jobs: each source message is verified against `eligibleRoom`; if sources span rooms the agent is not in, the job is dropped.
+- Logs carry ids and counts only — never message text or summaries.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `KNOWLEDGE_IDLE_HOURS` | 6 | Hours of quiet before an idle sweep job is created |
+| `KNOWLEDGE_EXCLUDED_ROOM_IDS` | (empty) | Comma-separated room ids to never extract from |
+| `KNOWLEDGE_MODEL` | (empty, uses agent default) | Model passed to the one-shot claude process |
+| `KNOWLEDGE_MERGE_SIM` | 0.93 | Cosine threshold to merge into an existing node |
+| `KNOWLEDGE_EDGE_SIM` | 0.85 | Cosine threshold to draw an edge |
+
+The per-job timeout is not configurable: the server sends `timeout_ms` = 5 min (`createKnowledge({ timeoutMs })` default) and the connector clamps it to at most 10 min. The lease expires after timeout + 2 min.
+
+---
+
 ## Security Model
 
 ### Authentication

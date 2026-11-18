@@ -508,6 +508,79 @@ CREATE TABLE mcp_approval_exemptions (
 - Re-extraction queue: `WHERE status='stale' ORDER BY stale_at` (index-ordered); on success set `status='active', stale_at=NULL` together (CHECK enforces the pair).
 - Edges: always insert `(min(id), max(id))`.
 
+### knowledge_cursors
+
+`migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).
+
+Tracks how far each conversation has been extracted. One row per (room, thread) pair; `thread_id IS NULL` means the room's main feed.
+
+```sql
+CREATE TABLE knowledge_cursors (
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  thread_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  through_message_id INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX idx_knowledge_cursors_key ON knowledge_cursors(room_id, COALESCE(thread_id, 0));
+CREATE INDEX idx_knowledge_cursors_thread ON knowledge_cursors(thread_id) WHERE thread_id IS NOT NULL;
+```
+
+**Key points:**
+- `through_message_id` — id of the last message included in a successful extraction run. The next job reads messages with `id > through_message_id`.
+- `ON CONFLICT DO UPDATE SET through_message_id = MAX(...)` — cursor only advances, never retreats.
+
+---
+
+### knowledge_jobs
+
+`migrations/20261118-knowledge-extraction.sql` (Knowledge 2/6).
+
+Queue of pending extraction work. A successful job is **deleted** (not logged); a job that exhausts all attempts stays as `status='failed'` to prevent the idle sweep from retrying a broken segment forever.
+
+```sql
+CREATE TABLE knowledge_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  thread_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  node_id INTEGER REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL CHECK(reason IN ('thread_complete','task_done','idle','stale')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  leased_actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+  leased_at TEXT,
+  next_attempt_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK((reason = 'stale') = (node_id IS NOT NULL)),
+  CHECK((status = 'running') = (leased_actor_id IS NOT NULL AND leased_at IS NOT NULL))
+);
+-- One pending job per conversation and per node (INSERT OR IGNORE = second trigger is a no-op):
+CREATE UNIQUE INDEX idx_knowledge_jobs_conv_pending ON knowledge_jobs(room_id, COALESCE(thread_id, 0))
+  WHERE status = 'pending' AND node_id IS NULL;
+CREATE UNIQUE INDEX idx_knowledge_jobs_node_pending ON knowledge_jobs(node_id)
+  WHERE status = 'pending' AND node_id IS NOT NULL;
+```
+
+**Key points:**
+
+| Field | Meaning |
+|-------|---------|
+| `node_id IS NULL` | Conversation job (read messages after cursor). |
+| `node_id IS NOT NULL` | Stale-node job (`reason='stale'`): re-summarize a node whose source messages were edited. |
+| `leased_actor_id` | Agent the job was sent to; only its `knowledge_extract_result` is accepted. |
+| `leased_at` | Lease start. Leases expire after `timeout_ms + 2 min`; expired jobs retry. |
+| `next_attempt_at` | Backoff: `2^attempts × 60s` between retries. |
+| `attempts` | Incremented on failure; after 3 the job becomes `status='failed'`. |
+
+**Triggers:**
+
+`knowledge_jobs_actor_bd` — BEFORE DELETE ON actors. When an actor that holds a lease is deleted, its running job is returned to `pending` (lease cleared, `attempts` unchanged). If a pending twin for the same conversation or node already exists, the running job is deleted instead (the twin covers it from the same cursor). This prevents the `CHECK(status='running' = leased_actor_id IS NOT NULL)` constraint from blocking the actor deletion.
+
+`knowledge_messages_au` — AFTER UPDATE OF content ON messages WHEN old.content IS NOT new.content. Marks every node built from the edited message as `status='stale'` (`stale_at = COALESCE(stale_at, now)`). The source row is kept; re-extraction reads the new text. State-only updates and writes of the same text do not fire the trigger.
+
+**Backfill behavior on restart:** `start()` in `lib/knowledge-extraction.js` runs `dropTwinned` (delete running jobs with a pending twin for the same target) then `releaseAll` (all remaining running jobs → pending) in one transaction. Running jobs sent before the restart have no context on the server side, so they start over without counting as an attempt.
+
 ---
 
 ## Migration Pattern
