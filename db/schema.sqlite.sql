@@ -826,6 +826,8 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_usage_node ON knowledge_usage(node_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_usage_room ON knowledge_usage(room_id, used_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_usage_actor ON knowledge_usage(actor_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_usage_sub_agent ON knowledge_usage(sub_agent_id) WHERE sub_agent_id IS NOT NULL;
+-- GET /api/knowledge/usage: range on used_at, node_id read from the index (migrations/20261119-knowledge-usage-time.sql).
+CREATE INDEX IF NOT EXISTS idx_knowledge_usage_time ON knowledge_usage(used_at, node_id);
 
 -- A source is gone (its message/document was deleted, or the row itself): a node with no source
 -- left is deleted (edges/usage cascade), otherwise it turns stale. COALESCE keeps the original

@@ -290,6 +290,7 @@ const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query')
 const { createSemanticIndex } = require('./lib/semantic-index');
 const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
+const { createKnowledgeSearch } = require('./lib/knowledge-search');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -1950,6 +1951,9 @@ const knowledgeDocs = createKnowledgeDocuments({
   readFile: (ident, filePath) => readAgentKnowledgeFile(ident, filePath),
   edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
 });
+// stoa__knowledge_search + GET /api/knowledge/usage (lib/knowledge-search.js). knowledge_used goes to
+// the owner's browsers only (broadcastGlobal), never to agent connections.
+const knowledgeSearch = createKnowledgeSearch({ db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data) });
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
 const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
@@ -2020,7 +2024,7 @@ const mcpGateway = createMcpGateway({
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, slackHistory,
       connectionAllowed: (ident, connId) => agentScopeAllowed(ident.actorId, { scope: 'connection', id: connId }, ident.subAgentId ?? null),
-      readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles, knowledgeDocs,
+      readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles, knowledgeDocs, knowledgeSearch,
       requestThreadComplete: (roomId, rootId, ident) => threadCompleteDefer.request(roomId, rootId, { fromTurn: true, actorId: ident.actorId, subAgentId: ident.subAgentId ?? null }),
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
       mcpServers: {
@@ -2883,6 +2887,13 @@ const server = http.createServer(async (req, res) => {
   // UI; agents get semantic results through WS agent_search. Not a finding.
   if (req.method === 'GET' && url.pathname === '/api/search/status') {
     return json(res, semanticIndex.status());
+  }
+
+  // Usage per node for the knowledge graph's history mode (card #39). Session-only (not in
+  // lib/agent-scope.js): it shows what every agent looked up, an owner view.
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/usage') {
+    const r = knowledgeSearch.usageCounts(url.searchParams.get('range'));
+    return json(res, r.body, r.status);
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/api/rooms/')) {

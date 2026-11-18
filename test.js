@@ -677,8 +677,8 @@ function runUnitTests() {
   ut('fuseRrf — ids in both lists outrank single-list ids; keyword order breaks ties', () => {
     const f = fuseRrf([10, 20, 30], [30, 40]);
     assert.deepStrictEqual(f.map(x => x.id), [30, 10, 20, 40], '20 and 40 tie at rank 2 → keyword first');
-    assert.deepStrictEqual(f[0], { id: 30, keyword: true, semantic: true });
-    assert.deepStrictEqual(f.find(x => x.id === 40), { id: 40, keyword: false, semantic: true });
+    assert.deepStrictEqual(f[0], { id: 30, score: 1 / 63 + 1 / 61, keyword: true, semantic: true });
+    assert.deepStrictEqual(f.find(x => x.id === 40), { id: 40, score: 1 / 62, keyword: false, semantic: true });
     assert.deepStrictEqual(fuseRrf([1, 2], []).map(x => x.id), [1, 2]);
     assert.deepStrictEqual(fuseRrf([], [5, 6]).map(x => x.id), [5, 6]);
   });
@@ -26970,10 +26970,11 @@ async function run() {
     // Later knowledge migrations are checked by their own tests below. The documents migration
     // (ALTER TABLE ... ADD COLUMN) is applied on both sides, so the stored CREATE TABLE text matches.
     const DOC_MIG = '20261119-knowledge-documents.sql';
+    const USAGE_MIG = '20261119-knowledge-usage-time.sql';
     const { kdb: post } = _knowledgeBootDb(_knowledgeDocsPreSchema());
     try {
       for (const f of fsK.readdirSync(pathK.join(__dirname, 'migrations'))) {
-        if (![MIG, DOC_MIG, '20261118-knowledge-extraction.sql'].includes(f)) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
+        if (![MIG, DOC_MIG, USAGE_MIG, '20261118-knowledge-extraction.sql'].includes(f)) fsK.copyFileSync(pathK.join(__dirname, 'migrations', f), pathK.join(tmp, f));
       }
       pre.pragma('foreign_keys = ON');
       runMigrations(pre, tmp, { log() {}, error() {} }, { schemaSql: preSchema });
@@ -26981,13 +26982,14 @@ async function run() {
       const sql = fsK.readFileSync(pathK.join(__dirname, 'migrations', MIG), 'utf8');
       assert.deepStrictEqual(applyMigration(pre, MIG, sql), { status: 'applied' }, 'applies cleanly, nothing skipped');
       assert.deepStrictEqual(applyMigration(pre, DOC_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', DOC_MIG), 'utf8')), { status: 'applied' });
+      assert.deepStrictEqual(applyMigration(pre, USAGE_MIG, fsK.readFileSync(pathK.join(__dirname, 'migrations', USAGE_MIG), 'utf8')), { status: 'applied' });
       const objs = (d) => d.prepare("SELECT type, name, sql FROM sqlite_master WHERE (name LIKE 'knowledge%' OR name LIKE 'idx_knowledge%') AND tbl_name NOT IN ('knowledge_jobs', 'knowledge_cursors') AND name NOT IN ('knowledge_jobs_actor_bd', 'knowledge_messages_au') ORDER BY name").all()
         .map(o => ({ ...o, sql: o.sql && o.sql.replace(/\s+/g, ' ') }));
       const after = objs(pre);
       assert.deepStrictEqual(after.map(o => o.name), ['idx_knowledge_documents_actor', 'idx_knowledge_documents_name', 'idx_knowledge_documents_room',
         'idx_knowledge_documents_updated_by', 'idx_knowledge_edges_b', 'idx_knowledge_nodes_status', 'idx_knowledge_sources_doc_section',
         'idx_knowledge_sources_document', 'idx_knowledge_sources_message', 'idx_knowledge_usage_actor',
-        'idx_knowledge_usage_node', 'idx_knowledge_usage_room', 'idx_knowledge_usage_sub_agent', 'knowledge_documents', 'knowledge_edges',
+        'idx_knowledge_usage_node', 'idx_knowledge_usage_room', 'idx_knowledge_usage_sub_agent', 'idx_knowledge_usage_time', 'knowledge_documents', 'knowledge_edges',
         'knowledge_nodes', 'knowledge_sources', 'knowledge_sources_ad', 'knowledge_usage']);
       assert.deepStrictEqual(after, objs(post), 'migration ≡ baseline');
       const col = (d) => d.prepare("SELECT type, \"notnull\", dflt_value FROM pragma_table_info('rooms') WHERE name = 'knowledge_enabled'").get();
@@ -28164,6 +28166,214 @@ async function run() {
         assert.deepStrictEqual([again.status, again.skipped.length], ['reconciled', 5], 'idempotent');
       } finally { pre.close(); post.close(); fsK.rmSync(tmp, { recursive: true, force: true }); }
     });
+
+    // ── Knowledge search (lib/knowledge-search.js), on the same boot schema and vectors.
+    const { createKnowledgeSearch } = require('./lib/knowledge-search');
+    const { toBlob } = require('./lib/knowledge-graph');
+    const ksSetup = ({ ready = true, embed = null } = {}) => {
+      const k = kxSetup();
+      const embeds = [];
+      const notes = [];
+      const semantic = {
+        ready, model: 'kx-test-model',
+        embed: async (texts, opts) => { embeds.push({ texts, opts }); return embed ? embed(texts) : texts.map(vecOf); },
+      };
+      const ks = createKnowledgeSearch({ db: k.kdb, semantic, notify: (d) => notes.push(d), log: { log() {}, error() {} }, now: () => new Date('2026-11-19T01:02:03Z') });
+      const rmA = k.room(1, [k.human, k.agent]);
+      const ident = { actorId: k.agent, roomId: rmA.id, threadId: null, subAgentId: null };
+      // A node with one message source in rm; vec = the text whose vecOf is stored (null = no vector).
+      const node = (rm, title, summary, { vec = title, model = 'kx-test-model', status = 'active', category = 'eng' } = {}) => {
+        const id = Number(k.kdb.prepare(`INSERT INTO knowledge_nodes (title, summary, category, embedding, embedding_model, status, stale_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`).run(title, summary, category, vec == null ? null : toBlob(vecOf(vec)), vec == null ? null : model,
+          status, status === 'stale' ? '2026-11-18 00:00:00' : null).lastInsertRowid);
+        k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(id, k.msg(rm, `source of ${title}`));
+        return id;
+      };
+      const usage = () => k.kdb.prepare('SELECT node_id, actor_id, sub_agent_id, room_id FROM knowledge_usage ORDER BY id').all();
+      return { ...k, ks, semantic, embeds, notes, rmA, ident, node, usage };
+    };
+    const okBody = (r) => { assert.strictEqual(r.status, 200, JSON.stringify(r.body)); return r.body; };
+
+    await test('knowledge search — text (index not ready): title words outrank summary words, prefix ≥3 chars, quoted phrase exact, Unicode; no match → nothing', async () => {
+      const k = ksSetup({ ready: false });
+      const rollback = k.node(k.rmA, 'Rollback', 'git revert then deploy again.');
+      const deploy = k.node(k.rmA, 'Deploy with pm2', 'Run pm2 restart after the build.');
+      const db = k.node(k.rmA, 'SQLite WAL', 'Café notes: écrire en WAL.');
+      k.node(k.rmA, 'Unrelated', 'Nothing to see.');
+      const r = okBody(await k.ks.search(k.ident, { query: 'deploy' }));
+      assert.deepStrictEqual(r.results.map(x => x.id), [deploy, rollback], 'title hit first, summary hit second, others absent');
+      assert.deepStrictEqual([r.semantic, r.results[0].match, r.results[0].category, r.results[0].summary], [false, 'text', 'eng', 'Run pm2 restart after the build.']);
+      assert.ok(r.results[0].score > r.results[1].score, 'score follows the order');
+      assert.strictEqual(k.embeds.length, 0, 'not ready → embed never called');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'depl' })).results.map(x => x.id), [deploy, rollback], 'prefix of ≥3 chars matches');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'de' })).results, [], '2 chars: whole word only');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: '"revert then"' })).results.map(x => x.id), [rollback]);
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: '"then revert"' })).results, [], 'phrase keeps word order');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'CAFÉ Écrire' })).results.map(x => x.id), [db], 'Unicode case folded');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: '100% wal_' })).results.map(x => x.id), [db], '% and _ are not wildcards');
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'kubernetes' })).results, []);
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'deploy', limit: 1 })).results.map(x => x.id), [deploy], 'limit');
+    });
+
+    await test('knowledge search — hybrid: query embedded as a query (passage:false) with the search timeout; nearest vector found without a word in common; other model / dimension ignored; embed failure → text only', async () => {
+      const k = ksSetup();
+      const near = k.node(k.rmA, 'Release checklist', 'Steps.', { vec: 'VEC[1,0.1,0,0,0,0,0,0]' });
+      const both = k.node(k.rmA, 'Ship it', 'ship VEC words', { vec: 'VEC[0.9,0.2,0,0,0,0,0,0]' });
+      const far = k.node(k.rmA, 'Far away', 'Steps.', { vec: 'VEC[0,0,0,0,0,0,0,1]' });
+      const otherModel = k.node(k.rmA, 'Other model', 'Steps.', { vec: 'VEC[1,0,0,0,0,0,0,0]', model: 'another-model' });
+      const r = okBody(await k.ks.search(k.ident, { query: 'ship VEC[1,0,0,0,0,0,0,0]' }));
+      assert.deepStrictEqual(k.embeds.map(e => [e.texts, e.opts]), [[['ship VEC[1,0,0,0,0,0,0,0]'], { passage: false, timeoutMs: 4000 }]]);
+      assert.strictEqual(r.semantic, true);
+      assert.deepStrictEqual(r.results.map(x => [x.id, x.match]), [[both, 'both'], [near, 'semantic']], 'text+vector first; far vector and other model absent');
+      assert.ok(![far, otherModel].some(id => r.results.some(x => x.id === id)));
+
+      const failing = ksSetup({ embed: () => null });
+      const t = failing.node(failing.rmA, 'Ship it', 'x', { vec: 'VEC[1,0,0,0,0,0,0,0]' });
+      failing.node(failing.rmA, 'Release', 'x', { vec: 'VEC[1,0,0,0,0,0,0,0]' });
+      const f = okBody(await failing.ks.search(failing.ident, { query: 'ship VEC[1,0,0,0,0,0,0,0]' }));
+      assert.deepStrictEqual([f.semantic, f.results.map(x => [x.id, x.match])], [false, [[t, 'text']]], 'no query vector → text matches only, no error');
+      const short = ksSetup({ embed: (texts) => texts.map(() => new Float32Array(4).fill(0.5)) });
+      const s = short.node(short.rmA, 'Ship it', 'x', { vec: 'VEC[1,0,0,0,0,0,0,0]' });
+      assert.deepStrictEqual(okBody(await short.ks.search(short.ident, { query: 'ship' })).results.map(x => [x.id, x.match]), [[s, 'text']], 'a vector of another dimension is never compared');
+      const orth = ksSetup();
+      orth.node(orth.rmA, 'Release checklist', 'Steps.', { vec: 'VEC[1,0,0,0,0,0,0,0]' });
+      assert.deepStrictEqual(okBody(await orth.ks.search(orth.ident, { query: 'zzz VEC[0,0,0,0,0,0,1,0]' })).results, [], 'best neighbour orthogonal to the query → not a hit');
+    });
+
+    await test('knowledge search — stale nodes never returned (text or vector match) and never logged', async () => {
+      const k = ksSetup();
+      const live = k.node(k.rmA, 'Deploy notes', 'pm2', { vec: 'VEC[1,0,0,0,0,0,0,0]' });
+      const stale = k.node(k.rmA, 'Deploy notes old', 'pm2', { vec: 'VEC[1,0,0,0,0,0,0,0]', status: 'stale' });
+      const r = okBody(await k.ks.search(k.ident, { query: 'deploy VEC[1,0,0,0,0,0,0,0]', limit: 20 }));
+      assert.deepStrictEqual(r.results.map(x => x.id), [live]);
+      assert.deepStrictEqual(k.usage().map(u => u.node_id), [live]);
+      k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(live);
+      assert.deepStrictEqual(okBody(await k.ks.search(k.ident, { query: 'deploy VEC[1,0,0,0,0,0,0,0]' })).results, []);
+      assert.deepStrictEqual([k.usage().length, k.notes.length], [1, 1], 'empty result: no usage row, no event');
+      assert.ok(stale);
+    });
+
+    await test('knowledge search — sources: a message source links only rooms the caller may reach (participant; sub-agent linked; not archived), others only counted; summary always shown; document source keeps name + section, room only when reachable', async () => {
+      const k = ksSetup({ ready: false });
+      const rmB = k.room(1, [k.human, k.other]);
+      const rmC = k.room(1, [k.human, k.agent]);
+      k.kdb.prepare("UPDATE rooms SET title='kx-archived', archived_at=datetime('now') WHERE id=?").run(rmC.id);
+      k.kdb.prepare("UPDATE rooms SET title='kx-room-a' WHERE id=?").run(k.rmA.id);
+      const n = k.node(k.rmA, 'Zebra protocol', 'Summary stays visible.');
+      const root = k.kdb.prepare('SELECT message_id FROM knowledge_sources WHERE node_id=?').get(n).message_id;
+      const reply = k.msg(k.rmA, 'reply', { threadId: root });
+      const inB = k.msg(rmB, 'secret room b');
+      const inC = k.msg(rmC, 'archived room c');
+      for (const m of [reply, inB, inC]) k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(n, m);
+      const docB = Number(k.kdb.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id) VALUES ('zebra.md', 'h', ?)").run(rmB.id).lastInsertRowid);
+      const docA = Number(k.kdb.prepare("INSERT INTO knowledge_documents (name, content_hash, room_id) VALUES ('guide.md', 'h', ?)").run(k.rmA.id).lastInsertRowid);
+      const d = k.node(k.rmA, 'zebra.md: Setup', 'Install.', { vec: null });
+      k.kdb.prepare("INSERT INTO knowledge_sources (node_id, document_id, section) VALUES (?, ?, 'Setup')").run(d, docB);
+      k.kdb.prepare("INSERT INTO knowledge_sources (node_id, document_id, section) VALUES (?, ?, 'Intro')").run(d, docA);
+      const firstOfD = k.kdb.prepare('SELECT message_id FROM knowledge_sources WHERE node_id=? AND message_id IS NOT NULL').get(d).message_id;
+
+      const byId = async (ident) => Object.fromEntries(okBody(await k.ks.search(ident, { query: 'zebra' })).results.map(x => [x.id, x]));
+      const main = await byId(k.ident);
+      assert.deepStrictEqual(main[n], { id: n, title: 'Zebra protocol', summary: 'Summary stays visible.', category: 'eng', score: main[n].score, match: 'text',
+        sources: [
+          { type: 'message', room_id: k.rmA.id, room_title: 'kx-room-a', thread_id: null, message_id: root },
+          { type: 'message', room_id: k.rmA.id, room_title: 'kx-room-a', thread_id: root, message_id: reply }],
+        hidden_sources: 2 }, 'room B (not a participant) and archived room C are counted only');
+      assert.deepStrictEqual(main[d].sources, [
+        { type: 'message', room_id: k.rmA.id, room_title: 'kx-room-a', thread_id: null, message_id: firstOfD },
+        { type: 'document', name: 'zebra.md', section: 'Setup' },
+        { type: 'document', name: 'guide.md', section: 'Intro', room_id: k.rmA.id, room_title: 'kx-room-a' }]);
+      assert.strictEqual(main[d].hidden_sources, undefined);
+      const text = JSON.stringify(main);
+      for (const leak of [`"room_id":${rmB.id},`, `"room_id":${rmC.id},`, 'kx-archived', `"message_id":${inB}}`, `"message_id":${inC}}`]) assert.ok(!text.includes(leak), `no trace of ${leak}`);
+
+      // Sub-agent of the agent: unlinked → room A is not reachable either; linked → it is.
+      const sa = Number(k.kdb.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'kxsub')").run(k.agent).lastInsertRowid);
+      const subIdent = { ...k.ident, subAgentId: sa };
+      const unlinked = await byId(subIdent);
+      assert.deepStrictEqual([unlinked[n].sources, unlinked[n].hidden_sources, unlinked[n].summary], [[], 4, 'Summary stays visible.']);
+      k.kdb.prepare('INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (?, ?)').run(k.rmA.id, sa);
+      const linked = await byId(subIdent);
+      assert.deepStrictEqual([linked[n].sources.length, linked[n].hidden_sources], [2, 2]);
+      // Another agent, participant of B only: sees B's sources, not A's.
+      const other = await byId({ actorId: k.other, roomId: rmB.id, threadId: null, subAgentId: null });
+      assert.deepStrictEqual([other[n].sources.map(s => s.message_id), other[n].hidden_sources], [[inB], 3]);
+    });
+
+    await test('knowledge search — at most 10 sources listed per node, the rest counted in more_sources', async () => {
+      const k = ksSetup({ ready: false });
+      const n = k.node(k.rmA, 'Many sources', 'x');
+      for (let i = 0; i < 11; i++) k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(n, k.msg(k.rmA, `more ${i}`));
+      const r = okBody(await k.ks.search(k.ident, { query: 'many' })).results[0];
+      assert.deepStrictEqual([r.sources.length, r.more_sources, r.hidden_sources], [10, 2, undefined]);
+    });
+
+    await test('knowledge search — usage: one knowledge_usage row per returned node (actor, sub-agent, session room) in one write, one knowledge_used event per search with every node id', async () => {
+      const k = ksSetup({ ready: false });
+      const a = k.node(k.rmA, 'Quokka deploy', 'x');
+      const b = k.node(k.rmA, 'Quokka rollback', 'x');
+      const rmOther = k.room(1, [k.human, k.agent]);
+      const r = okBody(await k.ks.search({ ...k.ident, roomId: rmOther.id }, { query: 'quokka' }));
+      assert.deepStrictEqual(r.results.map(x => x.id), [a, b]);
+      assert.deepStrictEqual(k.usage(), [
+        { node_id: a, actor_id: k.agent, sub_agent_id: null, room_id: rmOther.id },
+        { node_id: b, actor_id: k.agent, sub_agent_id: null, room_id: rmOther.id }], 'room = the session\'s room, not the node\'s');
+      assert.deepStrictEqual(k.notes, [{ type: 'knowledge_used', node_ids: [a, b], actor_id: k.agent, sub_agent_id: null, room_id: rmOther.id, at: '2026-11-19T01:02:03.000Z' }]);
+      const sa = Number(k.kdb.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'kxsub2')").run(k.agent).lastInsertRowid);
+      okBody(await k.ks.search({ ...k.ident, subAgentId: sa }, { query: 'rollback' }));
+      assert.deepStrictEqual(k.usage().slice(2), [{ node_id: b, actor_id: k.agent, sub_agent_id: sa, room_id: k.rmA.id }]);
+      assert.deepStrictEqual(k.notes[1].node_ids, [b]);
+      assert.strictEqual(k.notes[1].sub_agent_id, sa);
+      // A node gone mid-search (deleted while the query was embedded) is not returned or logged.
+      const slow = ksSetup();
+      const keep = slow.node(slow.rmA, 'Quokka keep', 'x');
+      const gone = slow.node(slow.rmA, 'Quokka gone', 'x');
+      slow.semantic.embed = async (texts) => { slow.kdb.prepare('DELETE FROM knowledge_nodes WHERE id=?').run(gone); return texts.map(vecOf); };
+      assert.deepStrictEqual(okBody(await slow.ks.search(slow.ident, { query: 'quokka' })).results.map(x => x.id), [keep]);
+      assert.deepStrictEqual(slow.usage().map(u => u.node_id), [keep]);
+      // A broadcast that throws does not fail the search; the usage is kept.
+      const loud = ksSetup({ ready: false });
+      const errs = [];
+      const ks2 = createKnowledgeSearch({ db: loud.kdb, semantic: loud.semantic, notify: () => { throw new Error('ws down'); }, log: { log() {}, error: (m) => errs.push(m) } });
+      const q2 = loud.node(loud.rmA, 'Quokka loud', 'x');
+      assert.deepStrictEqual(okBody(await ks2.search(loud.ident, { query: 'quokka' })).results.map(x => x.id), [q2]);
+      assert.deepStrictEqual([loud.usage().length, errs.length], [1, 1]);
+    });
+
+    await test('knowledge search — invalid input → 400, nothing embedded, nothing logged', async () => {
+      const k = ksSetup();
+      k.node(k.rmA, 'Deploy', 'x');
+      const cases = [
+        [{}, 'query must be a non-empty string'], [{ query: '' }, 'query must be a non-empty string'], [{ query: '   ' }, 'query must be a non-empty string'],
+        [{ query: 5 }, 'query must be a non-empty string'], [{ query: ['deploy'] }, 'query must be a non-empty string'],
+        [{ query: 'd'.repeat(501) }, 'query is longer than 500 characters'], [{ query: '%_*"' }, 'query has no letters or digits to search for'],
+        [{ query: 'deploy', limit: 0 }, 'limit must be an integer from 1 to 20'], [{ query: 'deploy', limit: 21 }, 'limit must be an integer from 1 to 20'],
+        [{ query: 'deploy', limit: 1.5 }, 'limit must be an integer from 1 to 20'], [{ query: 'deploy', limit: '3' }, 'limit must be an integer from 1 to 20'],
+        [{ query: 'deploy', limit: null }, 'limit must be an integer from 1 to 20'],
+      ];
+      for (const [args, error] of cases) assert.deepStrictEqual(await k.ks.search(k.ident, args), { status: 400, body: { error } }, JSON.stringify(args));
+      assert.deepStrictEqual([k.embeds.length, k.usage().length, k.notes.length], [0, 0, 0]);
+      assert.strictEqual((await k.ks.search(k.ident, { query: 'd'.repeat(500) })).status, 200, '500 chars is allowed');
+    });
+
+    await test('knowledge search — usage counts per range: rows at the edges of 24h / 7d / 30d, stale nodes counted, most used first; bad range → 400; the query reads only idx_knowledge_usage_time', async () => {
+      const k = ksSetup({ ready: false });
+      const a = k.node(k.rmA, 'A', 'x'), b = k.node(k.rmA, 'B', 'x'), c = k.node(k.rmA, 'C', 'x', { status: 'stale' });
+      const use = (node, ago) => k.kdb.prepare("INSERT INTO knowledge_usage (node_id, actor_id, room_id, used_at) VALUES (?, ?, ?, datetime('now', ?))").run(node, k.agent, k.rmA.id, ago);
+      use(a, '-1 minutes'); use(a, '-23 hours'); use(b, '-23 hours'); use(b, '-25 hours');
+      use(b, '-6 days'); use(c, '-6 days'); use(a, '-8 days');
+      use(c, '-29 days'); use(a, '-31 days'); use(b, '-40 days');
+      assert.deepStrictEqual(k.ks.usageCounts('24h'), { status: 200, body: { range: '24h', nodes: [{ node_id: a, count: 2 }, { node_id: b, count: 1 }] } });
+      assert.deepStrictEqual(k.ks.usageCounts('7d').body.nodes, [{ node_id: b, count: 3 }, { node_id: a, count: 2 }, { node_id: c, count: 1 }]);
+      assert.deepStrictEqual(k.ks.usageCounts('30d').body.nodes, [{ node_id: a, count: 3 }, { node_id: b, count: 3 }, { node_id: c, count: 2 }], 'ties by node id');
+      for (const bad of [null, '', '1y', '24H', 'constructor', '__proto__', 'toString']) {
+        assert.deepStrictEqual(k.ks.usageCounts(bad), { status: 400, body: { error: 'range must be one of 24h, 7d, 30d' } }, String(bad));
+      }
+      k.kdb.prepare('DELETE FROM knowledge_nodes WHERE id=?').run(a);
+      assert.deepStrictEqual(k.ks.usageCounts('30d').body.nodes, [{ node_id: b, count: 3 }, { node_id: c, count: 2 }], 'a deleted node takes its usage with it');
+      const plan = k.kdb.prepare(`EXPLAIN QUERY PLAN ${require('./lib/knowledge-search').USAGE_SQL}`).all('-7 days').map(r => r.detail).join(' | ');
+      assert.match(plan, /SEARCH knowledge_usage USING COVERING INDEX idx_knowledge_usage_time \(used_at>\?\)/, plan);
+    });
   }
   {
     const { EventEmitter } = require('events');
@@ -28905,7 +29115,7 @@ async function run() {
     const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list', 'connection_messages_read',
-      'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list',
+      'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list', 'knowledge_search',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set', 'rooms_list',
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
@@ -28913,7 +29123,7 @@ async function run() {
       'task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_retry', 'task_update',
       'thread_complete', 'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
-    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'connection_messages_read', 'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
+    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'connection_messages_read', 'knowledge_add', 'knowledge_document_delete', 'knowledge_documents_list', 'knowledge_search', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
       'self_avatar_set', 'self_get', 'self_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_complete', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
@@ -30157,6 +30367,81 @@ async function run() {
         assert.strictEqual(docsOf(roomA).length, 0);
       } finally {
         agA.ws.off('message', spy);
+        mDb.prepare('DELETE FROM knowledge_documents WHERE room_id=?').run(roomA);
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=? WHERE id=?').run(flag, roomA);
+        await announce();
+      }
+    });
+
+    await test('MCP stoa tools — knowledge_search: ranked document note with its source room, usage rows per session (agent / sub-agent / other agent), knowledge_used to the browser only, other room\'s source without its room; GET /api/knowledge/usage', async () => {
+      const announce = async (features) => {
+        const ready = waitForWsMessage(agA.ws, m => m.type === 'agent_ready', 3000);
+        agA.ws.send(JSON.stringify({ type: 'agent_connect', actor_id: agA.actorId, secret: agA.secret, ...(features ? { features } : {}) }));
+        await ready;
+      };
+      const flag = mDb.prepare('SELECT knowledge_enabled FROM rooms WHERE id=?').get(roomA).knowledge_enabled;
+      const agentEvents = [];
+      const spy = (raw) => { const m = JSON.parse(raw); if (m.type === 'knowledge_used') agentEvents.push(m); };
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      agA.ws.on('message', spy); agB.ws.on('message', spy);
+      const usageSince = (id) => mDb.prepare('SELECT node_id, actor_id, sub_agent_id, room_id FROM knowledge_usage WHERE id>? ORDER BY id').all(id);
+      const lastUsage = () => mDb.prepare('SELECT COALESCE(MAX(id),0) AS m FROM knowledge_usage').get().m;
+      try {
+        humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomA);
+        await announce(['knowledge_add']);
+        const ask = waitForWsMessage(agA.ws, m => m.type === 'knowledge_file_read', 3000);
+        const pending = stoaCall(tokA, 'knowledge_add', { path: 'quokka.md', category: 'ops' });
+        agA.ws.send(JSON.stringify({ type: 'knowledge_file_read_result', request_id: (await ask).request_id, name: 'quokka.md',
+          content: '# Quokkadeploy\nUse pm2 restart for the quokkafest service.\n# Quokkarollback\nRun git revert on quokkafest, then redeploy.' }));
+        const added = await pending;
+        assert.strictEqual(added.isError, false, added.text);
+        const ids = Object.fromEntries(mDb.prepare('SELECT s.section, s.node_id FROM knowledge_sources s WHERE s.document_id=?').all(added.body.document_id).map(r => [r.section, r.node_id]));
+
+        const before = lastUsage();
+        const evt = waitForWsMessage(humanWs, m => m.type === 'knowledge_used' && m.actor_id === agA.actorId && m.sub_agent_id === null, 3000);
+        const r = await stoaOk(tokA, 'knowledge_search', { query: 'quokkarollback revert', limit: 5 });
+        assert.strictEqual(r.semantic, true, 'hash backend ready');
+        assert.deepStrictEqual(r.results[0], { id: ids.Quokkarollback, title: 'quokka.md: Quokkarollback', summary: 'Run git revert on quokkafest, then redeploy.', category: 'ops',
+          score: r.results[0].score, match: 'both', sources: [{ type: 'document', name: 'quokka.md', section: 'Quokkarollback', room_id: roomA, room_title: '__mcp-room-a__' }] });
+        assert.ok(r.results.length <= 5);
+        const e = await evt;
+        assert.deepStrictEqual(e, { type: 'knowledge_used', node_ids: r.results.map(x => x.id), actor_id: agA.actorId, sub_agent_id: null, room_id: roomA, at: e.at });
+        assert.ok(Math.abs(Date.parse(e.at) - Date.now()) < 60000);
+        assert.deepStrictEqual(usageSince(before), r.results.map(x => ({ node_id: x.id, actor_id: agA.actorId, sub_agent_id: null, room_id: roomA })));
+
+        // Sub-agent session: logged with its id under the parent agent.
+        const b2 = lastUsage();
+        const rs = await stoaOk(tokSub, 'knowledge_search', { query: 'quokkarollback', limit: 1 });
+        assert.deepStrictEqual([rs.results.map(x => x.id), usageSince(b2)], [[ids.Quokkarollback], [{ node_id: ids.Quokkarollback, actor_id: agA.actorId, sub_agent_id: sub.id, room_id: roomA }]]);
+        // Agent B is not in room A: the note is found, its source has no room.
+        const b3 = lastUsage();
+        const rb = await stoaOk(tokB, 'knowledge_search', { query: 'quokkarollback', limit: 1 });
+        assert.deepStrictEqual(rb.results[0].sources, [{ type: 'document', name: 'quokka.md', section: 'Quokkarollback' }]);
+        assert.deepStrictEqual(usageSince(b3), [{ node_id: ids.Quokkarollback, actor_id: agB.actorId, sub_agent_id: null, room_id: roomB }]);
+
+        assert.strictEqual(await stoaErr(tokA, 'knowledge_search', { query: '   ' }), 'query must be a non-empty string');
+        assert.strictEqual(await stoaErr(tokA, 'knowledge_search', { query: 'x', limit: 50 }), 'limit must be an integer from 1 to 20');
+        await new Promise(res => setTimeout(res, 200));
+        assert.deepStrictEqual(agentEvents, [], 'knowledge_used never reaches an agent connection');
+
+        // Usage history: session only, three ranges.
+        const u = await req('GET', '/api/knowledge/usage?range=24h');
+        assert.strictEqual(u.status, 200, u.raw);
+        assert.strictEqual(u.body.range, '24h');
+        assert.deepStrictEqual(u.body.nodes.find(n => n.node_id === ids.Quokkarollback), { node_id: ids.Quokkarollback, count: 3 });
+        const deployIn24h = usageSince(before).filter(x => x.node_id === ids.Quokkadeploy).length;
+        mDb.prepare("INSERT INTO knowledge_usage (node_id, actor_id, room_id, used_at) VALUES (?, ?, ?, datetime('now', '-3 days'))").run(ids.Quokkadeploy, agA.actorId, roomA);
+        const countOf = async (range) => (await req('GET', `/api/knowledge/usage?range=${range}`)).body.nodes.find(n => n.node_id === ids.Quokkadeploy)?.count ?? 0;
+        assert.deepStrictEqual([await countOf('24h'), await countOf('7d'), await countOf('30d')], [deployIn24h, deployIn24h + 1, deployIn24h + 1]);
+        for (const bad of ['', '1y', '7D']) assert.deepStrictEqual(await req('GET', `/api/knowledge/usage?range=${bad}`).then(x => [x.status, x.body.error]), [400, 'range must be one of 24h, 7d, 30d'], bad);
+        assert.strictEqual((await req('GET', '/api/knowledge/usage')).status, 400);
+        assert.strictEqual((await asAnon(() => req('GET', '/api/knowledge/usage?range=24h'))).status, 401);
+        const asAgent = await asAnon(() => req('GET', '/api/knowledge/usage?range=24h', null, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+        assert.deepStrictEqual([asAgent.status, asAgent.body.error], [403, 'agent_scope_denied'], 'agent secrets cannot read what every agent looked up');
+      } finally {
+        agA.ws.off('message', spy); agB.ws.off('message', spy);
+        humanWs.close();
         mDb.prepare('DELETE FROM knowledge_documents WHERE room_id=?').run(roomA);
         mDb.prepare('UPDATE rooms SET knowledge_enabled=? WHERE id=?').run(flag, roomA);
         await announce();
