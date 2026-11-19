@@ -199,6 +199,8 @@ function waitUp(port, tries = 50) {
     // A room id no test creates on its own: the knowledge privacy tests insert this room to check the
     // locked toggle (the live .env value must not decide which test room is excluded).
     KNOWLEDGE_EXCLUDED_ROOM_IDS: '2000000001',
+    // Task-start hints: cosines of the model-free hash backend are not those of e5 (default 0.86).
+    KNOWLEDGE_HINT_MIN_SIM: '0.3',
     // Harness CLI update: wait for the agent's first status (15 s in prod) short enough for the no-ack test.
     HARNESS_UPDATE_ACK_TIMEOUT_MS: '3000',
     // In-app updater works on a git fixture test.js builds here — never on this repo — and believes a

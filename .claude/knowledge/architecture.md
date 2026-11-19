@@ -319,6 +319,8 @@ Document nodes are **never** merge targets of conversation extraction (Knowledge
 
 `lib/knowledge-search.js` (server), `migrations/20261119-knowledge-usage-time.sql` (Knowledge 4/6). Tool `stoa__knowledge_search` (lib/stoa-mcp-tools.js), endpoint `GET /api/knowledge/usage`, WS event `knowledge_used`.
 
+**Hints at task start (task #43).** `knowledgeSearch.suggest(ident, {text})` (lib/knowledge-search.js) is the generic path: any caller with an ident + text gets ≤5 `{id, title}` (never summary/sources) from the same ranking as search (`candidates()` shared), gated by `knowledge.eligibleRoom(roomId)` (opt-in, not archived, not in KNOWLEDGE_EXCLUDED_ROOM_IDS; re-checked after the embed await). A hint needs word match AND cosine ≥ `KNOWLEDGE_HINT_MIN_SIM` (0.86; e5-small cosines crowd 0.82-0.90 so a cosine alone is noise); index not ready → word match ≥15% of the query. Each hint is a use (`logUse`: knowledge_usage + `knowledge_used`). Only caller today: server.js prompt build (`taskCardText(roomId, replyTo)`: the message the runner posted, `automation_provider='task'` → card title+description), only when `stoaTools`; `formatHints()` fences it as `<stoa-knowledge-hints untrusted="true">` (angle brackets stripped from titles). `KNOWLEDGE_HINTS=off` disables. run-tests.js sets `KNOWLEDGE_HINT_MIN_SIM=0.3` for the hash backend.
+
 ### Ranking (hybrid, same rule as message search)
 
 ```

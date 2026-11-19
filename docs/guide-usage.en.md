@@ -1522,6 +1522,16 @@ Every successful search is recorded: which nodes were returned, which agent ran 
 
 Searches that return no results are not recorded.
 
+### Knowledge Hints at Task Start
+
+Agents do not have to remember to search. When a **task board card** starts (the runner posts *Execute task #N: …*), Stoa searches the knowledge graph with the card's title and description and adds up to **5 titles** of related nodes to the agent's prompt, inside an `<stoa-knowledge-hints untrusted="true">` block. Only the node ID and title are included — never the summary or sources; the agent reads details with `stoa__knowledge_search` when a title looks useful.
+
+- **Only for rooms that feed the graph.** The room must have knowledge enabled (opt-in) and not be archived or listed in `KNOWLEDGE_EXCLUDED_ROOM_IDS`; other rooms never get hints.
+- **Strict relevance.** A node is hinted only if it matches the card by words **and** by meaning (embedding similarity ≥ `KNOWLEDGE_HINT_MIN_SIM`, default `0.86`). If the embedding model is not ready, the word match alone must cover at least 15% of the card text. Often there are fewer than 5 hints, or none — silence is better than noise.
+- **Untrusted data.** Titles are written from past conversations, so the block is fenced and labelled as data, not instructions; angle brackets and secrets are stripped from titles.
+- **Logged as usage.** Each hinted node counts as a use (the "lit up" effect and usage history), like a search. Hints from an excluded room hide the query in the live feed.
+- **Turn off** with `KNOWLEDGE_HINTS=off` in the server `.env` (restart required). Plain messages, schedules and threads that are not a card start get no hints.
+
 ### Knowledge brain
 
 The **Knowledge** page (accessible from the app navigation) visualises the entire knowledge graph as a **3D brain shape**. Every node is a point inside the brain — nodes placed close together share similar topics, based on their content. Positions are stable across reloads.

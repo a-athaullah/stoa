@@ -290,7 +290,7 @@ const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query')
 const { createSemanticIndex } = require('./lib/semantic-index');
 const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
-const { createKnowledgeSearch, promptLine: knowledgeSearchPromptLine } = require('./lib/knowledge-search');
+const { createKnowledgeSearch, formatHints, promptLine: knowledgeSearchPromptLine } = require('./lib/knowledge-search');
 const { createKnowledgeAdmin } = require('./lib/knowledge-admin');
 const { createKnowledgeLayout } = require('./lib/knowledge-layout');
 const { KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
@@ -8426,6 +8426,14 @@ function veniceMediaSection(names) {
   ].filter(Boolean).join('\n');
 }
 
+// The board card a run starts, as text for a knowledge query: the message the runner posted for it
+// (messages.task_id, automation 'task') → title + description; null for any other trigger.
+function taskCardText(roomId, messageId) {
+  const row = db.prepare(`SELECT t.title, t.description FROM messages m JOIN room_tasks t ON t.id=m.task_id
+    WHERE m.id=? AND m.room_id=? AND m.automation_provider='task'`).get(messageId, roomId);
+  return row ? `${row.title}. ${row.description || ''}` : null;
+}
+
 function promptStrings(lang) {
   const t = {
     en: {
@@ -8993,6 +9001,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // opt in with ai.prompt_outside_history; without it the agent would never see it.
   const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
 
+  // Knowledge hints (lib/knowledge-search.js suggest): when the run starts a board card, up to 5 titles
+  // of related knowledge, so the agent does not have to remember to search. Needs the stoa__ tools (the
+  // pointer is to stoa__knowledge_search); KNOWLEDGE_HINTS=off turns it off.
+  const knowledgeHintsSection = stoaTools && replyTo && process.env.KNOWLEDGE_HINTS !== 'off'
+    ? formatHints(await knowledgeSearch.suggest(mcpIdent, { text: taskCardText(roomId, replyTo) }))
+    : '';
+
   // A client with the skill cache gets the refs and prepends each skill itself (with the local folder
   // of its files). An older client gets SKILL.md inlined here, without the files.
   const agentHasSkillCache = agentFeatures.get(ai.actor_id)?.has('skills') === true;
@@ -9011,6 +9026,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     history.some(isMcpEvent) || replyIsMcpEvent ? L.mcpEventNote : '',
     replyCtx,
     taskSection,
+    knowledgeHintsSection ? '\n' + knowledgeHintsSection : '',
     '\n' + L.replyInstruction,
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
     orchestrationLine,
