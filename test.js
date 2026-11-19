@@ -29879,6 +29879,7 @@ async function run() {
       await test('knowledge hints (server) — a card run carries the titles of related knowledge in its prompt, fenced; unrelated card, opted-out room and a plain message get none', async () => {
         assert.ok(ws, 'earlier tests connected the agent (the live socket of the actor: agent_trigger goes to it)');
         const nodeId = kxDb.prepare("SELECT id FROM knowledge_nodes WHERE title='Queue stays on SQLite'").get().id;
+        let humanWs = null;
         const runCard = async (title, description) => {
           const card = await req('POST', `/api/rooms/${roomId}/tasks`, { title, description });
           assert.strictEqual(card.status, 201, JSON.stringify(card.body));
@@ -29908,13 +29909,14 @@ async function run() {
           kxDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomId);
 
           ws.frames.length = 0;
-          const sent = await req('POST', `/api/rooms/${roomId}/message`, { content: 'Queue stays on SQLite. One writer is enough for the queue. A plain message, not a card.' });
-          assert.strictEqual(sent.status, 200, JSON.stringify(sent.body));
+          humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content: 'Queue stays on SQLite. One writer is enough for the queue. A plain message, not a card.' }));
           const plain = await until(() => ws.frames.find(f => f.type === 'agent_trigger'), 'agent_trigger for a plain message');
           assert.ok(!plain.prompt.includes('stoa-knowledge-hints'), 'only a card start carries hints');
         } finally {
           await req('POST', `/api/rooms/${roomId}/tasks/runner/stop`);
           kxDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomId);
+          try { humanWs?.close(); } catch {}
         }
       });
     } finally {
