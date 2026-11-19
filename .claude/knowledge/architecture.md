@@ -386,7 +386,7 @@ Turns finished conversations in opted-in rooms into knowledge nodes via a backgr
    - Embeds the segment, finds up to 5 candidate nodes (cosine similarity, active only, sources in an eligible room).
    - Sets `status='running'`, records `leased_actor_id`, sends `knowledge_extract` WS event to the agent.
 3. The agent runs a one-shot claude process (`knowledge-agent.js`) and answers `knowledge_extract_result`. Only the leased actor's result is accepted.
-4. The server validates the output strictly (`parseExtraction`), embeds the summaries, and stores everything in one transaction:
+4. The server validates the output strictly (`parseExtraction`; a title / summary is not refused for length: the prompt asks for 120 / 2000 chars (`LIMITS`), the server keeps up to `HARD` 160 / 2500 and cuts longer text on a grapheme boundary with "…", logging lengths only: `job N output over the prompt limits: node 0: summary 2340 > 2000`), embeds the summaries, and stores everything in one transaction:
    - `update_node_id` set by the agent → update that candidate node.
    - No `update_node_id` but cosine ≥ 0.93 to an existing active node → merge (attach sources, update `updated_at`).
    - Otherwise → insert new node.
@@ -411,6 +411,7 @@ The process is killed via `SIGKILL` once the answer arrives or the timeout fires
 - Lease timeout = `timeout_ms + 2 min`. Expired leases are detected on each `tick()`.
 - Failed attempt: `attempts + 1`. Backoff: `2^attempts × 60s`.
 - After 3 failed attempts: `status='failed'` (tombstone). Idle sweep skips failed jobs. A new trigger event (thread_complete / task_done) clears the tombstone and re-enqueues.
+- Jobs that failed with `invalid output: ... longer than ...` (before `HARD` existed) are requeued by `.claude/tools/requeue-knowledge-jobs.js` (`requeueLengthFailures`: pending, attempts 0; a job with a pending twin is deleted; other failures untouched; DB backup first, `--dry-run`).
 
 ### Privacy
 

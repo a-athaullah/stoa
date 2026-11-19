@@ -27673,7 +27673,7 @@ async function run() {
       } finally { k.kdb.close(); }
     });
 
-    await test('knowledge extraction — invalid output (not JSON, bad category, >10 nodes, title >120) fails the attempt; 3 attempts → failed; lease timeout → pending; busy → no attempt', async () => {
+    await test('knowledge extraction — invalid output (not JSON, bad category, >10 nodes) fails the attempt; 3 attempts → failed; lease timeout → pending; busy → no attempt', async () => {
       const k = kxSetup();
       try {
         const rm = k.room();
@@ -27700,8 +27700,6 @@ async function run() {
         due(); await k.kx.tick();
         assert.strictEqual(k.sent.length, 3, 'failed is final');
 
-        assert.throws(() => parseExtraction(JSON.stringify({ nodes: [k.node('x'.repeat(121), 's')] }), { segmentIds: [1], candidateIds: new Set() }), /title longer than 120/);
-        assert.throws(() => parseExtraction(JSON.stringify({ nodes: [k.node('t', 'x'.repeat(2001))] }), { segmentIds: [1], candidateIds: new Set() }), /summary longer than 2000/);
         assert.throws(() => parseExtraction('{"nodes":"x"}', { segmentIds: [1], candidateIds: new Set() }), /no nodes array/);
         const fenced = parseExtraction('```json\n{"nodes":[{"title":"T {x}","summary":"use \\"}\\" here","category":"res"}]}\n```', { segmentIds: [5, 6], candidateIds: new Set() });
         assert.deepStrictEqual(fenced.nodes, [{ title: 'T {x}', summary: 'use "}" here', category: 'res', update_node_id: null, source_message_ids: [5, 6] }]);
@@ -27728,6 +27726,145 @@ async function run() {
         assert.deepStrictEqual([j2().status, j2().attempts], ['pending', 1]);
         assert.ok(k.kdb.prepare('SELECT next_attempt_at > datetime(\'now\') AS later FROM knowledge_jobs WHERE id=?').get(j2().id).later === 1);
       } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge extraction — title/summary over the prompt limit (120/2000) kept up to HARD (160/2500), cut beyond with "…" on a grapheme boundary; lengths logged, text never', async () => {
+      const { buildPrompt, HARD } = require('./lib/knowledge-extraction');
+      const ctx = { segmentIds: [1], candidateIds: new Set() };
+      const one = (title, summary) => parseExtraction(JSON.stringify({ nodes: [{ title, summary, category: 'eng' }] }), ctx);
+      const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+      assert.deepStrictEqual(HARD, { title: 160, summary: 2500 });
+
+      let r = one('t'.repeat(120), 's'.repeat(2000));
+      assert.deepStrictEqual([r.nodes[0].title.length, r.nodes[0].summary.length, r.oversize], [120, 2000, []], 'at the prompt limit: nothing to report');
+      r = one('t'.repeat(150), 's'.repeat(2400));
+      assert.deepStrictEqual([r.nodes[0].title, r.nodes[0].summary], ['t'.repeat(150), 's'.repeat(2400)], 'between the limits: unchanged');
+      assert.deepStrictEqual(r.oversize, ['node 0: title 150 > 120', 'node 0: summary 2400 > 2000']);
+      r = one('t'.repeat(160), 's'.repeat(2500));
+      assert.deepStrictEqual([r.nodes[0].title, r.nodes[0].summary], ['t'.repeat(160), 's'.repeat(2500)], 'exactly HARD: unchanged');
+      assert.deepStrictEqual(r.oversize, ['node 0: title 160 > 120', 'node 0: summary 2500 > 2000']);
+
+      r = one('t'.repeat(161), 's'.repeat(3000));
+      assert.deepStrictEqual([r.nodes[0].title, r.nodes[0].summary], ['t'.repeat(159) + '…', 's'.repeat(2499) + '…'], 'over HARD: cut to HARD with "…"');
+      assert.deepStrictEqual(r.oversize, ['node 0: title 161 > 120 (cut)', 'node 0: summary 3000 > 2000 (cut)']);
+      // Spaces before the cut are dropped.
+      r = one('word '.repeat(40), 'ok');
+      assert.ok(r.nodes[0].title.length <= 160 && r.nodes[0].title.endsWith('word…'), r.nodes[0].title.slice(-10));
+      // A plain slice at 159 would split the 79th emoji in half.
+      r = one('ab' + '😀'.repeat(100), 'ok');
+      assert.strictEqual(r.nodes[0].title, 'ab' + '😀'.repeat(78) + '…');
+      assert.ok(!lone.test(r.nodes[0].title), 'no lone surrogate');
+      // A ZWJ family (8 units) and an e + combining accent stay whole.
+      const fam = '👨‍👩‍👧';
+      r = one(fam.repeat(30), 'é'.repeat(1500));
+      const t = r.nodes[0].title;
+      assert.ok(t.length <= 160 && t.endsWith('…') && t.slice(0, -1).split(fam).every(x => x === ''), 'whole families only');
+      assert.strictEqual(t, fam.repeat(19) + '…');
+      assert.strictEqual(r.nodes[0].summary, 'é'.repeat(1249) + '…');
+      // CJK (3 bytes in UTF-8, 1 unit) and mixed astral CJK: lengths in UTF-16 units, valid UTF-8 after the cut.
+      r = one('漢'.repeat(200), '𠀀漢'.repeat(1000));
+      assert.deepStrictEqual([r.nodes[0].title, r.nodes[0].title.length], ['漢'.repeat(159) + '…', 160]);
+      const s = r.nodes[0].summary;
+      assert.ok(s.length <= 2500 && s.endsWith('…') && !lone.test(s));
+      assert.strictEqual(Buffer.from(s, 'utf8').toString('utf8'), s, 'survives a UTF-8 round trip');
+      // Length is measured after scrubbing, as before: surrounding spaces do not count.
+      r = one('  ' + 't'.repeat(120) + '  ', 'ok');
+      assert.deepStrictEqual([r.nodes[0].title, r.oversize], ['t'.repeat(120), []]);
+      // Second node, other violations still refuse the answer.
+      r = parseExtraction(JSON.stringify({ nodes: [{ title: 'a', summary: 'b', category: 'eng' }, { title: 'c', summary: 'd'.repeat(2600), category: 'res' }] }), ctx);
+      assert.deepStrictEqual(r.oversize, ['node 1: summary 2600 > 2000 (cut)']);
+      assert.throws(() => one('x'.repeat(500), ''), /node 0: summary required/);
+
+      // The prompt still asks for 120 / 2000, never the HARD limits.
+      const prompt = buildPrompt({ lines: ['[#1 a @ t] hi'], candidates: [], stale: false });
+      assert.ok(prompt.includes('"title":"at most 120 characters"') && prompt.includes('"summary":"at most 2000 characters"'));
+      assert.ok(!/\b(160|2500)\b/.test(prompt));
+
+      // Through the real path: the node is stored (cut), the job is done, the log has lengths only.
+      const k = kxSetup();
+      try {
+        const rm = k.room();
+        const root = k.msg(rm, 'root');
+        k.msg(rm, 'reply', { threadId: root });
+        k.kx.enqueueConversation(rm.id, root, 'thread_complete');
+        await k.kx.tick();
+        const jobId = k.sent[0].job_id;
+        const title = 'PRIVATETITLE ' + 'x'.repeat(200), summary = 'PRIVATESUMMARY ' + 'y'.repeat(2900);
+        await k.answer(jobId, [k.node(title, summary), k.node('short', 'fine')]);
+        assert.deepStrictEqual(k.jobs(), [], 'job done');
+        const [a, b] = k.nodes();
+        assert.deepStrictEqual([a.title, a.summary.length, a.summary.endsWith('…'), b.title], [title.slice(0, 159) + '…', 2500, true, 'short']);
+        const line = k.logs.find(l => l.includes('over the prompt limits'));
+        assert.strictEqual(line, `[knowledge] job ${jobId} output over the prompt limits: node 0: title ${title.length} > 120 (cut); node 0: summary ${summary.length} > 2000 (cut)`);
+        const all = JSON.stringify([k.logs, k.notes]);
+        assert.ok(!/PRIVATE|xxxx|yyyy/.test(all), 'no title or summary text in logs or activity');
+        assert.ok(!k.logs.some(l => /attempt \d\/3 failed/.test(l)), 'not a failed attempt');
+      } finally { k.kdb.close(); }
+    });
+
+    await test('knowledge extraction — requeue of jobs failed for length: only "longer than" failures back to pending (attempts 0, no error, no lease); a pending twin supersedes; dry run and the tool (backup first) — "claude result error" untouched', async () => {
+      const { requeueLengthFailures } = require('./lib/knowledge-extraction');
+      const fsR = require('fs'), osR = require('os'), pathR = require('path');
+      const { execFileSync } = require('child_process');
+      const k = kxSetup();
+      const tmp = fsR.mkdtempSync(pathR.join(osR.tmpdir(), 'stoa-requeue-'));
+      try {
+        const rm = k.room();
+        const roots = [0, 1, 2, 3].map(i => { const r = k.msg(rm, `root ${i}`); k.msg(rm, `reply ${i}`, { threadId: r }); return r; });
+        const node = Number(k.kdb.prepare("INSERT INTO knowledge_nodes (title, summary, category, status, stale_at) VALUES ('n', 's', 'eng', 'stale', datetime('now'))").run().lastInsertRowid);
+        const job = (threadId, status, err, nodeId = null) => Number(k.kdb.prepare(`INSERT INTO knowledge_jobs (room_id, thread_id, node_id, reason, status, attempts, last_error, next_attempt_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`).run(rm.id, threadId, nodeId, nodeId ? 'stale' : 'thread_complete', status, status === 'failed' ? 3 : 0, err).lastInsertRowid);
+        const summaryJob = job(roots[0], 'failed', 'invalid output: node 0: summary longer than 2000');
+        const titleJob = job(roots[1], 'failed', 'invalid output: node 1: title longer than 120');
+        const claudeJob = job(roots[2], 'failed', 'claude result error (success)');
+        const otherJob = job(null, 'failed', 'invalid output: output is not valid JSON');
+        const twinned = job(roots[3], 'failed', 'invalid output: node 0: title longer than 120');
+        const pendingTwin = job(roots[3], 'pending', null);
+        const staleJob = job(null, 'failed', 'invalid output: node 0: summary longer than 2000', node);
+        const snap = () => k.kdb.prepare('SELECT id, status, attempts, last_error, leased_actor_id, leased_at, next_attempt_at FROM knowledge_jobs ORDER BY id').all();
+        const before = snap();
+
+        const file = pathR.join(tmp, 'stoa.db');
+        fsR.writeFileSync(file, k.kdb.serialize());
+        const tool = (...a) => JSON.parse(execFileSync(process.execPath, [pathR.join(__dirname, '.claude', 'tools', 'requeue-knowledge-jobs.js'), ...a], { encoding: 'utf8' }));
+        const expected = { dryRun: true, requeued: [summaryJob, titleJob, staleJob], superseded: [twinned] };
+
+        // Dry run (lib and tool): the answer, nothing written, no backup.
+        assert.deepStrictEqual(requeueLengthFailures(k.kdb, { dryRun: true }), expected);
+        assert.deepStrictEqual(snap(), before);
+        const dry = tool('--dry-run', `--db=${file}`);
+        assert.deepStrictEqual(dry, { db: file, backup: null, ...expected });
+        assert.deepStrictEqual(fsR.readdirSync(tmp), ['stoa.db']);
+        const Database = require('better-sqlite3');
+        const fileSnap = (p) => { const d = new Database(p, { readonly: true }); try { return d.prepare('SELECT id, status, attempts, last_error FROM knowledge_jobs ORDER BY id').all(); } finally { d.close(); } };
+        assert.deepStrictEqual(fileSnap(file), before.map(({ id, status, attempts, last_error }) => ({ id, status, attempts, last_error })));
+
+        // The tool for real: a backup holding the old state, then the write.
+        const real = tool(`--db=${file}`);
+        assert.deepStrictEqual({ ...real, backup: undefined }, { db: file, backup: undefined, ...expected, dryRun: false });
+        assert.match(pathR.basename(real.backup), /^stoa-backup-requeue-\d{17}\.db$/);
+        assert.strictEqual(pathR.dirname(real.backup), tmp);
+        assert.deepStrictEqual(fileSnap(real.backup).find(j => j.id === summaryJob).status, 'failed');
+        const after = fileSnap(file);
+        assert.deepStrictEqual(after.filter(j => expected.requeued.includes(j.id)).map(j => [j.status, j.attempts, j.last_error]), Array(3).fill(['pending', 0, null]));
+        assert.deepStrictEqual(after.find(j => j.id === claudeJob), { id: claudeJob, status: 'failed', attempts: 3, last_error: 'claude result error (success)' });
+        assert.deepStrictEqual(after.find(j => j.id === otherJob).status, 'failed');
+        assert.ok(!after.some(j => j.id === twinned), 'superseded by its pending twin');
+        assert.deepStrictEqual(after.find(j => j.id === pendingTwin).status, 'pending');
+        assert.deepStrictEqual({ ...tool(`--db=${file}`), backup: null }, { db: file, backup: null, dryRun: false, requeued: [], superseded: [] }, 'second run: nothing left');
+        assert.throws(() => execFileSync(process.execPath, [pathR.join(__dirname, '.claude', 'tools', 'requeue-knowledge-jobs.js'), '--force'], { stdio: 'pipe' }), /unknown option --force/);
+        assert.throws(() => execFileSync(process.execPath, [pathR.join(__dirname, '.claude', 'tools', 'requeue-knowledge-jobs.js'), `--db=${pathR.join(tmp, 'none.db')}`], { stdio: 'pipe' }), /no database at/);
+        assert.ok(!fsR.existsSync(pathR.join(tmp, 'none.db')), 'a missing db is not created');
+
+        // In the running server's DB the next tick picks a requeued job up again.
+        k.kdb.prepare('DELETE FROM knowledge_jobs WHERE id=?').run(pendingTwin);
+        requeueLengthFailures(k.kdb);
+        const lease = k.kdb.prepare('SELECT status, attempts, last_error, leased_actor_id, leased_at, next_attempt_at FROM knowledge_jobs WHERE id=?');
+        assert.deepStrictEqual(lease.get(titleJob), { status: 'pending', attempts: 0, last_error: null, leased_actor_id: null, leased_at: null, next_attempt_at: null });
+        await k.kx.tick();
+        assert.ok(k.sent.some(s => s.job_id === summaryJob), 'requeued job sent to the agent');
+        assert.deepStrictEqual(lease.get(claudeJob).status, 'failed');
+      } finally { k.kdb.close(); fsR.rmSync(tmp, { recursive: true, force: true }); }
     });
 
     await test('knowledge extraction — a result from an actor that does not hold the lease is ignored; no agent online → job waits (logged once)', async () => {
