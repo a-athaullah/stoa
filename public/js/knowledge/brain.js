@@ -139,16 +139,17 @@ function kbBuildScaffold() {
 // hides the crease above it). On that surface the zero contours of a field are the sulci: on the
 // cortex random plane waves of one wavelength in every direction, bent by a domain warp (their zero
 // set is a labyrinth of long, meandering, branching lines, not rings); on the cerebellum folia fanning
-// out from its front like the curved ridges of a shell (around a left-right axis), kept on the
-// back-facing surface and broken into dashes, so from behind they are open arcs
-// across it: drawn as whole rings they read as stacked ellipses through the translucent volume; on the
-// brain stem fibres along it. Seams (kind 1, fissure), on the cerebrum only: where the surface stops
+// out from its front and curving back like the ridges of a shell (a spiral around a left-right axis,
+// its spacing warped by noise), kept on the back-facing surface off the vermis and broken into dashes
+// of random length, so from behind they are uneven open arcs (whole rings read as stacked ellipses
+// through the translucent volume), plus its rim (where the surface turns from a side view, kind 4); on
+// the brain stem fibres along it. Seams (kind 1, fissure), on the cerebrum only: where the surface stops
 // being outer cortex (the longitudinal fissure, kept along the top and the poles), where the outermost
 // surface jumps between lobes, and the lateral fissure (the contour where the temporal lobe meets the
 // rest, along the lobe's top). Built once as marching-squares segments, then
 // chained into polylines and thinned (fewer, longer subpaths stroke much faster). Result: points
 // pos[xyz], polyline j = points start[j]..start[j+1]-1, kind 0 = cortex, 1 = fissure, 2 = cerebellum
-// folia, 3 = brain stem fibres. The brain stem counts as
+// folia, 3 = brain stem fibres, 4 = cerebellum rim. The brain stem counts as
 // outside for the other parts, so it doesn't punch a seam ring into the cerebellum; its own lines run
 // below the cerebrum and simply end where it enters (no seams).
 const KB_FOLD_SURFACES = [
@@ -189,9 +190,10 @@ function kbBuildFolds() {
     const A = 0.06;
     return kbFoldNoise(gyri, x + A * kbFoldNoise(warpX, x, y, z), y + A * kbFoldNoise(warpY, x, y, z), z + A * kbFoldNoise(warpZ, x, y, z));
   };
+  const foliaWarp = kbFoldWaves(89, 6, 6);
   const folia = (x, y, z) => {
     const v = y + 0.42, w = -(z + 0.32);
-    return Math.sin(34 * Math.atan2(v, w) + 25 * Math.hypot(v, w) + 1.5 * Math.sin(7 * x));
+    return Math.sin(30 * Math.atan2(v, w) + 70 * Math.hypot(v, w) + 1.2 * Math.sin(6 * x) + 1.8 * kbFoldNoise(foliaWarp, x, y, z));
   };
   const dashes = kbFoldWaves(71, 12, 16);
   // Brain stem: fibres running along its axis.
@@ -244,8 +246,11 @@ function kbBuildFolds() {
     const W = NU + 1, ok = new Uint8Array(W * (NV + 1)), val = new Float32Array(W * (NV + 1)), R = new Float32Array(W * (NV + 1));
     // Lateral fissure: where the temporal lobe meets the rest of the hemisphere (lobes − temporal = 0).
     const lat = S.k === 1 ? new Float32Array(W * (NV + 1)) : null;
-    // Folia cells: on the back-facing surface, clear of the hub (the lines end on an arc there), not in a dash gap.
+    // Folia cells: on the back-facing surface, clear of the hub (the lines end on an arc there) and of the
+    // vermis (folia crossing it read as chevrons from behind), not in a dash gap.
     const fol = S.k === 2 ? new Uint8Array(W * (NV + 1)) : null;
+    // Cerebellum rim: where its surface turns away from a side view (normal x = 0).
+    const rim = S.k === 2 ? new Float32Array(W * (NV + 1)) : null;
     for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
       const u = i * du, v = j * dv, o = j * W + i;
       const r = i === NU ? R[j * W] : radius(u, v);
@@ -254,7 +259,11 @@ function kbBuildFolds() {
       const p = at(u, v, r);
       ok[o] = outer(p) ? 1 : 0;
       if (ok[o]) val[o] = field(p[0], p[1], p[2]);
-      if (fol && ok[o]) { const n = normal(p); fol[o] = n[2] < 0.6 && Math.hypot(p[1] + 0.42, p[2] + 0.32) > 0.2 && kbFoldNoise(dashes, p[0], p[1], p[2]) > -0.8 ? 1 : 0; }
+      if (fol && ok[o]) {
+        const n = normal(p), hub = Math.hypot(p[1] + 0.42, p[2] + 0.32) > 0.2;
+        fol[o] = n[2] < 0.6 && hub && Math.abs(p[0]) > 0.07 && kbFoldNoise(dashes, p[0], p[1], p[2]) > -0.35 ? 1 : 0;
+        rim[o] = hub ? n[0] : NaN;
+      }
       if (lat) { const ax = Math.abs(p[0]); lat[o] = kbvLobes(ax, p[1], p[2]) - kbvTemporal(ax, p[1], p[2]); }
     }
     // A grid edge is a seam when the outer test flips along it or the radius jumps (a crease hidden
@@ -308,6 +317,7 @@ function kbBuildFolds() {
       if (S.k !== 3 && seams.length === 4 && seam(seams[2])) push(seams[2], seams[3], 1);
       if (seams.length || n !== 4) continue;
       if (!fol || (fol[o[0]] && fol[o[1]] && fol[o[2]] && fol[o[3]])) contour(val, o, c, S.k === 1 ? 0 : S.k);
+      if (rim && o.every(q => !Number.isNaN(rim[q]))) contour(rim, o, c, 4);
       // The lateral fissure runs along the top of the temporal lobe; below it the same contour would
       // close into a loop under the lobe, which shows through the translucent volume as a ring.
       if (lat && at(i * du, j * dv, R[o[0]])[1] > KB_LATERAL_FLOOR) contour(lat, o, c, 1);
@@ -484,9 +494,11 @@ function kbCreateRenderer(canvas) {
     ctx.lineJoin = 'round';
     // The cerebellum and the brain stem sit under the cerebrum: seen from above or below their folia and
     // fibres would show through the translucent cortex as rings and a starburst, so they fade with pitch.
-    const underVis = cp * cp;
-    for (let kind = 0; kind < 4; kind++) {
-      const vis = kind >= 2 ? underVis : 1;
+    // The rim (kind 4) outlines the cerebellum from the side only: from behind it is a line down each lobe.
+    // The stem's fibres fade from behind too, where they would cut across the folia.
+    const underVis = cp * cp, sideVis = sy * sy;
+    for (let kind = 0; kind < 5; kind++) {
+      const vis = kind === 2 ? underVis * (0.5 + 0.5 * sideVis) : kind === 3 ? underVis * (0.1 + 0.9 * sideVis) : kind === 4 ? underVis * sideVis : 1;
       if (vis < 0.02) continue;
       for (let bd = 0; bd < B; bd++) {
         const d = 0.08 + 0.92 * ((bd + 1) / B) ** 1.8;
@@ -500,7 +512,7 @@ function kbCreateRenderer(canvas) {
             ctx.lineTo(FX[i + 1], FY[i + 1]);
           }
         }
-        const boost = (kind === 1 ? 1.2 : kind === 2 ? 0.8 : 1) * vis;
+        const boost = (kind === 1 ? 1.2 : kind === 2 || kind === 4 ? 0.8 : 1) * vis;
         ctx.strokeStyle = pal.fold_glow;
         if (pal.fold_halo_a && bd >= B - 2) {
           ctx.globalAlpha = Math.min(1, pal.fold_halo_a * d * boost * breathe);
