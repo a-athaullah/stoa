@@ -29908,7 +29908,8 @@ async function run() {
           kxDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomId);
 
           ws.frames.length = 0;
-          await post('Queue stays on SQLite. One writer is enough for the queue. A plain message, not a card.');
+          const sent = await req('POST', `/api/rooms/${roomId}/message`, { content: 'Queue stays on SQLite. One writer is enough for the queue. A plain message, not a card.' });
+          assert.strictEqual(sent.status, 200, JSON.stringify(sent.body));
           const plain = await until(() => ws.frames.find(f => f.type === 'agent_trigger'), 'agent_trigger for a plain message');
           assert.ok(!plain.prompt.includes('stoa-knowledge-hints'), 'only a card start carries hints');
         } finally {
