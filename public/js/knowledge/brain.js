@@ -44,14 +44,14 @@ const KB_PALETTE = {
     lit: 'oklch(0.93 0.05 85)', dust: 'oklch(0.66 0.03 250)', label: 'oklch(0.9 0.012 250)', knock: 'oklch(0.17 0.02 260)', ring: 'oklch(0.94 0.03 85)',
     halo: 0.2, node: 0.9, edge: 0.2, dust_a: 0.5,
     fold: 'oklch(0.8 0.12 222)', fold_glow: 'oklch(0.68 0.15 238)', fissure: 'oklch(0.88 0.1 212)',
-    fold_a: 0.34, fold_glow_a: 0.07, fold_blend: 'lighter',
+    fold_a: 0.5, fold_glow_a: 0.11, fold_halo_a: 0.035, fold_blend: 'lighter',
   },
   light: {
     cats: ['oklch(0.5 0.085 252)', 'oklch(0.55 0.095 62)', 'oklch(0.5 0.075 152)', 'oklch(0.48 0.08 320)'],
     lit: 'oklch(0.6 0.14 52)', dust: 'oklch(0.55 0.025 70)', label: 'oklch(0.3 0.02 60)', knock: 'oklch(0.97 0.01 85)', ring: 'oklch(0.42 0.1 52)',
     halo: 0.1, node: 0.85, edge: 0.2, dust_a: 0.42,
     fold: 'oklch(0.5 0.12 240)', fold_glow: 'oklch(0.68 0.1 232)', fissure: 'oklch(0.45 0.13 245)',
-    fold_a: 0.4, fold_glow_a: 0.1, fold_blend: 'source-over',
+    fold_a: 0.46, fold_glow_a: 0.1, fold_halo_a: 0, fold_blend: 'source-over',
   },
 };
 
@@ -115,22 +115,7 @@ function kbSchemeNow() {
   return t && t.scheme === 'light' ? 'light' : 'dark';
 }
 
-// ── Brain volume (same shape as the server layout: x left-right, y up, z front) ──
-
-function kbEll(x, y, z, cx, cy, cz, rx, ry, rz) {
-  return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 + ((z - cz) / rz) ** 2;
-}
-
-function kbInside(x, y, z) {
-  for (const s of [-1, 1]) {
-    if (s * x < 0.03) continue;
-    if (kbEll(x, y, z, s * 0.36, 0.08, 0, 0.40, 0.56, 0.88) < 1 && y > -0.42 + 0.25 * Math.max(0, z - 0.3)) return 1;
-    if (kbEll(x, y, z, s * 0.42, -0.28, 0.18, 0.26, 0.22, 0.48) < 1) return 1;
-  }
-  if (kbEll(x, y, z, 0, -0.5, -0.62, 0.46, 0.21, 0.27) < 1) return 2;
-  if (x * x + (z + 0.32) ** 2 < 0.012 && y < -0.35 && y > -0.95) return 3;
-  return 0;
-}
+// ── Brain scaffold and folds (the volume itself: knowledge/brain-volume.js, shared with the server) ──
 
 // Fixed seed: the scaffold looks the same on every visit. Denser near the cortex surface.
 function kbBuildScaffold() {
@@ -139,105 +124,170 @@ function kbBuildScaffold() {
   const out = new Float32Array(KB_SCAFFOLD_TARGET * 3);
   let n = 0;
   while (n < KB_SCAFFOLD_TARGET) {
-    const x = (rnd() - 0.5) * 1.8, y = (rnd() - 0.5) * 2, z = (rnd() - 0.5) * 2;
+    const x = (rnd() - 0.5) * 1.8, y = (rnd() - 0.5) * 2, z = (rnd() - 0.5) * 2.2;
     const k = kbInside(x, y, z);
     if (!k) continue;
-    if (k === 1 && kbInside(x * 0.82, y * 0.86, z * 0.9) === 1 && rnd() < 0.7) continue;
+    if (k === 1 && kbvCerebrum(Math.abs(x), y, z) < -0.07 && rnd() < 0.7) continue;
     out[n * 3] = x; out[n * 3 + 1] = y; out[n * 3 + 2] = z;
     n++;
   }
   return out;
 }
 
-// Glowing folds: the zero contours of a seeded wavy field on the outer surface of each kbInside
-// ellipsoid (sulci; parallel folia on the cerebellum), plus the seams where a surface stops being
-// outer cortex (longitudinal and lateral fissures, the cerebellum's edge). Built once as 3D segments
-// marching-squares segments, then chained into polylines and thinned (fewer, longer subpaths stroke
-// much faster). Result: points pos[xyz], polyline j = points start[j]..start[j+1]-1, kind 1 = fissure.
-// The brainstem (3) counts as outside, so it doesn't punch a seam ring into the cerebellum.
+// Glowing folds. Each part's surface is reached from a centre: a ray per (u, v) direction sphere-traces
+// the part's distance from outside in, so the point found is the outermost one (the temporal lobe
+// hides the crease above it). On that surface the zero contours of a field are the sulci: on the
+// cortex random plane waves of one wavelength in every direction, bent by a domain warp (their zero
+// set is a labyrinth of long, meandering, branching lines, not rings); on the cerebellum parallel
+// folia; on the brain stem fibres along it. Seams (kind 1, fissure): where the surface stops being
+// outer cortex (the longitudinal fissure, kept along the top and the poles; where the cerebellum meets
+// the occipital lobe), where the outermost surface jumps between lobes, and the lateral fissure (the
+// contour where the temporal lobe meets the rest). Built once as marching-squares segments, then
+// chained into polylines and thinned (fewer, longer subpaths stroke much faster). Result: points
+// pos[xyz], polyline j = points start[j]..start[j+1]-1, kind 1 = fissure, kind 2 = cerebellum folia. The brain stem counts as
+// outside for the other parts, so it doesn't punch a seam ring into the cerebellum; its own lines run
+// below the cerebrum and simply end where it enters (no seams).
 const KB_FOLD_SURFACES = [
-  { c: [0.36, 0.08, 0], r: [0.40, 0.56, 0.88], k: 1, nu: 330, nv: 230 },
-  { c: [-0.36, 0.08, 0], r: [0.40, 0.56, 0.88], k: 1, nu: 330, nv: 230 },
-  { c: [0.42, -0.28, 0.18], r: [0.26, 0.22, 0.48], k: 1, nu: 200, nv: 140 },
-  { c: [-0.42, -0.28, 0.18], r: [0.26, 0.22, 0.48], k: 1, nu: 200, nv: 140 },
-  { c: [0, -0.5, -0.62], r: [0.46, 0.21, 0.27], k: 2, nu: 200, nv: 110 },
+  { c: [0.32, 0.1, -0.02], d: kbvCerebrum, k: 1, nu: 300, nv: 220, rmax: 1.05 },
+  { c: [-0.32, 0.1, -0.02], d: (x, y, z) => kbvCerebrum(-x, y, z), k: 1, nu: 300, nv: 220, rmax: 1.05 },
+  { c: [0, -0.5, -0.52], d: kbvCerebellum, k: 2, nu: 220, nv: 120, rmax: 0.55 },
+  { c: [0, -0.6, -0.23], d: kbvStem, k: 3, nu: 96, nv: 100, rmax: 0.5 },
 ];
+// Radius jump between neighbouring rays that marks a crease seam rather than a slope.
+const KB_FOLD_JUMP = 0.05;
+
+// n plane waves of wavenumber about K in random directions (seeded), for kbFoldNoise.
+function kbFoldWaves(seed, n, K) {
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const w = new Float64Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const th = rnd() * Math.PI * 2, ph = Math.acos(2 * rnd() - 1), k = K * (0.9 + 0.2 * rnd());
+    w[i * 4] = k * Math.sin(ph) * Math.cos(th);
+    w[i * 4 + 1] = k * Math.sin(ph) * Math.sin(th);
+    w[i * 4 + 2] = k * Math.cos(ph);
+    w[i * 4 + 3] = rnd() * Math.PI * 2;
+  }
+  return w;
+}
+function kbFoldNoise(w, x, y, z) {
+  let s = 0;
+  const n = w.length / 4;
+  for (let i = 0; i < n; i++) s += Math.sin(w[i * 4] * x + w[i * 4 + 1] * y + w[i * 4 + 2] * z + w[i * 4 + 3]);
+  return s / Math.sqrt(n / 2);
+}
 
 function kbBuildFolds() {
-  let seed = 11;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const waves = [];
-  for (let i = 0; i < 12; i++) {
-    const th = rnd() * Math.PI * 2, ph = Math.acos(2 * rnd() - 1), K = 44 + rnd() * 16;
-    waves.push([K * Math.sin(ph) * Math.cos(th), K * Math.sin(ph) * Math.sin(th), K * Math.cos(ph), rnd() * Math.PI * 2]);
-  }
+  const warpX = kbFoldWaves(11, 5, 3.5), warpY = kbFoldWaves(23, 5, 3.5), warpZ = kbFoldWaves(37, 5, 3.5);
+  const gyri = kbFoldWaves(53, 48, 60);
   const cortex = (x, y, z) => {
-    const wx = x + 0.035 * Math.sin(7.1 * y + 2.3 * z), wy = y + 0.035 * Math.sin(6.3 * z + 1.7 * x), wz = z + 0.035 * Math.sin(5.7 * x + 2.9 * y);
-    let f = 0;
-    for (const w of waves) f += Math.sin(w[0] * wx + w[1] * wy + w[2] * wz + w[3]);
-    return f;
+    const A = 0.06;
+    return kbFoldNoise(gyri, x + A * kbFoldNoise(warpX, x, y, z), y + A * kbFoldNoise(warpY, x, y, z), z + A * kbFoldNoise(warpZ, x, y, z));
   };
   const folia = (x, y, z) => Math.sin(62 * y + 2.2 * Math.sin(6 * x) + 1.6 * Math.sin(5 * z));
+  // Brain stem: fibres running along it.
+  const stem = (x, y, z) => Math.sin(6 * Math.atan2(x, z + 0.28 + 0.08 * (y + 0.3) / 0.55) + 0.5 * Math.sin(8 * y));
   const segs = [], kinds = [];
   const push = (a, b, kind) => { segs.push(a[0], a[1], a[2], b[0], b[1], b[2]); kinds.push(kind); };
   const EPS = 0.012;
 
   for (const S of KB_FOLD_SURFACES) {
-    const [cx, cy, cz] = S.c, [rx, ry, rz] = S.r;
-    const at = (u, v) => {
-      const sv = Math.sin(v);
-      return [cx + rx * sv * Math.cos(u), cy + ry * sv * Math.sin(u), cz + rz * Math.cos(v)];
+    const [cx, cy, cz] = S.c, D = S.d;
+    const dir = (u, v) => { const sv = Math.sin(v); return [sv * Math.cos(u), Math.cos(v), sv * Math.sin(u)]; };
+    // Outermost surface radius along a direction (sphere trace inward from S.rmax, past the part's
+    // farthest point), 0 = miss.
+    const radius = (u, v) => {
+      const [dx, dy, dz] = dir(u, v);
+      let r = S.rmax;
+      for (let it = 0; it < 64 && r > 0; it++) {
+        const s = D(cx + dx * r, cy + dy * r, cz + dz * r);
+        if (s < 1e-4) {
+          let lo = r, hi = Math.min(S.rmax, r + Math.max(0.004, -s) + 0.004);
+          for (let t = 0; t < 8; t++) { const m = (lo + hi) / 2; if (D(cx + dx * m, cy + dy * m, cz + dz * m) < 0) lo = m; else hi = m; }
+          return (lo + hi) / 2;
+        }
+        r -= Math.max(0.004, s * 0.85);
+      }
+      return 0;
     };
-    const outer = (u, v) => {
-      const p = at(u, v);
-      let nx = (p[0] - cx) / (rx * rx), ny = (p[1] - cy) / (ry * ry), nz = (p[2] - cz) / (rz * rz);
+    const at = (u, v, r) => { const [dx, dy, dz] = dir(u, v); return [cx + dx * r, cy + dy * r, cz + dz * r]; };
+    const outer = (p) => {
+      if (S.k === 1 && Math.abs(p[0]) < 0.05) return false;
+      if (S.k === 3 && p[1] > -0.38) return false;
+      const h = 0.004, d0 = D(p[0], p[1], p[2]);
+      let nx = D(p[0] + h, p[1], p[2]) - d0, ny = D(p[0], p[1] + h, p[2]) - d0, nz = D(p[0], p[1], p[2] + h) - d0;
       const l = Math.hypot(nx, ny, nz) || 1;
       nx /= l; ny /= l; nz /= l;
       if (kbInside(p[0] - nx * EPS, p[1] - ny * EPS, p[2] - nz * EPS) !== S.k) return false;
       const beyond = kbInside(p[0] + nx * EPS, p[1] + ny * EPS, p[2] + nz * EPS);
       return beyond === 0 || beyond === 3;
     };
-    const field = S.k === 2 ? folia : cortex;
+    const field = S.k === 1 ? cortex : S.k === 2 ? folia : stem;
     const NU = S.nu, NV = S.nv, du = Math.PI * 2 / NU, dv = Math.PI / NV;
-    const W = NU + 1, ok = new Uint8Array(W * (NV + 1)), val = new Float32Array(W * (NV + 1));
+    const W = NU + 1, ok = new Uint8Array(W * (NV + 1)), val = new Float32Array(W * (NV + 1)), R = new Float32Array(W * (NV + 1));
+    // Lateral fissure: where the temporal lobe meets the rest of the hemisphere (lobes − temporal = 0).
+    const lat = S.k === 1 ? new Float32Array(W * (NV + 1)) : null;
     for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
       const u = i * du, v = j * dv, o = j * W + i;
-      ok[o] = outer(u, v) ? 1 : 0;
-      if (ok[o]) { const p = at(u, v); val[o] = field(p[0], p[1], p[2]); }
+      const r = i === NU ? R[j * W] : radius(u, v);
+      R[o] = r;
+      if (!r) continue;
+      const p = at(u, v, r);
+      ok[o] = outer(p) ? 1 : 0;
+      if (ok[o]) val[o] = field(p[0], p[1], p[2]);
+      if (lat) { const ax = Math.abs(p[0]); lat[o] = kbvLobes(ax, p[1], p[2]) - kbvTemporal(ax, p[1], p[2]); }
     }
-    // Where the outer test flips along a grid edge, bisect in (u, v) for the exact seam point.
-    const seam = (u0, v0, u1, v1, in0) => {
+    // A grid edge is a seam when the outer test flips along it or the radius jumps (a crease hidden
+    // under an overhanging lobe). Bisect in (u, v) for the seam point, on the outermost side.
+    const pointAt = (u, v) => { const r = radius(u, v); return r ? at(u, v, r) : null; };
+    const seamFlip = (u0, v0, u1, v1, in0) => {
+      for (let t = 0; t < 7; t++) {
+        const um = (u0 + u1) / 2, vm = (v0 + v1) / 2, p = pointAt(um, vm);
+        if ((p ? outer(p) : false) === in0) { u0 = um; v0 = vm; } else { u1 = um; v1 = vm; }
+      }
+      return pointAt(in0 ? u0 : u1, in0 ? v0 : v1);
+    };
+    const seamJump = (u0, v0, r0, u1, v1, r1) => {
+      const mid = (r0 + r1) / 2, far0 = r0 > r1;
       for (let t = 0; t < 7; t++) {
         const um = (u0 + u1) / 2, vm = (v0 + v1) / 2;
-        if (outer(um, vm) === in0) { u0 = um; v0 = vm; } else { u1 = um; v1 = vm; }
+        if ((radius(um, vm) > mid) === far0) { u0 = um; v0 = vm; } else { u1 = um; v1 = vm; }
       }
-      return at((u0 + u1) / 2, (v0 + v1) / 2);
+      return far0 ? at(u0, v0, radius(u0, v0)) : at(u1, v1, radius(u1, v1));
+    };
+    // Marching squares: the zero contour of grid values f through one cell.
+    const contour = (f, o, c, kind) => {
+      const pts = [];
+      for (let e = 0; e < 4; e++) {
+        const a = f[o[e]], b = f[o[(e + 1) % 4]];
+        if ((a < 0) === (b < 0)) continue;
+        const t = a / (a - b), [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
+        const ra = R[o[e]], rb = R[o[(e + 1) % 4]];
+        pts.push(at((i0 + (i1 - i0) * t) * du, (j0 + (j1 - j0) * t) * dv, ra + (rb - ra) * t));
+      }
+      if (pts.length >= 2) push(pts[0], pts[1], kind);
+      if (pts.length === 4) push(pts[2], pts[3], kind);
     };
     for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
       const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
       const o = c.map(([a, b]) => b * W + a);
-      const n = ok[o[0]] + ok[o[1]] + ok[o[2]] + ok[o[3]];
-      if (n === 4) {
-        const pts = [];
-        for (let e = 0; e < 4; e++) {
-          const a = val[o[e]], b = val[o[(e + 1) % 4]];
-          if ((a < 0) === (b < 0)) continue;
-          const t = a / (a - b), [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
-          pts.push(at((i0 + (i1 - i0) * t) * du, (j0 + (j1 - j0) * t) * dv));
+      if (!R[o[0]] && !R[o[1]] && !R[o[2]] && !R[o[3]]) continue;
+      const seams = [];
+      let n = 0;
+      for (let e = 0; e < 4; e++) {
+        const a = o[e], b = o[(e + 1) % 4], [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
+        n += ok[a];
+        if (ok[a] !== ok[b]) {
+          const p = seamFlip(i0 * du, j0 * dv, i1 * du, j1 * dv, ok[a] === 1);
+          if (p && !(S.k === 1 && Math.abs(p[0]) < 0.07 && p[1] < 0.05 && Math.abs(p[2]) < 0.6)) seams.push(p);
+        } else if (ok[a] && Math.abs(R[a] - R[b]) > KB_FOLD_JUMP) {
+          seams.push(seamJump(i0 * du, j0 * dv, R[a], i1 * du, j1 * dv, R[b]));
         }
-        if (pts.length >= 2) push(pts[0], pts[1], 0);
-        if (pts.length === 4) push(pts[2], pts[3], 0);
-      } else if (n) {
-        const pts = [];
-        for (let e = 0; e < 4; e++) {
-          const a = ok[o[e]], b = ok[o[(e + 1) % 4]];
-          if (a === b) continue;
-          const [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
-          pts.push(seam(i0 * du, j0 * dv, i1 * du, j1 * dv, a === 1));
-        }
-        if (pts.length >= 2) push(pts[0], pts[1], 1);
-        if (pts.length === 4) push(pts[2], pts[3], 1);
       }
+      if (S.k !== 3 && seams.length >= 2) push(seams[0], seams[1], 1);
+      if (S.k !== 3 && seams.length === 4) push(seams[2], seams[3], 1);
+      if (seams.length || n !== 4) continue;
+      contour(val, o, c, S.k === 2 ? 2 : 0);
+      if (lat) contour(lat, o, c, 1);
     }
   }
   return kbChainFolds(segs, kinds);
@@ -409,9 +459,14 @@ function kbCreateRenderer(canvas) {
     const lw = Math.min(1.6, 0.6 + 0.4 * view.zoom);
     ctx.globalCompositeOperation = pal.fold_blend;
     ctx.lineJoin = 'round';
-    for (let kind = 0; kind < 2; kind++) {
+    // Folia are level rings around the cerebellum, which sits under the cerebrum: seen from above or
+    // below they would read as stacked circles through the translucent cortex, so they fade with pitch.
+    const foliaVis = cp * cp;
+    for (let kind = 0; kind < 3; kind++) {
+      const vis = kind === 2 ? foliaVis : 1;
+      if (vis < 0.02) continue;
       for (let bd = 0; bd < B; bd++) {
-        const d = 0.12 + 0.88 * ((bd + 1) / B) ** 1.6;
+        const d = 0.08 + 0.92 * ((bd + 1) / B) ** 1.8;
         ctx.beginPath();
         for (let j = 0; j < folds.count; j++) {
           if (folds.kind[j] !== kind) continue;
@@ -422,12 +477,17 @@ function kbCreateRenderer(canvas) {
             ctx.lineTo(FX[i + 1], FY[i + 1]);
           }
         }
-        const boost = kind ? 0.75 : 1;
+        const boost = (kind === 1 ? 1.2 : 1) * vis;
         ctx.strokeStyle = pal.fold_glow;
+        if (pal.fold_halo_a && bd >= B - 2) {
+          ctx.globalAlpha = Math.min(1, pal.fold_halo_a * d * boost * breathe);
+          ctx.lineWidth = lw * 9;
+          ctx.stroke();
+        }
         ctx.globalAlpha = Math.min(1, pal.fold_glow_a * d * boost * breathe);
-        ctx.lineWidth = lw * 3.2;
+        ctx.lineWidth = lw * 3.6;
         ctx.stroke();
-        ctx.strokeStyle = kind ? pal.fissure : pal.fold;
+        ctx.strokeStyle = kind === 1 ? pal.fissure : pal.fold;
         ctx.globalAlpha = Math.min(1, pal.fold_a * d * boost * breathe);
         ctx.lineWidth = lw * 0.8;
         ctx.stroke();
@@ -787,7 +847,8 @@ function kbBuild() {
   kb.els = { tab, root, canvas, head, counts, msg, empty, side, sideTitle, sideNote, list, prompt, announce, detail, tip, mode, range, legend, hint };
   kb.renderer = kbCreateRenderer(canvas);
   kb.scaffold = kbBuildScaffold();
-  kb.folds = kbBuildFolds();
+  // Folds take a few hundred ms to build: after the first frame, so the tab opens at once.
+  requestAnimationFrame(() => setTimeout(() => { kb.folds = kbBuildFolds(); kbKick(); }, 0));
   kb.scheme = kbSchemeNow();
   root.dataset.scheme = kb.scheme;
   kb.renderer.setScheme(kb.scheme);

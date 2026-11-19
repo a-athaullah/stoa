@@ -353,13 +353,14 @@ Card #37: an agent anywhere may use what is known; links into a room stay behind
 graph read → ensureBasis (1 transaction): no basis / other model or dims / early basis (< 50 nodes) and now ≥ 2× → PCA again
                (covariance of ≤ 2,000 evenly spaced vectors, power iteration from a fixed start, sign fixed) and every
                projected position rewritten
-           → listed nodes without a fitting position (none, vector changed → trigger dropped it, model changed) filled
+           → listed nodes without a fitting position (none, vector changed → trigger dropped it, model changed, stored
+               position outside the current brain volume) filled
                (1 transaction): vector → standardize, tanh(|p|/2) into the unit ball, pour into the brain volume
                (hemisphere by sign of x, ray march from the hemisphere centre, id jitter); no vector → spot from the id
            → nodes + edges between them
 ```
 
-Stable by design: a new node is projected with the stored basis, so nothing else moves. Positions are never written on the extraction path. 3,000 × 384-dim nodes: first read ≈ 0.4 s (test limit 1.5 s), cached ≈ 10 ms (limit 300 ms).
+Brain volume: `public/js/knowledge/brain-volume.js` (`kbInside`, smooth-union lobes, one file required by the server and loaded by the page). Stable by design: a new node is projected with the stored basis, so nothing else moves; a shape change re-places only the nodes left outside. Positions are never written on the extraction path. 3,000 × 384-dim nodes: first read ≈ 0.4 s (test limit 1.5 s), cached ≈ 10 ms (limit 300 ms).
 
 ## Knowledge Extraction
 
