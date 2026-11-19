@@ -27399,7 +27399,7 @@ async function run() {
         await answer(job, [node(title, summary)]);
         return { root, nodeId: kdb.prepare('SELECT MAX(id) AS id FROM knowledge_nodes').get().id };
       };
-      return { kdb, kx, human, agent, other, room, msg, sent, logs, notes, jobs, nodes, sources, edges, cursor, answer, node, seed, setPick: (a) => { pick = a; } };
+      return { kdb, kx, kxSemantic: semantic, human, agent, other, room, msg, sent, logs, notes, jobs, nodes, sources, edges, cursor, answer, node, seed, setPick: (a) => { pick = a; } };
     };
 
     await test('knowledge extraction — thread complete / task done enqueue once per conversation; not a thread root → nothing', async () => {
@@ -28969,7 +28969,7 @@ async function run() {
       k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(conv.id);
       await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('leak', 'not stored')]);
       k.kdb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(conv.id);
-      assert.deepStrictEqual(k.acts(), [act('extract_start', conv.id, { actor_name: 'kx-agent' }), act('extract_failed', conv.id, { actor_name: 'kx-agent' })],
+      assert.deepStrictEqual(k.acts(), [act('extract_start', conv.id, { actor_name: 'kx-agent' }), act('extract_failed', conv.id, { actor_name: 'kx-agent', reason: 'dropped' })],
         'the announced line is closed, nothing stored');
       // Stale node re-extracted to nothing: deleted, removed 1, no id (it is gone).
       k.notes.length = 0;
@@ -29027,11 +29027,11 @@ async function run() {
       k.kdb.close();
     });
 
-    await test('knowledge brain — knowledge_activity extract_failed: closes every announced job that ends without a result (invalid output, agent error, busy, lease expired, dropped); never for a job not announced; a late result adds nothing', async () => {
+    await test('knowledge brain — knowledge_activity extract_failed: closes every announced job that ends without a result, with its reason (invalid output / agent error → failed, index not ready → failed, busy → busy, lease expired → expired, dropped); never for a job not announced; a late result adds nothing', async () => {
       const k = kbSetup();
       const conv = k.room();
-      const line = (kind) => ({ type: 'knowledge_activity', kind, room_id: conv.id, room_title: 'kx-room', actor_name: 'kx-agent', sub_agent_label: null, by_owner: false,
-        node_ids: [], added: 0, updated: 0, removed: 0 });
+      const line = (kind, reason) => ({ type: 'knowledge_activity', kind, room_id: conv.id, room_title: 'kx-room', actor_name: 'kx-agent', sub_agent_label: null, by_owner: false,
+        node_ids: [], added: 0, updated: 0, removed: 0, ...(reason ? { reason } : {}) });
       const result = (o) => k.kx.handleResult(k.agent, { type: 'knowledge_extract_result', job_id: k.sent[k.sent.length - 1].job_id, ...o });
       const again = async () => {
         k.kdb.prepare("UPDATE knowledge_jobs SET next_attempt_at=datetime('now', '-1 seconds') WHERE status='pending'").run();
@@ -29043,19 +29043,24 @@ async function run() {
       await k.kx.tick();
       const jobId = k.sent[k.sent.length - 1].job_id;
       const cases = [
-        ['invalid output', () => result({ ok: true, text: '{"nodes":[{"title":"x","summary":"y","category":"zzz"}]}' }), 'pending'],
-        ['busy (not an attempt)', () => result({ ok: false, busy: true }), 'pending'],
+        ['invalid output', () => result({ ok: true, text: '{"nodes":[{"title":"x","summary":"y","category":"zzz"}]}' }), 'pending', 'failed'],
+        ['busy (not an attempt)', () => result({ ok: false, busy: true }), 'pending', 'busy'],
+        ['index not ready (not an attempt)', async () => {
+          const embed = k.kxSemantic.embed;
+          k.kxSemantic.embed = async () => null;
+          try { await k.answer(jobId, [k.node('kept later', 'no vector yet VEC[1,0,0,0,0,0,0,0]')]); } finally { k.kxSemantic.embed = embed; }
+        }, 'pending', 'failed'],
         ['lease expired', async () => {
           k.kdb.prepare("UPDATE knowledge_jobs SET leased_at=datetime('now', '-1 days') WHERE id=?").run(jobId);
           await k.kx.tick();
-        }, 'pending'],
-        ['agent error, last attempt', () => result({ ok: false, error: 'boom' }), 'failed'],
+        }, 'pending', 'expired'],
+        ['agent error, last attempt', () => result({ ok: false, error: 'boom' }), 'failed', 'failed'],
       ];
-      for (const [why, end, status] of cases) {
+      for (const [why, end, status, reason] of cases) {
         if (why !== cases[0][0]) await again();
         assert.strictEqual(k.sent[k.sent.length - 1].job_id, jobId, why);
         await end();
-        assert.deepStrictEqual(k.acts(), [line('extract_start'), line('extract_failed')], why);
+        assert.deepStrictEqual(k.acts(), [line('extract_start'), line('extract_failed', reason)], why);
         assert.strictEqual(k.kdb.prepare('SELECT status FROM knowledge_jobs WHERE id=?').get(jobId).status, status, why);
         k.notes.length = 0;
         if (why === 'lease expired') {
@@ -29073,7 +29078,7 @@ async function run() {
       await result({ ok: false, error: 'flaky' });
       await again();
       await k.answer(k.sent[k.sent.length - 1].job_id, []);
-      assert.deepStrictEqual(k.acts().map(a => a.kind), ['extract_start', 'extract_failed', 'extract_start', 'extract']);
+      assert.deepStrictEqual(k.acts().map(a => [a.kind, a.reason]), [['extract_start', undefined], ['extract_failed', 'failed'], ['extract_start', undefined], ['extract', undefined]]);
       // A pending job dropped before it was sent (room off): never announced, nothing to close.
       k.notes.length = 0;
       const r2 = k.msg(conv, 'second');
