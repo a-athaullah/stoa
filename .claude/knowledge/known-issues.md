@@ -660,6 +660,16 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 ---
 
+### HTML attachment preview (`?view=1`) — sandbox boundaries
+
+**Design:** `.html/.htm` with `?view=1` is served inline under `CSP: sandbox allow-scripts; default-src 'none'; ...` (opaque origin: no Stoa cookies, storage, API, or network egress via fetch/XHR/img/etc.). Every Stoa response also carries `frame-src 'self'`, so the preview iframe cannot navigate itself to another origin (meta refresh, `location=`, link click) — a page's own `default-src` does not cover navigation; only the embedder's `frame-src` does. Verified in Chrome: canary got 0 hits with `frame-src 'self'`, 3 hits without it. Same-origin PDF iframes are unaffected.
+
+**Known limit (do not flag):** "Open in new tab" loads the page top-level. It stays opaque-origin (no cookies/storage/API, no fetch egress), but nothing can stop a top-level document from navigating its own tab (`location=`, meta refresh) to an external site — that is equivalent to the user opening an untrusted link. Accepted: the user chose to open the uploaded file in its own tab.
+
+**Known limit — keyboard after clicking inside the preview (do not flag):** once the user clicks inside the HTML preview iframe, focus moves into that cross-origin (opaque) document, so Esc and the Left/Right arrow keys go to the iframe, not the dialog — the dialog stays open and prev/next keys do nothing. Close with the X button or a backdrop click; use the on-screen arrows to switch files. Browser behaviour for cross-origin frames; accepted by Ara (2026-11-19, task #40). Do not add focus-stealing tricks (blur/refocus timers, postMessage key relays) to work around it.
+
+**Do not** add `allow-same-origin` to the CSP or the iframe, and do not add non-self origins to `frame-src` without re-checking this.
+
 ## Performance Notes
 
 ### Large Room Scalability

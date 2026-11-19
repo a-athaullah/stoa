@@ -13422,7 +13422,7 @@ async function run() {
       const r = await anon(() => req('GET', '/'));
       assert.strictEqual(r.headers['x-content-type-options'], 'nosniff');
       assert.strictEqual(r.headers['x-frame-options'], 'SAMEORIGIN');
-      assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
       assert.strictEqual(r.headers['referrer-policy'], 'same-origin');
       assert.strictEqual(r.headers['strict-transport-security'], undefined);
     });
@@ -13541,7 +13541,7 @@ async function run() {
       assert.ok(r.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), r.headers['content-security-policy']);
       const txt = await req('GET', txtUrl);
       assert.strictEqual(txt.headers['content-disposition'], 'inline');
-      assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
     });
 
     await test('/uploads ?download=1&name= — original filename, RFC 5987 encoded, ext pinned to stored file', async () => {
@@ -13589,13 +13589,92 @@ async function run() {
       assert.strictEqual(pdf.status, 200);
       assert.strictEqual(pdf.headers['content-type'], 'application/pdf');
       assert.strictEqual(pdf.headers['content-disposition'], 'inline');
-      assert.strictEqual(pdf.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(pdf.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
       const html = await req('GET', `${htmlUrl}?download=1&name=page.html`);
       assert.strictEqual(html.headers['content-disposition'], `attachment; filename="page.html"; filename*=UTF-8''page.html`);
       assert.ok(html.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), html.headers['content-security-policy']);
       const htmlInline = await req('GET', `${htmlUrl}?name=page.html`);
       assert.strictEqual(htmlInline.headers['content-disposition'], 'attachment');
       assert.ok(htmlInline.headers['content-security-policy'].includes('sandbox'));
+    });
+
+    await test('/uploads ?view=1 — .html/.htm inline under an opaque-origin sandbox CSP; everything else unchanged', async () => {
+      const CSP = "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+      const htmBody = '<p>htm</p><script>document.title = "x"</script>';
+      const htmUrl = await upload('view-test.htm', htmBody, 'text/html');
+      for (const [u, body] of [[htmlUrl, '<script>alert(1)</script>'], [htmUrl, htmBody]]) {
+        const r = await req('GET', `${u}?view=1`);
+        assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['content-security-policy'], r.headers['x-content-type-options'], r.raw],
+          [200, 'text/html; charset=utf-8', 'inline', CSP, 'nosniff', body], u);
+        const csp = r.headers['content-security-policy'].split(';').map(x => x.trim());
+        assert.ok(!csp.some(d => /allow-(same-origin|top-navigation|forms|popups|modals)/.test(d)), r.headers['content-security-policy']);
+        const plain = await req('GET', u);
+        assert.deepStrictEqual([plain.headers['content-disposition'], plain.headers['content-security-policy']], ['attachment', "sandbox; frame-ancestors 'self'"], u);
+        const dl = await req('GET', `${u}?view=1&download=1&name=r${path.extname(u)}`);
+        assert.ok(dl.headers['content-disposition'].startsWith('attachment; filename='), dl.headers['content-disposition']);
+        assert.strictEqual(dl.headers['content-security-policy'], "sandbox; frame-ancestors 'self'");
+        assert.strictEqual((await req('GET', `${u}?view=true`)).headers['content-disposition'], 'attachment');
+      }
+      for (const [name, type] of [['view.svg', 'image/svg+xml'], ['view.js', 'text/javascript'], ['view.xml', 'application/xml']]) {
+        const u = await upload(name, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', type);
+        const r = await req('GET', `${u}?view=1`);
+        assert.deepStrictEqual([r.status, r.headers['content-disposition'], r.headers['content-security-policy']], [200, 'attachment', "sandbox; frame-ancestors 'self'"], name);
+      }
+      const txt = await req('GET', `${txtUrl}?view=1`);
+      assert.deepStrictEqual([txt.headers['content-disposition'], txt.headers['content-security-policy']], ['inline', "frame-ancestors 'self'; frame-src 'self'"]);
+      for (const trav of ['/uploads/../server.js?view=1', '/uploads/%2e%2e/server.js?view=1', '/uploads/..%2fserver.js?view=1', '/uploads/nope-missing.html?view=1']) {
+        assert.strictEqual((await req('GET', trav)).status, 404, trav);
+      }
+    });
+
+    await test('/uploads ?view=1 — .html over 5 MB → 413; exactly 5 MB still previews; without view=1 it downloads', async () => {
+      const big = path.join(uploadsDir, `__view-big-${crypto.randomBytes(4).toString('hex')}.html`);
+      const edge = path.join(uploadsDir, `__view-edge-${crypto.randomBytes(4).toString('hex')}.html`);
+      createdUploads.push(big, edge);
+      fs.writeFileSync(big, Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+      fs.writeFileSync(edge, Buffer.alloc(5 * 1024 * 1024, 0x61));
+      const over = await req('GET', `/uploads/${path.basename(big)}?view=1`);
+      assert.strictEqual(over.status, 413);
+      assert.match(over.raw, /larger than 5 MB/);
+      assert.strictEqual(over.headers['content-disposition'], undefined);
+      const atLimit = await req('GET', `/uploads/${path.basename(edge)}?view=1`, null, { range: 'bytes=0-9' });
+      assert.deepStrictEqual([atLimit.status, atLimit.headers['content-disposition'], atLimit.raw], [206, 'inline', 'aaaaaaaaaa']);
+      const dl = await req('GET', `/uploads/${path.basename(big)}`, null, { range: 'bytes=0-0' });
+      assert.deepStrictEqual([dl.status, dl.headers['content-disposition']], [206, 'attachment']);
+    });
+
+    await test('/uploads HEAD — same status and headers as GET (view CSP, 413, 404, 401, attachment), no body on the wire', async () => {
+      const CSP = "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+      const name = `__head-${crypto.randomBytes(4).toString('hex')}.html`;
+      const big = `__head-big-${crypto.randomBytes(4).toString('hex')}.html`;
+      createdUploads.push(path.join(uploadsDir, name), path.join(uploadsDir, big));
+      fs.writeFileSync(path.join(uploadsDir, name), '<p>head</p>');
+      fs.writeFileSync(path.join(uploadsDir, big), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+      const pick = r => [r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['content-security-policy'], r.headers['content-length']];
+      for (const q of ['?view=1', '', '?view=1&download=1']) {
+        const g = await req('GET', `/uploads/${name}${q}`), h = await req('HEAD', `/uploads/${name}${q}`);
+        assert.deepStrictEqual(pick(h), pick(g), q);
+        assert.strictEqual(h.raw, '', q);
+      }
+      const hv = await req('HEAD', `/uploads/${name}?view=1`);
+      assert.deepStrictEqual(pick(hv), [200, 'text/html; charset=utf-8', 'inline', CSP, '11']);
+      assert.deepStrictEqual(pick(await req('HEAD', `/uploads/${name}`)).slice(2, 4), ['attachment', "sandbox; frame-ancestors 'self'"]);
+      assert.strictEqual((await req('HEAD', `/uploads/${big}?view=1`)).status, 413);
+      assert.strictEqual((await req('HEAD', '/uploads/__head-missing.html?view=1')).status, 404);
+      assert.strictEqual((await req('HEAD', '/uploads/../server.js?view=1')).status, 404);
+      assert.strictEqual((await anon(() => req('HEAD', `/uploads/${name}?view=1`), true)).status, 401);
+      const signed = `/uploads/${name}`;
+      assert.strictEqual((await anon(() => req('HEAD', `${signed}?${signedQuery(signed, nowSec() + 60)}&view=1`), true)).status, 200, 'signed URL works for HEAD');
+      const wire = await new Promise((resolve, reject) => {
+        const sock = require('net').connect(PORT, HOST, () => sock.end(
+          `HEAD /uploads/${name}?view=1 HTTP/1.1\r\nHost: ${HOST}:${PORT}\r\nCookie: ${cookieHeader()}\r\nConnection: close\r\n\r\n`));
+        let buf = '';
+        sock.on('data', c => { buf += c; });
+        sock.on('end', () => resolve(buf));
+        sock.on('error', reject);
+      });
+      assert.match(wire, /^HTTP\/1\.1 200/);
+      assert.strictEqual(wire.split('\r\n\r\n')[1], '', 'HEAD sends headers only');
     });
 
     await test('/uploads — .log/.yaml/.yml/.tsv served as inline utf-8 text', async () => {
@@ -13618,7 +13697,7 @@ async function run() {
         const r = await req('GET', u);
         assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['accept-ranges'], r.headers['content-length'], r.raw],
           [200, type, 'inline', 'bytes', '11', 'media-bytes'], name);
-        assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'", name);
+        assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'", name);
       }
       const mp4 = await upload('dl-clip.mp4', 'media-bytes', 'video/mp4');
       const dl = await req('GET', `${mp4}?download=1&name=${encodeURIComponent('Rapat Senin.mp4')}`);
@@ -13678,6 +13757,33 @@ async function run() {
         assert.deepStrictEqual([(await req('GET', mp4)).headers['content-type'], (await req('GET', mp4)).headers['content-disposition']], ['video/mp4', 'inline']);
         assert.strictEqual((await req('GET', `${mp4}?download=1`)).headers['content-disposition'],
           `attachment; filename="clip.mp4"; filename*=UTF-8''clip.mp4`);
+      } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
+    });
+
+    await test('/connector-media ?view=1 — .html inline under the sandbox CSP, 413 over 5 MB, plain GET still downloads', async () => {
+      const CSP = "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, 'r.html'), '<b>wa</b>');
+      fs.writeFileSync(path.join(mediaDir, 'big.htm'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+      try {
+        const p = '/connector-media/__sectest__/r.html';
+        const v = await req('GET', `${p}?view=1`);
+        assert.deepStrictEqual([v.status, v.headers['content-type'], v.headers['content-disposition'], v.headers['content-security-policy'], v.raw],
+          [200, 'text/html; charset=utf-8', 'inline', CSP, '<b>wa</b>']);
+        const plain = await req('GET', p);
+        assert.deepStrictEqual([plain.headers['content-type'], plain.headers['content-disposition'], plain.headers['content-security-policy']],
+          ['application/octet-stream', 'attachment', "sandbox; frame-ancestors 'self'"]);
+        assert.strictEqual((await req('GET', `${p}?view=1&download=1`)).headers['content-disposition'], `attachment; filename="r.html"; filename*=UTF-8''r.html`);
+        const big = await req('GET', '/connector-media/__sectest__/big.htm?view=1');
+        assert.deepStrictEqual([big.status, big.headers['content-disposition']], [413, undefined]);
+        assert.strictEqual((await anon(() => req('GET', `${p}?view=1`), true)).status, 401, 'view=1 does not bypass auth');
+        const hv = await req('HEAD', `${p}?view=1`);
+        assert.deepStrictEqual([hv.status, hv.headers['content-disposition'], hv.headers['content-security-policy'], hv.headers['content-length'], hv.raw], [200, 'inline', CSP, '9', '']);
+        assert.strictEqual((await req('HEAD', p)).headers['content-disposition'], 'attachment');
+        assert.strictEqual((await req('HEAD', '/connector-media/__sectest__/big.htm?view=1')).status, 413);
+        assert.strictEqual((await req('HEAD', '/connector-media/__sectest__/gone.html?view=1')).status, 404);
+        assert.strictEqual((await anon(() => req('HEAD', `${p}?view=1`), true)).status, 401);
+        assert.strictEqual((await req('GET', '/connector-media/../server.js?view=1')).status, 404);
       } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
     });
 
@@ -19813,12 +19919,12 @@ async function run() {
     const audio = ['/uploads/a.mp3', '/uploads/b.opus', '/uploads/c.flac', '/uploads/d.m4a', '/uploads/e.oga', '/uploads/f.ogg', '/uploads/g.wav', '/uploads/h.AAC', '/connector-media/1/x/voice.ogg'];
     for (const u of video) assert.strictEqual(kindOf(u), 'video', u);
     for (const u of audio) assert.strictEqual(kindOf(u), 'audio', u);
-    for (const u of ['https://evil.test/uploads/a.mp4', '/static/a.mp4', '/api/files/a.mp3', 'javascript:alert(1)//a.mp4', '/uploads/a.html', '/uploads/a.svg', '/uploads/a.mkv', '/uploads/mp4', ''])
+    for (const u of ['https://evil.test/uploads/a.mp4', '/static/a.mp4', '/api/files/a.mp3', 'javascript:alert(1)//a.mp4', '/uploads/a.svg', '/uploads/a.mkv', '/uploads/mp4', ''])
       assert.strictEqual(kindOf(u), null, u);
 
     const disguised = ctx.fileResolveUrl('/uploads/x.html');
     assert.strictEqual(ctx.fileCardExt(disguised, 'holiday.mp4'), 'html', 'served file: label follows the on-disk ext, not the display name');
-    assert.strictEqual(ctx.filePreviewKind(disguised), null, 'no player for an .html stored file named like a video');
+    assert.strictEqual(ctx.filePreviewKind(disguised), 'html', 'an .html stored file named like a video gets the sandboxed html viewer, not a player');
     assert.strictEqual(ctx.filePreviewKind(ctx.fileResolveUrl('/uploads/x.mp3')), 'audio', 'and a real mp3 stays audio whatever it is called');
 
     const mediaIcon = ctx.fileIconSvg('mp4', 16);
@@ -19826,6 +19932,95 @@ async function run() {
     for (const ext of ['mp4', 'm4v', 'mov', 'webm', 'mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'])
       assert.strictEqual(ctx.fileIconSvg(ext, 16), mediaIcon, ext);
     for (const ext of ['html', 'pdf', 'mkv']) assert.ok(!ctx.fileIconSvg(ext, 16).includes('<polygon'), ext);
+  });
+
+  await test('file preview — html attachments open only through the sandboxed ?view=1 frame, with readable errors', async () => {
+    const vm = require('vm');
+    class N {
+      constructor(tag) { this.tagName = tag; this.attrs = {}; this.children = []; this.className = ''; this.textContent = ''; this.classList = { add: c => { this.className += ' ' + c; } }; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...c) { this.children.push(...c); }
+      replaceChildren(...c) { this.children = c; }
+      querySelectorAll() { return []; }
+    }
+    const calls = [];
+    let reply;
+    const ctx = vm.createContext({ URL, location: { origin: 'https://stoa.test' }, document: { createElement: t => new N(t) },
+      fetch: async (href, opts) => { calls.push({ href, method: opts && opts.method }); return reply(); } });
+    vm.runInContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/file-card.js'), 'utf8'), ctx);
+    const token = () => vm.runInContext('filePreviewToken', ctx);
+    const kindOf = raw => ctx.filePreviewKind(ctx.fileResolveUrl(raw));
+    for (const u of ['/uploads/a.html', '/uploads/b.HTM', '/connector-media/1/x/r.html', 'https://stoa.test/uploads/c.html?exp=1&sig=x'])
+      assert.strictEqual(kindOf(u), 'html', u);
+    for (const u of ['https://evil.test/uploads/a.html', '/static/a.html', '/uploads/a.svg', '/uploads/a.js', '/uploads/a.xml', '/uploads/a.xhtml'])
+      assert.strictEqual(kindOf(u), null, u);
+
+    const signed = new URL(ctx.fileViewHref(ctx.fileResolveUrl('/uploads/c.html?exp=1&sig=x')));
+    assert.deepStrictEqual([signed.pathname, signed.searchParams.get('exp'), signed.searchParams.get('sig'), signed.searchParams.get('view')], ['/uploads/c.html', '1', 'x', '1'], 'view=1 is added without dropping the signature');
+
+    const files = [{ url: '/uploads/1.html', name: 'one.html' }, { url: '/uploads/2.pdf' }, { url: 'https://evil.test/3.html' }, { url: '/uploads/4.htm', name: 'four' }];
+    const group = ctx.fileHtmlGroup(files);
+    assert.deepStrictEqual(group.map(f => f.name), ['one.html', 'four'], 'only served html files, in message order');
+    assert.ok(group[0].src === files[0] && group[1].src === files[3], 'each entry keeps its attachment for the card to find its index');
+
+    const file = group[0];
+    let newTab;
+    const run = async () => {
+      const body = new N('div');
+      newTab = { removed: false, remove() { this.removed = true; } };
+      await ctx.filePreviewHtml(file, token(), body, newTab);
+      return body;
+    };
+    const text = n => [n.textContent, ...n.children.map(text)].join(' ');
+
+    reply = () => ({ ok: true, status: 200, headers: { get: () => '1200' } });
+    let body = await run();
+    const frame = body.children[0];
+    assert.strictEqual(frame.tagName, 'iframe');
+    assert.strictEqual(frame.getAttribute('sandbox'), 'allow-scripts', 'scripts only: no same-origin, top navigation, forms or popups');
+    assert.strictEqual(new URL(frame.src).searchParams.get('view'), '1', 'frame loads the CSP-sandboxed view, not the download');
+    assert.deepStrictEqual(calls.pop(), { href: frame.src, method: 'HEAD' }, 'the probe is a HEAD to the same view URL');
+    assert.strictEqual(newTab.removed, false, 'a page that loads keeps its Open in new tab link');
+
+    reply = () => ({ ok: false, status: 413, headers: { get: () => '40' } });
+    body = await run();
+    assert.ok(text(body).includes('too large to preview (limit 5 MB)'), text(body));
+    assert.ok(body.children[0].children.some(c => c.tagName === 'a' && c.getAttribute('download') === ''), 'over-limit offers the download');
+    assert.strictEqual(newTab.removed, true, 'over-limit drops Open in new tab, which would only reach the 413');
+
+    reply = () => ({ ok: true, status: 200, headers: { get: () => String(6 * 1048576) } });
+    assert.ok(text(await run()).includes('6,144 KB, limit 5,120 KB'), 'an over-limit size reported by HEAD is shown too');
+    reply = () => ({ ok: false, status: 404, headers: { get: () => null } });
+    assert.ok(text(await run()).includes('no longer available'));
+    assert.strictEqual(newTab.removed, true, 'a missing file drops Open in new tab');
+    reply = () => ({ ok: false, status: 405, headers: { get: () => null } });
+    assert.strictEqual((await run()).children[0].tagName, 'iframe', 'a server without HEAD still gets the frame');
+    reply = () => { throw new Error('offline'); };
+    assert.ok(text(await run()).includes('Check your connection'));
+    assert.strictEqual(newTab.removed, true, 'a network failure drops Open in new tab');
+
+    reply = () => ({ ok: true, status: 200, headers: { get: () => '10' } });
+    body = new N('div');
+    const pending = ctx.filePreviewHtml(file, token(), body);
+    vm.runInContext('filePreviewToken++', ctx);
+    await pending;
+    assert.ok(!body.children.some(c => c.tagName === 'iframe'), 'a preview superseded while probing never mounts its frame');
+
+    // close() then a new preview in the same tick: the queued 'close' event arrives with the dialog open again.
+    const live = new N('div');
+    live.appendChild(new N('iframe'));
+    const reopened = { open: true, _group: { files: [], index: 0 } };
+    let before = token();
+    ctx.filePreviewOnClose(reopened, live);
+    assert.strictEqual(token(), before, 'a stale close event does not invalidate the preview that reopened the dialog');
+    assert.strictEqual(live.children.length, 1, 'nor clears its content');
+    assert.ok(reopened._group, 'nor drops its prev/next group');
+    const closed = { open: false, _group: { files: [], index: 0 } };
+    ctx.filePreviewOnClose(closed, live);
+    assert.strictEqual(token(), before + 1, 'a real close still cancels pending previews');
+    assert.deepStrictEqual([live.children.length, closed._group], [0, null], 'and clears the body and group');
   });
 
   await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {

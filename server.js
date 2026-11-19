@@ -2212,7 +2212,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 function setSecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  // frame-src 'self': a sandboxed HTML preview (?view=1) can still navigate its own frame
+  // (meta refresh, location=); the embedder's frame-src is what keeps it from leaving Stoa.
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'; frame-src 'self'");
   res.setHeader('Referrer-Policy', 'same-origin');
   if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
 }
@@ -2220,15 +2222,32 @@ function setSecurityHeaders(req, res) {
 // Served files: never cached by shared caches; script-capable types are forced to download
 // and sandboxed so an uploaded .html/.svg can't run script on the Stoa origin.
 const ACTIVE_CONTENT_EXTS = new Set(['.html', '.htm', '.js', '.mjs', '.svg', '.xml', '.xhtml']);
-function fileResponseHeaders(ext, mime, disposition, filenameParams) {
+// ?view=1 on .html/.htm: rendered inline for the attachment preview. `sandbox allow-scripts`
+// without allow-same-origin gives the page an opaque origin (no cookies, storage or Stoa API),
+// in the preview iframe and in a new tab alike; default-src 'none' blocks any network egress.
+const HTML_VIEW_EXTS = new Set(['.html', '.htm']);
+const HTML_VIEW_MAX_BYTES = 5 * 1024 * 1024;
+const HTML_VIEW_CSP = "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+function wantsHtmlView(url, ext, download) {
+  return !download && url.searchParams.get('view') === '1' && HTML_VIEW_EXTS.has(ext);
+}
+function htmlViewTooLarge(res, filepath) {
+  if ((fs.statSync(filepath, { throwIfNoEntry: false })?.size ?? 0) <= HTML_VIEW_MAX_BYTES) return false;
+  res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('HTML file is larger than 5 MB and cannot be previewed; download it instead.');
+  return true;
+}
+function fileResponseHeaders(ext, mime, disposition, filenameParams, htmlView = false) {
+  const view = htmlView && HTML_VIEW_EXTS.has(ext);
   const active = ACTIVE_CONTENT_EXTS.has(ext);
-  const type = active ? 'attachment' : disposition;
+  const type = active && !view ? 'attachment' : disposition;
   const headers = {
     'Content-Type': mime,
     'Cache-Control': 'private, max-age=3600',
     'Content-Disposition': filenameParams ? `${type}; ${filenameParams}` : type,
   };
-  if (active) headers['Content-Security-Policy'] = "sandbox; frame-ancestors 'self'";
+  if (view) headers['Content-Security-Policy'] = HTML_VIEW_CSP;
+  else if (active) headers['Content-Security-Policy'] = "sandbox; frame-ancestors 'self'";
   return headers;
 }
 
@@ -2273,7 +2292,7 @@ function sendFileRanged(req, res, filepath, headers) {
   if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
   headers['Content-Length'] = size ? end - start + 1 : 0;
   res.writeHead(range ? 206 : 200, headers);
-  if (!size) return res.end();
+  if (!size || req.method === 'HEAD') return res.end();
   pipeline(fs.createReadStream(filepath, { start, end }), res, err => {
     if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error(`[files] stream ${filepath}: ${err.message}`);
   });
@@ -2519,7 +2538,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Static: uploaded files
-  if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/uploads/')) {
     const relative = path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(UPLOADS_DIR, relative);
     if (!filepath.startsWith(UPLOADS_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
@@ -2530,19 +2549,21 @@ const server = http.createServer(async (req, res) => {
       '.gif':'image/gif', '.webp':'image/webp',
       '.md':'text/markdown; charset=utf-8', '.txt':'text/plain; charset=utf-8',
       '.pdf':'application/pdf', '.json':'application/json; charset=utf-8',
-      '.html':'text/html; charset=utf-8', '.csv':'text/csv; charset=utf-8',
+      '.html':'text/html; charset=utf-8', '.htm':'text/html; charset=utf-8', '.csv':'text/csv; charset=utf-8',
       '.js':'text/javascript; charset=utf-8', '.ts':'text/plain; charset=utf-8',
       '.log':'text/plain; charset=utf-8', '.yaml':'text/plain; charset=utf-8', '.yml':'text/plain; charset=utf-8',
       '.tsv':'text/tab-separated-values; charset=utf-8',
     };
     const mime = MIMES[ext] || MEDIA_MIMES[ext] || 'application/octet-stream';
     const download = url.searchParams.get('download') === '1';
+    const htmlView = wantsHtmlView(url, ext, download);
+    if (htmlView && htmlViewTooLarge(res, filepath)) return;
     const disp = !download && (mime.startsWith('text/') || mime.includes('json') || ext === '.pdf' || MEDIA_MIMES[ext]) ? 'inline' : 'attachment';
-    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(filename, url.searchParams.get('name')) : null));
+    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(filename, url.searchParams.get('name')) : null, htmlView));
   }
 
   // ── Static: connector media files (WA downloads, etc.)
-  if (req.method === 'GET' && url.pathname.startsWith('/connector-media/')) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/connector-media/')) {
     const relative = path.normalize(url.pathname.slice('/connector-media/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(CONNECTOR_MEDIA_DIR, relative);
     if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
@@ -2552,10 +2573,12 @@ const server = http.createServer(async (req, res) => {
       '.gif':'image/gif', '.webp':'image/webp',
       '.pdf':'application/pdf', '.txt':'text/plain; charset=utf-8',
     };
-    const mime = MIMES[ext] || MEDIA_MIMES[ext] || 'application/octet-stream';
     const download = url.searchParams.get('download') === '1';
+    const htmlView = wantsHtmlView(url, ext, download);
+    if (htmlView && htmlViewTooLarge(res, filepath)) return;
+    const mime = htmlView ? 'text/html; charset=utf-8' : MIMES[ext] || MEDIA_MIMES[ext] || 'application/octet-stream';
     const disp = !download && (mime.startsWith('text/') || ext === '.pdf' || MEDIA_MIMES[ext]) ? 'inline' : 'attachment';
-    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(path.basename(filepath), url.searchParams.get('name')) : null));
+    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(path.basename(filepath), url.searchParams.get('name')) : null, htmlView));
   }
 
   // ── Upload file (raw binary)

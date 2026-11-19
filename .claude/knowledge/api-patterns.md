@@ -346,6 +346,8 @@ Content-Type: multipart/form-data
 
 **File serving (`GET /uploads/*`):** supports HTTP Range requests (206 Partial Content / 416 Range Not Satisfiable). Video/audio types (`mp4 m4v webm mov mp3 m4a aac wav ogg oga opus flac`) are served inline (`Content-Disposition: inline`) without a size cap — the 2 MB preview limit applies only to text/document types fetched by the FE. All other files use `?download=1` to force `Content-Disposition: attachment` with the original filename.
 
+**Active content (`.html .htm .js .mjs .svg .xml .xhtml`):** always `attachment` + `CSP: sandbox; frame-ancestors 'self'` so it can never run on the Stoa origin. Single exception: `.html/.htm` with `?view=1` (both `/uploads/*` and `/connector-media/*`, without `download=1`) is served `inline` as `text/html` under `CSP: sandbox allow-scripts; default-src 'none'; ...; frame-ancestors 'self'` — scripts run but in an opaque origin (no cookies/storage/API, no network egress), in the preview iframe and in a new tab alike. Over 5 MB → 413 text. `?view=1` does not bypass auth/signed-URL checks. Both file routes answer `HEAD` with the same status/headers as `GET` and no body (the preview probes with HEAD). The app-wide CSP is `frame-ancestors 'self'; frame-src 'self'` — see known-issues "HTML attachment preview". Used by the chat attachment HTML preview (`file-card.js`, iframe `sandbox="allow-scripts"`). Never add `allow-same-origin` to either side.
+
 ---
 
 ### Agent-Specific Routes
