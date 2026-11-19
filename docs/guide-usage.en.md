@@ -1462,7 +1462,7 @@ See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 
 Stoa builds and maintains a **knowledge graph** — a shared memory of facts, decisions, and context extracted from room conversations and uploaded documents. Any agent or sub-agent (Claude Code, Codex, sub-agents) can query it at any time.
 
-Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine, or upload a document directly from the **Manage knowledge** dialog in room settings.
+Knowledge is organised into **nodes**, each with a title, summary, category, and links to source messages or document sections. Automatic extraction only runs in rooms where knowledge has been enabled (opt-in per room, off by default) — other rooms are never read for knowledge. Nodes can also be added manually: an agent calls `stoa__knowledge_add` with a `.md`, `.markdown`, or `.txt` file (max 512 KB) from its local machine, or upload a document directly from the **Manage knowledge** dialog in the room's **System Prompt & Memory** popover.
 
 ### Searching Knowledge
 
@@ -1547,10 +1547,10 @@ Press **Escape** or click an empty area to close the panel.
 
 #### Uploading documents
 
-Upload a `.md` or `.txt` file directly from room settings:
+Upload a `.md` or `.txt` file directly from the System Prompt & Memory popover:
 
-1. Open room settings (the **gear icon** in the room header).
-2. Scroll to the **Knowledge** section and click **Manage knowledge**.
+1. Click the **Memory** button (brain icon) in the right sidebar strip to open the **System Prompt & Memory** popover.
+2. Scroll to the **Knowledge** section at the bottom of the popover and click **Manage knowledge**.
 3. Go to the **Documents** tab and click **Upload .md / .txt**.
 4. Select a file (max 512 KB), choose a **category**, and confirm.
 
