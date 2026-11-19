@@ -30,7 +30,7 @@ const KB_AWAKE_MS = 8000;
 const KB_IGNITE_MAX = 200;
 // knowledge_activity kinds → line tone (color in knowledge-brain.css).
 const KB_ACT_TONE = {
-  extract_start: 'write', extract: 'write', document_add: 'write',
+  extract_start: 'write', extract: 'write', extract_failed: 'drop', document_add: 'write',
   document_remove: 'drop', node_delete: 'drop', room_toggle: 'sys',
 };
 
@@ -1043,6 +1043,9 @@ function kbTermSegs(f) {
   if (f.removed) diff.push(['kb-t-del', `-${f.removed} removed`]);
   const counts = diff.length ? diff.flatMap((d, i) => (i ? [[null, ' '], d] : [d])) : [['kb-t-dim', 'no changes']];
   const inRoom = f.room ? [[null, ' '], ['kb-t-room', `[${f.room}]`]] : [];
+  // An agent's document line leads with who@room, so the trailing [room] would repeat it.
+  const docLead = f.byAgent ? [...who, [null, ' document ']] : [[null, 'document ']];
+  const docTail = f.byAgent ? [] : inRoom;
   switch (f.kind) {
     case 'search':
       if (f.query === null) return [...who, [null, ' searched '], ['kb-t-dim', '(private)'], [null, ` → ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
@@ -1050,8 +1053,9 @@ function kbTermSegs(f) {
       return [...who, [null, ` used ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
     case 'extract_start': return [...who, [null, ' writing knowledge…']];
     case 'extract': return [...who, [null, ' wrote '], ...counts];
-    case 'document_add': return [[null, 'document '], ['kb-t-q', doc], [null, ' ingested '], ...counts, ...inRoom];
-    case 'document_remove': return [[null, 'document '], ['kb-t-q', doc], [null, ' removed '], ['kb-t-del', `-${kbCount(f.removed, 'node', 'nodes')}`], ...inRoom];
+    case 'extract_failed': return [...who, [null, ' writing '], ['kb-t-del', 'failed']];
+    case 'document_add': return [...docLead, ['kb-t-q', doc], [null, ' ingested '], ...counts, ...docTail];
+    case 'document_remove': return [...docLead, ['kb-t-q', doc], [null, ' removed '], ['kb-t-del', `-${kbCount(f.removed, 'node', 'nodes')}`], ...docTail];
     case 'node_delete': return [[null, 'node '], ['kb-t-q', f.nodeTitle ? `"${f.nodeTitle}"` : `#${f.nodeId ?? '?'}`], [null, ' removed'], ...inRoom];
     case 'room_toggle': return [[null, 'room '], ['kb-t-q', f.room ? `"${f.room}"` : `#${f.roomId ?? '?'}`], [null, f.enabled ? ' included in knowledge' : ' left knowledge']];
     default: return [['kb-t-dim', f.kind]];
@@ -1358,6 +1362,7 @@ function kbHandleActivity(msg) {
     kind: msg.kind, tone: KB_ACT_TONE[msg.kind],
     nodeIds: msg.kind === 'node_delete' || msg.kind === 'document_remove' ? [] : ids,
     who: msg.actor_name ? kbWho(msg.actor_name, msg.sub_agent_label) : msg.kind.startsWith('extract') ? 'An agent' : 'You',
+    byAgent: !!msg.actor_name,
     actorId: null, subId: null, roomId: msg.room_id ?? null,
     room: typeof msg.room_title === 'string' && msg.room_title ? msg.room_title : null,
     doc: typeof msg.doc_name === 'string' && msg.doc_name ? msg.doc_name : null,
@@ -1365,17 +1370,31 @@ function kbHandleActivity(msg) {
     enabled: msg.enabled === true, nodeId, nodeTitle: gi !== undefined ? g.titles[gi] : null,
     at: kbDate(msg.at) || new Date(),
   };
+  if (f.kind === 'extract' || f.kind === 'extract_failed') kbCloseWriting(f);
   kb.feed.unshift(f);
   if (kb.feed.length > KB_FEED_MAX) kb.feed.length = KB_FEED_MAX;
   kbTermPush(f);
   if (!kb.built) return;
   if (kb.mode === 'live') kbRenderSide();
-  if (f.kind === 'extract_start') return;
+  if (f.kind === 'extract_start' || f.kind === 'extract_failed') return;
   if (f.nodeIds.length && kb.mode === 'live' && kbVisible()) {
     kb.igniteAfterLoad.push(...f.nodeIds);
     if (kb.igniteAfterLoad.length > KB_IGNITE_MAX) kb.igniteAfterLoad.splice(0, kb.igniteAfterLoad.length - KB_IGNITE_MAX);
   }
   kbScheduleRefresh();
+}
+
+// The newest open "writing…" line of the same writer is settled by its result: a success leaves it
+// in place, a failure takes its place so a retrying job doesn't pile up dangling lines.
+function kbCloseWriting(f) {
+  const open = kb.feed.find(o => o.kind === 'extract_start' && !o.closed && o.roomId === f.roomId && o.who === f.who);
+  if (!open) return;
+  open.closed = true;
+  if (f.kind !== 'extract_failed') return;
+  kb.feed.splice(kb.feed.indexOf(open), 1);
+  const t = kb.term;
+  if (t.typing === open) t.typing = null;
+  t.queue = t.queue.filter(q => q !== open);
 }
 
 function kbIgnite(ids) {
