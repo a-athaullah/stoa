@@ -1,8 +1,9 @@
 // ── Knowledge brain ─────────────────────────────────────────────────────────
 // Settings tab "Knowledge": the knowledge graph drawn as a 3D brain. Positions come from the server
 // (GET /api/knowledge/graph, layout kept stable by lib/knowledge-layout.js); the client only rotates
-// and projects them. Live mode lights the nodes agents read (WS knowledge_used) and lists the
-// searches; History shades every node by its use in a range (GET /api/knowledge/usage).
+// and projects them. Live mode lights the nodes agents read (WS knowledge_used) or write (WS
+// knowledge_activity) and types every knowledge event into a terminal card; History shades every
+// node by its use in a range (GET /api/knowledge/usage).
 //
 // Data (kb.graph, typed arrays) is kept apart from drawing (kbCreateRenderer). Canvas 2D holds up to
 // roughly 10 000 nodes at a smooth frame rate; past that the renderer should move to WebGL behind the
@@ -22,6 +23,16 @@ const KB_DEPTH_BUCKETS = 96;
 const KB_EDGE_LEVELS = 6;
 const KB_LABEL_MAX = 12;
 const KB_LABEL_CHARS = 32;
+// Live card: a new line types out at KB_TYPE_MS per character (faster while lines wait), and the
+// card stays awake KB_AWAKE_MS after the last line is done.
+const KB_TYPE_MS = 25;
+const KB_AWAKE_MS = 8000;
+const KB_IGNITE_MAX = 200;
+// knowledge_activity kinds → line tone (color in knowledge-brain.css).
+const KB_ACT_TONE = {
+  extract_start: 'write', extract: 'write', document_add: 'write',
+  document_remove: 'drop', node_delete: 'drop', room_toggle: 'sys',
+};
 
 const KB_PALETTE = {
   dark: {
@@ -42,6 +53,7 @@ const kb = {
   graph: null, graphSeq: 0, graphError: null,
   usage: { seq: 0, range: null, counts: null, max: 0, error: null },
   feed: [], usedBy: new Map(), recentLoaded: false, recentSeq: 0, recentError: null,
+  term: { queue: [], typing: null, timer: 0, sleepTimer: 0, awake: false }, igniteAfterLoad: [],
   pulses: [], scaffold: null, ranked: [], blocked: [],
   view: {
     yaw: -1.05, pitch: 0.18, zoom: 1, yawTo: null, pitchTo: null,
@@ -49,7 +61,7 @@ const kb = {
     hover: -1, selected: -1, cx: 0, cy: 0, size: 1,
   },
   detail: { seq: 0, id: null },
-  raf: 0, lastTs: 0, refreshTimer: null, clockTimer: null,
+  raf: 0, lastTs: 0, refreshTimer: null,
   reducedMotion: false, scheme: 'dark',
 };
 
@@ -556,7 +568,12 @@ function kbBuild() {
   const sideNote = kbEl('div', 'kb-side-note');
   sideNote.hidden = true;
   const list = kbEl('ol', 'kb-list');
-  side.append(sideTitle, sideNote, list);
+  const prompt = kbEl('div', 'kb-term-prompt');
+  prompt.setAttribute('aria-hidden', 'true');
+  const announce = kbEl('div', 'kb-sr');
+  announce.setAttribute('role', 'status');
+  announce.setAttribute('aria-live', 'polite');
+  side.append(sideTitle, sideNote, list, prompt, announce);
 
   const detail = kbEl('section', 'kb-detail');
   detail.hidden = true;
@@ -570,7 +587,7 @@ function kbBuild() {
   root.append(canvas, head, empty, legend, side, detail, tip);
   tab.replaceChildren(root);
 
-  kb.els = { tab, root, canvas, head, counts, msg, empty, side, sideTitle, sideNote, list, detail, tip, mode, range, legend, hint };
+  kb.els = { tab, root, canvas, head, counts, msg, empty, side, sideTitle, sideNote, list, prompt, announce, detail, tip, mode, range, legend, hint };
   kb.renderer = kbCreateRenderer(canvas);
   kb.scaffold = kbBuildScaffold();
   kb.scheme = kbSchemeNow();
@@ -591,7 +608,11 @@ function kbBuild() {
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
   kb.reducedMotion = mq.matches;
-  mq.addEventListener('change', (e) => { kb.reducedMotion = e.matches; if (e.matches) kb.pulses = []; kbKick(); });
+  mq.addEventListener('change', (e) => {
+    kb.reducedMotion = e.matches;
+    if (e.matches) { kb.pulses = []; kbTermFlush(); }
+    kbKick();
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) kbKick(); });
   document.addEventListener('keydown', kbOnKey, true);
 
@@ -831,8 +852,12 @@ async function kbLoadGraph() {
     kbRenderCounts(data);
     kbApplyTargets();
     kbRenderSide();
+    const ids = kb.igniteAfterLoad;
+    kb.igniteAfterLoad = [];
+    if (ids.length && kb.mode === 'live' && kbVisible()) kbIgnite([...new Set(ids)]);
   } catch (e) {
     if (seq !== kb.graphSeq) return;
+    kb.igniteAfterLoad = [];
     kb.graphError = e.message || 'Failed to load the knowledge graph';
     kbRenderCounts(null);
   }
@@ -886,7 +911,7 @@ async function kbLoadUsage() {
 
 function kbFeedKey(f) {
   const t = f.at ? Math.floor(f.at.getTime() / 1000) : 0;
-  return `${f.actorId}|${f.subId}|${f.roomId}|${t}`;
+  return `${f.kind}|${f.actorId}|${f.subId}|${f.roomId}|${t}`;
 }
 
 async function kbLoadRecent() {
@@ -897,6 +922,7 @@ async function kbLoadRecent() {
     const have = new Set(kb.feed.map(kbFeedKey));
     for (const it of Array.isArray(data.items) ? data.items : []) {
       const f = {
+        kind: 'search', tone: 'use', shown: Infinity,
         nodeIds: Array.isArray(it.node_ids) ? it.node_ids.map(Number) : [],
         who: kbWho(it.actor?.name, it.sub_agent?.label),
         actorId: it.actor?.id ?? null, subId: it.sub_agent?.id ?? null, roomId: it.room?.id ?? null,
@@ -924,16 +950,21 @@ function kbWho(actor, sub) {
 
 function kbRenderSide() {
   if (!kb.built) return;
-  const { sideTitle, sideNote, list } = kb.els;
-  if (kb.mode === 'live') {
-    sideTitle.textContent = 'Live';
+  const { side, sideTitle, sideNote, list, prompt } = kb.els;
+  const live = kb.mode === 'live';
+  side.classList.toggle('kb-term', live);
+  prompt.hidden = !live;
+  if (live) {
+    const state = kbEl('span', 'kb-term-state', kb.term.awake ? 'active' : 'idle');
+    sideTitle.replaceChildren(kbEl('span', 'kb-term-name', 'Live activity'), state);
     const items = kb.feed.map(kbFeedRow);
     if (!items.length) {
-      sideNote.textContent = kb.recentError ? kb.recentError : kb.recentLoaded ? 'No agent has searched knowledge yet. Searches show up here as they happen.' : 'loading…';
+      sideNote.textContent = kb.recentError ? kb.recentError : kb.recentLoaded ? 'No knowledge activity yet. Searches, writes and documents show up here as they happen.' : 'loading…';
       sideNote.classList.toggle('kb-error', !!kb.recentError);
       sideNote.hidden = false;
     } else sideNote.hidden = true;
     list.replaceChildren(...items);
+    kbTermPrompt();
     return;
   }
   sideTitle.textContent = `Most used · ${kb.range}`;
@@ -970,8 +1001,10 @@ function kbRenderSide() {
   }));
 }
 
+// One terminal line: `> [HH:MM:SS] who@room did what`. The visible text types out (kbTermType);
+// screen readers get the whole line from .kb-sr and the announcement from kbTermPush.
 function kbFeedRow(f) {
-  const li = kbEl('li', 'kb-row kb-feed');
+  const li = kbEl('li', `kb-row kb-feed kb-tone-${f.tone}`);
   const g = kb.graph;
   const first = g ? f.nodeIds.map(id => g.idx.get(id)).find(i => i !== undefined) : undefined;
   const body = kbEl(first !== undefined ? 'button' : 'div', 'kb-feed-body');
@@ -979,19 +1012,130 @@ function kbFeedRow(f) {
     body.type = 'button';
     body.addEventListener('click', () => kbFocusNode(first, true));
   }
-  const line = kbEl('div', 'kb-feed-line');
-  line.appendChild(kbEl('b', null, f.who));
-  if (f.query === null) line.append(' searched ', kbEl('span', 'kb-private', '(private)'));
-  else if (typeof f.query === 'string' && f.query) line.append(' searched ', kbEl('q', null, f.query));
-  else line.append(` used ${kbPlural(f.nodeIds.length, 'node', 'nodes')}`);
-  const meta = kbEl('div', 'kb-feed-meta');
-  if (f.room) meta.appendChild(kbEl('span', null, f.room));
-  const t = kbEl('time', null, kbAgo(f.at));
+  const gt = kbEl('span', 'kb-t-gt', '>');
+  gt.setAttribute('aria-hidden', 'true');
+  const t = kbEl('time', 'kb-t-ts', `[${kbClock(f.at)}]`);
   if (f.at) { t.dateTime = f.at.toISOString(); t.title = f.at.toLocaleString(); }
-  meta.appendChild(t);
-  body.append(line, meta);
+  const line = kbEl('span', 'kb-feed-line');
+  line.setAttribute('aria-hidden', 'true');
+  kbTermFill(line, f);
+  f.el = line;
+  body.append(gt, t, ' ', line, kbEl('span', 'kb-sr', kbTermText(f)));
   li.appendChild(body);
   return li;
+}
+
+function kbClock(d) {
+  if (!d) return '--:--:--';
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, '0')).join(':');
+}
+
+function kbCount(n, one, many) { return kbPlural(Number(n) || 0, one, many); }
+
+// The line as [class, text] parts; strings come from the server and are only ever set as text.
+function kbTermSegs(f) {
+  const who = [['kb-t-who', f.who]];
+  if (f.room) who.push(['kb-t-room', `@${f.room}`]);
+  const doc = f.doc ? `"${f.doc}"` : '(private)';
+  const diff = [];
+  if (f.added) diff.push(['kb-t-add', `+${kbCount(f.added, 'node', 'nodes')}`]);
+  if (f.updated) diff.push(['kb-t-upd', `~${f.updated} updated`]);
+  if (f.removed) diff.push(['kb-t-del', `-${f.removed} removed`]);
+  const counts = diff.length ? diff.flatMap((d, i) => (i ? [[null, ' '], d] : [d])) : [['kb-t-dim', 'no changes']];
+  const inRoom = f.room ? [[null, ' '], ['kb-t-room', `[${f.room}]`]] : [];
+  switch (f.kind) {
+    case 'search':
+      if (f.query === null) return [...who, [null, ' searched '], ['kb-t-dim', '(private)'], [null, ` → ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+      if (typeof f.query === 'string' && f.query) return [...who, [null, ' searched '], ['kb-t-q', `"${f.query}"`], [null, ` → ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+      return [...who, [null, ` used ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+    case 'extract_start': return [...who, [null, ' writing knowledge…']];
+    case 'extract': return [...who, [null, ' wrote '], ...counts];
+    case 'document_add': return [[null, 'document '], ['kb-t-q', doc], [null, ' ingested '], ...counts, ...inRoom];
+    case 'document_remove': return [[null, 'document '], ['kb-t-q', doc], [null, ' removed '], ['kb-t-del', `-${kbCount(f.removed, 'node', 'nodes')}`], ...inRoom];
+    case 'node_delete': return [[null, 'node '], ['kb-t-q', f.nodeTitle ? `"${f.nodeTitle}"` : `#${f.nodeId ?? '?'}`], [null, ' removed'], ...inRoom];
+    case 'room_toggle': return [[null, 'room '], ['kb-t-q', f.room ? `"${f.room}"` : `#${f.roomId ?? '?'}`], [null, f.enabled ? ' included in knowledge' : ' left knowledge']];
+    default: return [['kb-t-dim', f.kind]];
+  }
+}
+
+function kbTermText(f) { return kbTermSegs(f).map(s => s[1]).join(''); }
+
+function kbTermFill(el, f) {
+  const typing = kb.term.typing === f;
+  let left = f.shown ?? Infinity;
+  const out = [];
+  for (const [cls, text] of kbTermSegs(f)) {
+    if (left <= 0) break;
+    const part = left >= text.length ? text : text.slice(0, left);
+    left -= part.length;
+    out.push(cls ? kbEl('span', cls, part) : part);
+  }
+  if (typing) out.push(kbEl('span', 'kb-t-cursor', '_'));
+  el.replaceChildren(...out);
+}
+
+function kbTermPrompt() {
+  const { prompt, side, sideTitle } = kb.els;
+  const typing = !!kb.term.typing;
+  side.classList.toggle('kb-term-awake', kb.term.awake);
+  const state = sideTitle.querySelector('.kb-term-state');
+  if (state) state.textContent = kb.term.awake ? 'active' : 'idle';
+  const cursor = kbEl('span', 'kb-t-cursor', '_');
+  cursor.hidden = typing;
+  prompt.replaceChildren(kbEl('span', 'kb-t-gt', '>'), kb.term.awake ? '' : 'idle', cursor);
+}
+
+// A new feed entry: typed out when the card is on screen in Live, shown whole otherwise.
+function kbTermPush(f) {
+  const show = kb.built && kb.mode === 'live' && kbVisible();
+  if (!show || kb.reducedMotion) f.shown = Infinity;
+  else { f.shown = 0; kb.term.queue.push(f); }
+  if (!show) return;
+  kb.els.announce.textContent = kbTermText(f);
+  kb.term.awake = true;
+  clearTimeout(kb.term.sleepTimer);
+  if (!kb.term.timer && kb.term.queue.length) kb.term.timer = setInterval(kbTermType, KB_TYPE_MS);
+  if (!kb.term.timer) kb.term.sleepTimer = setTimeout(kbTermSleep, KB_AWAKE_MS);
+}
+
+function kbTermType() {
+  const t = kb.term;
+  if (kb.mode !== 'live' || !kbVisible()) { kbTermFlush(); return; }
+  if (!t.typing) {
+    t.typing = t.queue.shift() || null;
+    if (!t.typing) { kbTermFlush(); return; }
+    kbTermPrompt();
+  }
+  const f = t.typing;
+  f.shown += 1 + t.queue.length;
+  if (f.shown >= kbTermText(f).length) {
+    f.shown = Infinity;
+    t.typing = null;
+  }
+  if (f.el && f.el.isConnected) kbTermFill(f.el, f);
+  if (!t.typing && !t.queue.length) kbTermFlush();
+}
+
+// Stop typing: every waiting line shows whole, the card dozes off after KB_AWAKE_MS.
+function kbTermFlush() {
+  const t = kb.term;
+  clearInterval(t.timer);
+  t.timer = 0;
+  for (const f of [t.typing, ...t.queue]) {
+    if (!f) continue;
+    f.shown = Infinity;
+    if (f.el && f.el.isConnected) kbTermFill(f.el, f);
+  }
+  t.typing = null;
+  t.queue = [];
+  clearTimeout(t.sleepTimer);
+  if (t.awake) t.sleepTimer = setTimeout(kbTermSleep, KB_AWAKE_MS);
+  if (kb.built) kbTermPrompt();
+}
+
+function kbTermSleep() {
+  kb.term.awake = false;
+  if (kb.built) kbTermPrompt();
 }
 
 // ── Modes ───────────────────────────────────────────────────────────────────
@@ -1179,6 +1323,7 @@ function kbHandleUsed(msg) {
   if (!msg || !Array.isArray(msg.node_ids)) return;
   const at = kbDate(msg.at) || new Date();
   const f = {
+    kind: 'search', tone: 'use',
     nodeIds: msg.node_ids.map(Number).filter(n => n > 0),
     who: kbWho(msg.actor_name, msg.sub_agent_label),
     actorId: msg.actor_id ?? null, subId: msg.sub_agent_id ?? null, roomId: msg.room_id ?? null,
@@ -1194,9 +1339,43 @@ function kbHandleUsed(msg) {
     if (list.length > 3) list.length = 3;
     kb.usedBy.set(id, list);
   }
+  kbTermPush(f);
   if (!kb.built) return;
   if (kb.mode === 'live') kbRenderSide();
   if (kb.mode === 'live' && kbVisible()) kbIgnite(f.nodeIds);
+}
+
+// knowledge_activity (owner browsers only): writes, documents, deletions and room opt-in, typed into
+// the same card. Nodes a write touched may not be in kb.graph yet, so they light up after the next
+// graph load; a deleted node is named from the graph before that load drops it.
+function kbHandleActivity(msg) {
+  if (!msg || typeof msg.kind !== 'string' || !Object.hasOwn(KB_ACT_TONE, msg.kind)) return;
+  const ids = Array.isArray(msg.node_ids) ? msg.node_ids.map(Number).filter(n => Number.isSafeInteger(n) && n > 0) : [];
+  const g = kb.graph;
+  const nodeId = Number.isSafeInteger(Number(msg.node_id)) && Number(msg.node_id) > 0 ? Number(msg.node_id) : null;
+  const gi = g && nodeId != null ? g.idx.get(nodeId) : undefined;
+  const f = {
+    kind: msg.kind, tone: KB_ACT_TONE[msg.kind],
+    nodeIds: msg.kind === 'node_delete' || msg.kind === 'document_remove' ? [] : ids,
+    who: msg.actor_name ? kbWho(msg.actor_name, msg.sub_agent_label) : msg.kind.startsWith('extract') ? 'An agent' : 'You',
+    actorId: null, subId: null, roomId: msg.room_id ?? null,
+    room: typeof msg.room_title === 'string' && msg.room_title ? msg.room_title : null,
+    doc: typeof msg.doc_name === 'string' && msg.doc_name ? msg.doc_name : null,
+    added: Number(msg.added) || 0, updated: Number(msg.updated) || 0, removed: Number(msg.removed) || 0,
+    enabled: msg.enabled === true, nodeId, nodeTitle: gi !== undefined ? g.titles[gi] : null,
+    at: kbDate(msg.at) || new Date(),
+  };
+  kb.feed.unshift(f);
+  if (kb.feed.length > KB_FEED_MAX) kb.feed.length = KB_FEED_MAX;
+  kbTermPush(f);
+  if (!kb.built) return;
+  if (kb.mode === 'live') kbRenderSide();
+  if (f.kind === 'extract_start') return;
+  if (f.nodeIds.length && kb.mode === 'live' && kbVisible()) {
+    kb.igniteAfterLoad.push(...f.nodeIds);
+    if (kb.igniteAfterLoad.length > KB_IGNITE_MAX) kb.igniteAfterLoad.splice(0, kb.igniteAfterLoad.length - KB_IGNITE_MAX);
+  }
+  kbScheduleRefresh();
 }
 
 function kbIgnite(ids) {
@@ -1249,10 +1428,5 @@ function sLoadKnowledgeTab() {
     kbScheduleRefresh();
     kbRenderSide();
   }
-  clearInterval(kb.clockTimer);
-  kb.clockTimer = setInterval(() => {
-    if (!kbVisible()) { clearInterval(kb.clockTimer); kb.clockTimer = null; return; }
-    if (kb.mode === 'live') kbRenderSide();
-  }, 30000);
   requestAnimationFrame(kbLayout);
 }

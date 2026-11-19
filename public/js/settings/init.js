@@ -50,6 +50,7 @@ function initGlobalWs() {
       if (['knowledge_graph_changed', 'room_knowledge_changed', 'room_deleted'].includes(msg.type) && typeof kbHandleGraphChanged === 'function') kbHandleGraphChanged();
       if (msg.type === 'knowledge_used' && typeof knHandleUsed === 'function') knHandleUsed();
       if (msg.type === 'knowledge_used' && typeof kbHandleUsed === 'function') kbHandleUsed(msg);
+      if (msg.type === 'knowledge_activity' && typeof kbHandleActivity === 'function') kbHandleActivity(msg);
       if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }
