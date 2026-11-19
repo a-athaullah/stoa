@@ -1521,6 +1521,15 @@ Live mode is the default. When an agent or sub-agent searches the knowledge grap
 
 Rooms listed in `KNOWLEDGE_EXCLUDED_ROOM_IDS` appear in the feed as **"(private)"** — no room name, no query text.
 
+The live activity also shows every change to knowledge, as it happens, and lights up the nodes it wrote once the graph has reloaded:
+
+- **Writing** — an agent starts summarising a conversation into knowledge, then reports how many nodes it added, updated or removed
+- **Documents** — a document added or updated (by an agent, a sub-agent or your upload) with its name and node counts, or a document removed
+- **Node deleted** — a node deleted from a room's knowledge panel
+- **Room toggled** — a room's **Include in Knowledge** switched on or off
+
+For a room in `KNOWLEDGE_EXCLUDED_ROOM_IDS`, these entries show no room name and no document name.
+
 Hover over a lit node to see a tooltip with the agent and room that last used it.
 
 #### History mode

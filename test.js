@@ -28725,7 +28725,13 @@ async function run() {
       const params = (o) => new URLSearchParams(o);
       const use = (node, { actor = d.agent, sub = null, label = null, room = d.rm.id, at = "datetime('now')" } = {}) => Number(d.kdb.prepare(
         `INSERT INTO knowledge_usage (node_id, actor_id, sub_agent_id, sub_agent_label, room_id, used_at) VALUES (?, ?, ?, ?, ?, ${at})`).run(node, actor, sub, label, room).lastInsertRowid);
-      return { ...d, ex, admin, notes, params, use };
+      // Graph / room events without knowledge_activity, and knowledge_activity alone with `at` checked and dropped.
+      const plain = () => notes.filter(m => m.type !== 'knowledge_activity');
+      const acts = () => notes.filter(m => m.type === 'knowledge_activity').map(({ at, ...m }) => {
+        assert.match(at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+        return m;
+      });
+      return { ...d, ex, admin, notes, params, use, plain, acts };
     };
 
     await test('knowledge brain — node detail: sources (message preview scrubbed + cut, thread, archived room; document), excluded room only counted, 20 listed + more, uses per range, 10 latest users (excluded room → no room); 400 / 404', async () => {
@@ -28816,13 +28822,13 @@ async function run() {
       assert.deepStrictEqual(r.body, { document_id: r.body.document_id, name: 'brain.md', sections: 2, added: 2, updated: 0, removed: 0, unchanged_sections: 0 });
       assert.deepStrictEqual(k.docNodes(r.body.document_id).map(x => [x.title, x.category, x.section]), [['brain.md: Alpha', 'dec', 'Alpha'], ['brain.md: Beta', 'dec', 'Beta']]);
       assert.deepStrictEqual(k.kdb.prepare('SELECT added_by_actor_id, updated_by_actor_id, room_id FROM knowledge_documents WHERE id=?').get(r.body.document_id), { added_by_actor_id: k.human, updated_by_actor_id: k.human, room_id: k.rm.id });
-      assert.deepStrictEqual(k.notes, [{ type: 'knowledge_graph_changed', reason: 'document_add', room_id: k.rm.id }, { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
+      assert.deepStrictEqual(k.plain(), [{ type: 'knowledge_graph_changed', reason: 'document_add', room_id: k.rm.id }, { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
       const again = await up({ name: 'brain.md', content: '# Alpha\nfirst part\n# Beta\nchanged' });
       assert.deepStrictEqual([again.body.document_id, again.body.updated, again.body.added], [r.body.document_id, 2, 0], 'both rewritten: the category is part of a section');
       assert.deepStrictEqual(k.docNodes(r.body.document_id).map(x => x.category), ['res', 'res'], 'category defaults like the agent path');
       const same = await up({ name: 'brain.md', content: '# Alpha\nfirst part\n# Beta\nchanged' });
       assert.strictEqual(same.body.unchanged, true);
-      assert.strictEqual(k.notes.length, 4, 'no event when nothing changed');
+      assert.strictEqual(k.plain().length, 4, 'no event when nothing changed');
       // The agent adds under the same name: one document, updated (the shared write path).
       const viaAgent = await k.add('# Alpha\nfirst part', { name: 'brain.md' });
       assert.deepStrictEqual([viaAgent.status, viaAgent.body.document_id, viaAgent.body.removed], [200, r.body.document_id, 1]);
@@ -28887,25 +28893,25 @@ async function run() {
       assert.deepStrictEqual(graphNotes(), [ev('document_add', k.rm.id)]);
       const u1 = await k.admin.uploadDocument(String(k.rm.id), { name: 'u.md', content: '# U\nuploaded' }, k.human);
       assert.strictEqual(u1.status, 200);
-      assert.deepStrictEqual(k.notes.slice(1), [ev('document_add', k.rm.id), { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
+      assert.deepStrictEqual(k.plain().slice(1), [ev('document_add', k.rm.id), { type: 'room_knowledge_changed', room_id: k.rm.id, enabled: true }]);
       // Remove: one event; a missing / other room's document → none.
       k.notes.length = 0;
       assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 200);
       assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 404);
       assert.strictEqual(k.admin.removeDocument(String(conv.id), String(u1.body.document_id)).status, 404);
       assert.strictEqual(k.docs.remove(k.rm.id, a1.body.document_id).status, 404, 'agent path too');
-      assert.deepStrictEqual(k.notes, [ev('document_remove', k.rm.id)]);
+      assert.deepStrictEqual(k.plain(), [ev('document_remove', k.rm.id)]);
       // Node delete from a panel: one event; not from that room / missing → none.
       k.notes.length = 0;
       const uNode = k.docNodes(u1.body.document_id)[0].id;
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(conv.id)).status, 404);
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 200);
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 404);
-      assert.deepStrictEqual(k.notes, [ev('node_delete', k.rm.id)]);
+      assert.deepStrictEqual(k.plain(), [ev('node_delete', k.rm.id)]);
       // The room toggle changes no node: no graph event.
       k.notes.length = 0;
       assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
-      assert.deepStrictEqual(k.notes.map(m => m.type), ['room_knowledge_changed']);
+      assert.deepStrictEqual(k.plain().map(m => m.type), ['room_knowledge_changed']);
 
       // sourcesIn, asked by server.js before a delete.
       const t = k.room();
@@ -28921,6 +28927,142 @@ async function run() {
       assert.strictEqual(k.admin.sourcesIn({ roomId: docRoom.id }), false);
       assert.strictEqual((await k.admin.uploadDocument(String(docRoom.id), { name: 'd.md', content: 'doc only' }, k.human)).status, 200);
       assert.strictEqual(k.admin.sourcesIn({ roomId: docRoom.id }), true, 'a document source counts');
+      k.kdb.close();
+    });
+
+    await test('knowledge brain — knowledge_activity: one per operation after its commit (extract_start, extract with added / updated / removed, document_add / document_remove by agent, sub-agent or owner, node_delete, room_toggle), node_ids active only; none for failed or no-op ones', async () => {
+      const k = kbSetup();
+      const act = (kind, room, o = {}) => ({ type: 'knowledge_activity', kind, room_id: room, room_title: 'kx-room', actor_name: null, sub_agent_label: null,
+        node_ids: [], added: 0, updated: 0, removed: 0, ...o });
+      const conv = k.room();
+      // Extraction: start when the job goes out, the result with what it wrote, named after the agent.
+      const { nodeId } = await k.seed(conv, 'Queue uses WAL', 'single writer VEC[1,0,0,0,0,0,0,0]');
+      assert.deepStrictEqual(k.notes.map(m => m.kind ?? m.type), ['extract_start', 'knowledge_graph_changed', 'extract'], 'start before, result after the graph event');
+      assert.deepStrictEqual(k.acts(), [act('extract_start', conv.id, { actor_name: 'kx-agent' }),
+        act('extract', conv.id, { actor_name: 'kx-agent', node_ids: [nodeId], added: 1 })]);
+      // Updating the node the agent was shown, plus a new one: one updated, one added.
+      k.notes.length = 0;
+      const r2 = k.msg(conv, 'VEC[1,0.1,0,0,0,0,0,0] more on the queue');
+      k.msg(conv, 'VEC[1,0.1,0,0,0,0,0,0] and a new topic', { threadId: r2 });
+      k.kx.enqueueConversation(conv.id, r2, 'thread_complete');
+      await k.kx.tick();
+      const job2 = k.sent[k.sent.length - 1];
+      assert.match(job2.prompt, new RegExp(`"id":${nodeId},`), 'the node is a candidate');
+      await k.answer(job2.job_id, [{ ...k.node('Queue uses WAL', 'single writer, busy timeout VEC[1,0,0,0,0,0,0,0]'), update_node_id: nodeId },
+        k.node('Backups', 'nightly VEC[0,1,0,0,0,0,0,0]')]);
+      const newId = k.kdb.prepare('SELECT MAX(id) AS id FROM knowledge_nodes').get().id;
+      assert.deepStrictEqual(k.acts().slice(1), [act('extract', conv.id, { actor_name: 'kx-agent', node_ids: [nodeId, newId], added: 1, updated: 1 })]);
+      // Nothing to keep: the result still closes the "writing" line, with zero counts.
+      k.notes.length = 0;
+      const r3 = k.msg(conv, 'small talk');
+      k.msg(conv, 'nothing to keep', { threadId: r3 });
+      k.kx.enqueueConversation(conv.id, r3, 'thread_complete');
+      await k.kx.tick();
+      await k.answer(k.sent[k.sent.length - 1].job_id, []);
+      assert.deepStrictEqual(k.acts(), [act('extract_start', conv.id, { actor_name: 'kx-agent' }), act('extract', conv.id, { actor_name: 'kx-agent' })]);
+      // A dropped answer (room switched off meanwhile): no extract.
+      k.notes.length = 0;
+      const r4 = k.msg(conv, 'another');
+      k.msg(conv, 'reply', { threadId: r4 });
+      k.kx.enqueueConversation(conv.id, r4, 'thread_complete');
+      await k.kx.tick();
+      k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(conv.id);
+      await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('leak', 'not stored')]);
+      k.kdb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(conv.id);
+      assert.deepStrictEqual(k.acts().map(a => a.kind), ['extract_start']);
+      // Stale node re-extracted to nothing: deleted, removed 1, no id (it is gone).
+      k.notes.length = 0;
+      k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(newId);
+      k.kx.enqueueStale(newId);
+      await k.kx.tick();
+      await k.answer(k.sent[k.sent.length - 1].job_id, []);
+      assert.deepStrictEqual(k.acts().slice(1), [act('extract', conv.id, { actor_name: 'kx-agent', removed: 1 })]);
+
+      // Documents: a sub-agent session names the sub-agent; doc_name is the (scrubbed) name.
+      k.notes.length = 0;
+      const sa = Number(k.kdb.prepare("INSERT INTO sub_agents (parent_actor_id, label) VALUES (?, 'kxwriter')").run(k.agent).lastInsertRowid);
+      const a1 = await k.add('# One\nfirst\n# Two\nsecond', { name: 'g.md' }, { ...k.ident, subAgentId: sa });
+      assert.strictEqual(a1.status, 200, JSON.stringify(a1.body));
+      assert.deepStrictEqual(Object.keys(a1), ['status', 'body'], 'node ids stay inside');
+      const [g1, g2] = k.docNodes(a1.body.document_id).map(x => x.id);
+      assert.deepStrictEqual(k.acts(), [act('document_add', k.rm.id, { actor_name: 'kx-agent', sub_agent_label: 'kxwriter', node_ids: [g1, g2], added: 2, doc_name: 'g.md' })]);
+      // Unchanged, new hash with the same sections, failures: nothing.
+      assert.strictEqual((await k.add('# One\nfirst\n# Two\nsecond', { name: 'g.md' })).body.unchanged, true);
+      assert.strictEqual((await k.add('# One\nfirst\n# Two\nsecond\n\n', { name: 'g.md' })).status, 200);
+      assert.strictEqual((await k.add('x', { name: 'g.md', category: 'zzz' })).status, 400);
+      assert.strictEqual((await k.add('x', { name: 'g.md' }, { ...k.ident, roomId: k.room(0).id })).status, 403);
+      assert.strictEqual(k.acts().length, 1);
+      // Changed + removed section: ids of the rewritten node only.
+      const a2 = await k.add('# One\nfirst, revised', { name: 'g.md' });
+      assert.deepStrictEqual(k.acts()[1], act('document_add', k.rm.id, { actor_name: 'kx-agent', node_ids: [g1], updated: 1, removed: 1, doc_name: 'g.md' }));
+      assert.strictEqual(a2.body.removed, 1);
+      // Upload by the owner.
+      k.notes.length = 0;
+      const u1 = await k.admin.uploadDocument(String(k.rm.id), { name: 'u.md', content: '# U\nuploaded' }, k.human);
+      const uNode = k.docNodes(u1.body.document_id)[0].id;
+      assert.deepStrictEqual(k.acts(), [act('document_add', k.rm.id, { actor_name: 'kx-owner', node_ids: [uNode], added: 1, doc_name: 'u.md' })]);
+      // Remove from the panel (no actor) and by the agent (stoa__knowledge_document_delete passes its ident).
+      k.notes.length = 0;
+      assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 200);
+      assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 404);
+      const b1 = await k.add('# B\nbee', { name: 'b.md' });
+      k.notes.length = 0;
+      assert.deepStrictEqual(k.docs.remove(k.rm.id, b1.body.document_id, { ...k.ident, subAgentId: sa }), { status: 200, body: { deleted: b1.body.document_id, sections_removed: 1 } });
+      assert.deepStrictEqual(k.acts(), [act('document_remove', k.rm.id, { actor_name: 'kx-agent', sub_agent_label: 'kxwriter', removed: 1, doc_name: 'b.md' })]);
+      // Node delete: node_id, nothing in node_ids; failed deletes none.
+      k.notes.length = 0;
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(conv.id)).status, 404);
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 200);
+      assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 404);
+      assert.deepStrictEqual(k.acts(), [act('node_delete', k.rm.id, { node_id: uNode, removed: 1 })]);
+      // Room toggle: on a change only, with enabled.
+      k.notes.length = 0;
+      assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
+      assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
+      assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: true }).status, 200);
+      assert.strictEqual(k.admin.setEnabled(String(k.ex.id), { enabled: true }).status, 403);
+      assert.deepStrictEqual(k.acts(), [act('room_toggle', conv.id, { enabled: false }), act('room_toggle', conv.id, { enabled: true })]);
+      k.kdb.close();
+    });
+
+    await test('knowledge brain — knowledge_activity helper: node_ids deduped, active only, at most 50; excluded room → room_title and doc_name null; a throwing broadcast or lookup is logged and the operation still succeeds', async () => {
+      const k = kbSetup();
+      const { createKnowledgeActivity, ACTIVITY_IDS_MAX } = require('./lib/knowledge-graph');
+      assert.strictEqual(ACTIVITY_IDS_MAX, 50);
+      const got = [], errs = [];
+      const activity = createKnowledgeActivity({ db: k.kdb, notify: (m) => got.push(m), log: { error: (e) => errs.push(e) },
+        excludedRoom: (id) => id === k.ex.id, now: () => new Date('2026-11-19T01:02:03Z') });
+      const ids = [];
+      for (let i = 0; i < 60; i++) ids.push(Number(k.kdb.prepare("INSERT INTO knowledge_nodes (title, category) VALUES ('n', 'eng')").run().lastInsertRowid));
+      k.kdb.prepare(`UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?`).run(ids[0]);
+      activity('extract', { roomId: k.rm.id, actorId: k.agent, nodeIds: [ids[1], ids[1], 99999999, ids[0], ...ids.slice(2)], added: 3 });
+      assert.deepStrictEqual(got[0].node_ids, ids.slice(1, 51), 'stale and missing dropped, first 50 kept');
+      assert.deepStrictEqual({ ...got[0], node_ids: [] }, { type: 'knowledge_activity', kind: 'extract', room_id: k.rm.id, room_title: 'kx-room', actor_name: 'kx-agent',
+        sub_agent_label: null, node_ids: [], added: 3, updated: 0, removed: 0, at: '2026-11-19T01:02:03.000Z' });
+      activity('document_remove', { roomId: k.ex.id, docName: 'secret-plan.md', removed: 2 });
+      assert.deepStrictEqual([got[1].room_id, got[1].room_title, got[1].doc_name], [k.ex.id, null, null], 'private room: no title, no name');
+      activity('room_toggle', { roomId: 99999999, enabled: true });
+      assert.deepStrictEqual([got[2].room_title, got[2].enabled, 'doc_name' in got[2], 'node_id' in got[2]], [null, true, false, false]);
+      assert.deepStrictEqual(errs, []);
+
+      // A throwing broadcast never fails the operation (admin node delete, room toggle, document add).
+      const logged = [];
+      const throwing = { notify: () => { throw new Error('ws down'); }, log: { log() {}, error: (e) => logged.push(e) } };
+      const admin = createKnowledgeAdmin({ db: k.kdb, eligibleRoom: (r) => k.kx.eligibleRoom(r), excludedRoom: () => false, docs: k.docs, ...throwing });
+      const node = Number(k.kdb.prepare("INSERT INTO knowledge_nodes (title, category) VALUES ('t', 'eng')").run().lastInsertRowid);
+      k.kdb.prepare('INSERT INTO knowledge_sources (node_id, message_id) VALUES (?, ?)').run(node, k.msg(k.rm, 'src'));
+      assert.strictEqual(admin.deleteNode(String(node), String(k.rm.id)).status, 200);
+      assert.strictEqual(admin.setEnabled(String(k.rm.id), { enabled: false }).status, 200);
+      assert.ok(logged.some(e => e.includes('knowledge_activity broadcast failed: ws down')), logged.join('\n'));
+      const docs = createKnowledgeDocuments({ db: k.kdb, semantic: k.semantic, eligibleRoom: () => true, readFile: async () => ({}), ...throwing });
+      const before = logged.length;
+      assert.strictEqual((await docs.upload({ actorId: k.human, roomId: k.rm.id }, { name: 't.md', content: '# T\ntext' })).status, 200);
+      assert.ok(logged.slice(before).some(e => e.includes('knowledge_activity broadcast failed')));
+      // A failing lookup (closed statement source: no such table) is caught the same way.
+      const errs2 = [];
+      const broken = createKnowledgeActivity({ db: { prepare: () => { throw new Error('no such table: sub_agents'); } }, notify: () => assert.fail('sent'), log: { error: (e) => errs2.push(e) } });
+      broken('extract_start', { roomId: 1 });
+      assert.deepStrictEqual(errs2, ['[knowledge] knowledge_activity broadcast failed: no such table: sub_agents']);
       k.kdb.close();
     });
 
@@ -31426,6 +31568,49 @@ async function run() {
       } finally {
         humanWs.close();
         await req('DELETE', `/api/rooms/${room}`);
+      }
+    });
+
+    await test('knowledge brain — HTTP/WS: knowledge_activity reaches the owner\'s browser (room toggle, upload named after the owner, node delete, agent document delete via MCP named after the agent), never an agent connection', async () => {
+      const flag = mDb.prepare('SELECT knowledge_enabled, title FROM rooms WHERE id=?').get(roomA);
+      const owner = mDb.prepare("SELECT name FROM actors WHERE type='human' ORDER BY id LIMIT 1").get().name;
+      const agentName = mDb.prepare('SELECT name FROM actors WHERE id=?').get(agA.actorId).name;
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const got = [], leaked = [];
+      humanWs.on('message', (raw) => { const m = JSON.parse(raw); if (m.type === 'knowledge_activity' && m.room_id === roomA) got.push(m); });
+      const spy = (raw) => { if (JSON.parse(raw).type === 'knowledge_activity') leaked.push(raw); };
+      agA.ws.on('message', spy);
+      const next = (kind) => waitForWsMessage(humanWs, m => m.type === 'knowledge_activity' && m.room_id === roomA && m.kind === kind, 3000);
+      const strip = ({ at, ...m }) => { assert.ok(!Number.isNaN(Date.parse(at)), at); return m; };
+      const base = { type: 'knowledge_activity', room_id: roomA, room_title: flag.title, actor_name: null, sub_agent_label: null, node_ids: [], added: 0, updated: 0, removed: 0 };
+      try {
+        humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(roomA);
+        let e = next('room_toggle');
+        assert.strictEqual((await req('PUT', `/api/rooms/${roomA}/knowledge`, { enabled: true })).status, 200);
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'room_toggle', enabled: true });
+
+        e = next('document_add');
+        const up = await req('POST', `/api/rooms/${roomA}/knowledge/documents`, { name: 'act.md', content: '# A\nalpha part\n# B\nbeta part' });
+        assert.strictEqual(up.status, 200, up.raw);
+        const [nA, nB] = mDb.prepare('SELECT node_id FROM knowledge_sources WHERE document_id=? ORDER BY id').all(up.body.document_id).map(x => x.node_id);
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'document_add', actor_name: owner, node_ids: [nA, nB], added: 2, doc_name: 'act.md' });
+
+        e = next('node_delete');
+        assert.strictEqual((await req('DELETE', `/api/knowledge/nodes/${nB}?room_id=${roomA}`)).status, 200);
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'node_delete', node_id: nB, removed: 1 });
+
+        e = next('document_remove');
+        assert.deepStrictEqual(await stoaOk(tokA, 'knowledge_document_delete', { id: up.body.document_id }), { deleted: up.body.document_id, sections_removed: 1 });
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'document_remove', actor_name: agentName, removed: 1, doc_name: 'act.md' });
+        await new Promise(r => setTimeout(r, 150));
+        assert.deepStrictEqual(got.map(m => m.kind), ['room_toggle', 'document_add', 'node_delete', 'document_remove'], 'one per operation');
+        assert.deepStrictEqual(leaked, [], 'owner browsers only');
+      } finally {
+        agA.ws.off('message', spy);
+        humanWs.close();
+        mDb.prepare('DELETE FROM knowledge_documents WHERE room_id=?').run(roomA);
+        mDb.prepare('UPDATE rooms SET knowledge_enabled=? WHERE id=?').run(flag.knowledge_enabled, roomA);
       }
     });
 
