@@ -1561,7 +1561,8 @@ function kbHandleActivity(msg) {
     kind: msg.kind, tone: KB_ACT_TONE[msg.kind],
     nodeIds: msg.kind === 'node_delete' || msg.kind === 'document_remove' ? [] : ids,
     who: msg.actor_name ? kbWho(msg.actor_name, msg.sub_agent_label) : msg.kind.startsWith('extract') ? 'An agent' : 'You',
-    byAgent: !!msg.actor_name,
+    // by_owner marks panel actions that still carry the owner's name; servers without it send none.
+    byAgent: msg.by_owner !== true && !!msg.actor_name,
     actorId: null, subId: null, roomId: msg.room_id ?? null,
     room: typeof msg.room_title === 'string' && msg.room_title ? msg.room_title : null,
     doc: typeof msg.doc_name === 'string' && msg.doc_name ? msg.doc_name : null,
