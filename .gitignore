@@ -1,4 +1,6 @@
 node_modules/
+# also the bare name: a symlink node_modules (worktree) is not matched by "node_modules/" and got committed once (#294)
+node_modules
 uploads/
 .wa-sessions/
 connector-media/

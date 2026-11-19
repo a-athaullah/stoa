@@ -1523,6 +1523,16 @@ Setiap pencarian yang menghasilkan temuan dicatat: node mana yang dikembalikan, 
 
 Pencarian yang tidak menghasilkan temuan tidak dicatat.
 
+### Petunjuk Knowledge saat Task Dimulai
+
+Agent tidak perlu ingat untuk mencari. Saat **kartu task board** dimulai (runner mengirim *Kerjakan task #N: …*), Stoa mencari di knowledge graph dengan judul dan deskripsi kartu, lalu menambahkan hingga **5 judul** node terkait ke prompt agent, di dalam blok `<stoa-knowledge-hints untrusted="true">`. Hanya ID dan judul node yang disertakan — tidak pernah ringkasan atau sumbernya; agent membaca detailnya lewat `stoa__knowledge_search` bila judulnya tampak berguna.
+
+- **Hanya untuk room yang mengisi graph.** Room harus mengaktifkan knowledge (opt-in), tidak diarsipkan, dan tidak terdaftar di `KNOWLEDGE_EXCLUDED_ROOM_IDS`; room lain tidak pernah mendapat petunjuk.
+- **Relevansi ketat.** Node hanya ditampilkan bila cocok dengan kartu secara kata **dan** makna (kemiripan embedding ≥ `KNOWLEDGE_HINT_MIN_SIM`, default `0.86`). Jika model embedding belum siap, kecocokan kata saja harus mencakup minimal 15% teks kartu. Sering kali petunjuknya kurang dari 5, atau tidak ada — diam lebih baik daripada noise.
+- **Data tak tepercaya.** Judul berasal dari percakapan lama, jadi blok diberi pagar dan label sebagai data, bukan instruksi; tanda kurung sudut dan rahasia dibuang dari judul.
+- **Tercatat sebagai pemakaian.** Setiap node yang ditampilkan dihitung sebagai pemakaian (efek "menyala" dan riwayat pemakaian), seperti pencarian. Petunjuk dari room yang dikecualikan menyembunyikan query di feed live.
+- **Matikan** dengan `KNOWLEDGE_HINTS=off` di `.env` server (perlu restart). Pesan biasa, jadwal, dan thread yang bukan awal kartu tidak mendapat petunjuk.
+
 ### Knowledge brain
 
 Halaman **Knowledge** (dapat diakses dari navigasi app) memvisualisasikan seluruh knowledge graph sebagai **bentuk otak 3D**. Setiap node adalah sebuah titik di dalam otak — node yang berdekatan memiliki topik serupa, berdasarkan kontennya. Posisi stabil di seluruh reload.
