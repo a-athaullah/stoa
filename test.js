@@ -28612,6 +28612,48 @@ async function run() {
       assert.strictEqual(L.layout().graph().body.nodes.length, 60);
     });
 
+    await test('knowledge layout — brain volume shared with the page (public/js/knowledge/brain-volume.js): landmarks of a brain shape; a stored position left outside by a shape change is placed again once, inside ones never move', async () => {
+      const shared = require('./public/js/knowledge/brain-volume');
+      let seed = 99;
+      const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 2000; i++) {
+        const p = [(rand() - 0.5) * 2, (rand() - 0.5) * 2, (rand() - 0.5) * 2.2];
+        assert.strictEqual(brainInside(p), shared.kbInside(p[0], p[1], p[2]), `same volume at ${p}`);
+      }
+      const at = (x, y, z) => brainInside([x, y, z]);
+      assert.strictEqual(at(0.33, 0.1, 0), 1, 'hemisphere centre (layout ray origin side)');
+      assert.strictEqual(at(0.36, 0.08, 0), 1, 'HEMI_CENTRE inside');
+      assert.strictEqual(at(0, 0.4, 0), 0, 'longitudinal fissure between the hemispheres');
+      assert.strictEqual(at(0.03, 0.5, 0), 1, 'thin fissure: the hemisphere stays high right beside it');
+      assert.strictEqual(at(0.3, 0.05, 0.85), 1, 'blunt frontal pole');
+      assert.strictEqual(at(0.6, -0.32, 0.2), 1, 'temporal lobe hangs below the side');
+      assert.strictEqual(at(0.3, -0.4, 0.7), 0, 'notch under the frontal lobe, in front of the temporal pole');
+      assert.strictEqual(at(0.15, -0.5, -0.55), 2, 'cerebellum below the back');
+      for (let y = -0.55; y <= 0; y += 0.01) assert.ok(at(0.15, y, -0.6) > 0, `cerebellum tucked under the occipital lobe, no gap at y ${y}`);
+      assert.strictEqual(at(0.4, -0.42, -0.6), 0, 'cerebellum narrower than the cerebrum');
+      assert.strictEqual(at(0, -0.6, -0.27), 3, 'brain stem');
+      assert.strictEqual(at(0, -0.8, -0.3), 0, 'short brain stem');
+      assert.strictEqual(at(0.6, 0.55, -0.85), 0, 'occipital pole tapers (no box corner)');
+
+      const L = klSetup();
+      const ids = [];
+      for (let i = 0; i < 12; i++) ids.push(L.add(`s${i}`, L.near(i % 3)));
+      const bare = L.add('bare', null);
+      L.layout().graph();
+      const before = L.rows();
+      // Two nodes as if placed by an older shape: one projected, one at an id spot, both now outside.
+      L.kdb.prepare('UPDATE knowledge_node_layout SET x=0, y=0.4, z=0 WHERE node_id IN (?, ?)').run(ids[0], bare);
+      const g = L.layout().graph();
+      const after = L.rows();
+      assert.deepStrictEqual(after[ids[0]], before[ids[0]], 'projected node placed again where its vector puts it');
+      assert.deepStrictEqual(after[bare], before[bare], 'id-spot node placed again at its id spot');
+      for (const id of ids.slice(1)) assert.deepStrictEqual(after[id], before[id], `node ${id} still inside: not moved`);
+      for (const n of g.body.nodes) assert.ok(brainInside([n.x, n.y, n.z]) > 0, `node ${n.id} inside`);
+      const again = L.rows();
+      L.layout().graph();
+      assert.deepStrictEqual(L.rows(), again, 'nothing left to place: a second read writes nothing new');
+    });
+
     await test('knowledge layout — basis: none until a vector exists (nodes at id spots, model ""), an early basis is redone at 2× its nodes, a full one is kept, another index model re-places every node', async () => {
       const L = klSetup();
       const bare = [L.add('bare1', null), L.add('bare2', null)];
