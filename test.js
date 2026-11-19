@@ -28932,7 +28932,7 @@ async function run() {
 
     await test('knowledge brain — knowledge_activity: one per operation after its commit (extract_start, extract with added / updated / removed, extract_failed for a dropped answer, document_add / document_remove by agent, sub-agent or owner, node_delete, room_toggle), node_ids active only; none for failed or no-op ones', async () => {
       const k = kbSetup();
-      const act = (kind, room, o = {}) => ({ type: 'knowledge_activity', kind, room_id: room, room_title: 'kx-room', actor_name: null, sub_agent_label: null,
+      const act = (kind, room, o = {}) => ({ type: 'knowledge_activity', kind, room_id: room, room_title: 'kx-room', actor_name: null, sub_agent_label: null, by_owner: false,
         node_ids: [], added: 0, updated: 0, removed: 0, ...o });
       const conv = k.room();
       // Extraction: start when the job goes out, the result with what it wrote, named after the agent.
@@ -29001,11 +29001,12 @@ async function run() {
       k.notes.length = 0;
       const u1 = await k.admin.uploadDocument(String(k.rm.id), { name: 'u.md', content: '# U\nuploaded' }, k.human);
       const uNode = k.docNodes(u1.body.document_id)[0].id;
-      assert.deepStrictEqual(k.acts(), [act('document_add', k.rm.id, { actor_name: 'kx-owner', node_ids: [uNode], added: 1, doc_name: 'u.md' })]);
+      assert.deepStrictEqual(k.acts(), [act('document_add', k.rm.id, { actor_name: 'kx-owner', by_owner: true, node_ids: [uNode], added: 1, doc_name: 'u.md' })]);
       // Remove from the panel (no actor) and by the agent (stoa__knowledge_document_delete passes its ident).
       k.notes.length = 0;
       assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 200);
       assert.strictEqual(k.admin.removeDocument(String(k.rm.id), String(a1.body.document_id)).status, 404);
+      assert.deepStrictEqual(k.acts().map(a => [a.kind, a.actor_name, a.by_owner, a.doc_name]), [['document_remove', null, true, 'g.md']], 'panel: by the owner');
       const b1 = await k.add('# B\nbee', { name: 'b.md' });
       k.notes.length = 0;
       assert.deepStrictEqual(k.docs.remove(k.rm.id, b1.body.document_id, { ...k.ident, subAgentId: sa }), { status: 200, body: { deleted: b1.body.document_id, sections_removed: 1 } });
@@ -29015,21 +29016,21 @@ async function run() {
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(conv.id)).status, 404);
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 200);
       assert.strictEqual(k.admin.deleteNode(String(uNode), String(k.rm.id)).status, 404);
-      assert.deepStrictEqual(k.acts(), [act('node_delete', k.rm.id, { node_id: uNode, removed: 1 })]);
+      assert.deepStrictEqual(k.acts(), [act('node_delete', k.rm.id, { node_id: uNode, removed: 1, by_owner: true })]);
       // Room toggle: on a change only, with enabled.
       k.notes.length = 0;
       assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
       assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: false }).status, 200);
       assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: true }).status, 200);
       assert.strictEqual(k.admin.setEnabled(String(k.ex.id), { enabled: true }).status, 403);
-      assert.deepStrictEqual(k.acts(), [act('room_toggle', conv.id, { enabled: false }), act('room_toggle', conv.id, { enabled: true })]);
+      assert.deepStrictEqual(k.acts(), [act('room_toggle', conv.id, { enabled: false, by_owner: true }), act('room_toggle', conv.id, { enabled: true, by_owner: true })]);
       k.kdb.close();
     });
 
     await test('knowledge brain — knowledge_activity extract_failed: closes every announced job that ends without a result (invalid output, agent error, busy, lease expired, dropped); never for a job not announced; a late result adds nothing', async () => {
       const k = kbSetup();
       const conv = k.room();
-      const line = (kind) => ({ type: 'knowledge_activity', kind, room_id: conv.id, room_title: 'kx-room', actor_name: 'kx-agent', sub_agent_label: null,
+      const line = (kind) => ({ type: 'knowledge_activity', kind, room_id: conv.id, room_title: 'kx-room', actor_name: 'kx-agent', sub_agent_label: null, by_owner: false,
         node_ids: [], added: 0, updated: 0, removed: 0 });
       const result = (o) => k.kx.handleResult(k.agent, { type: 'knowledge_extract_result', job_id: k.sent[k.sent.length - 1].job_id, ...o });
       const again = async () => {
@@ -29100,11 +29101,13 @@ async function run() {
       activity('extract', { roomId: k.rm.id, actorId: k.agent, nodeIds: [ids[1], ids[1], 99999999, ids[0], ...ids.slice(2)], added: 3 });
       assert.deepStrictEqual(got[0].node_ids, ids.slice(1, 51), 'stale and missing dropped, first 50 kept');
       assert.deepStrictEqual({ ...got[0], node_ids: [] }, { type: 'knowledge_activity', kind: 'extract', room_id: k.rm.id, room_title: 'kx-room', actor_name: 'kx-agent',
-        sub_agent_label: null, node_ids: [], added: 3, updated: 0, removed: 0, at: '2026-11-19T01:02:03.000Z' });
+        sub_agent_label: null, by_owner: false, node_ids: [], added: 3, updated: 0, removed: 0, at: '2026-11-19T01:02:03.000Z' });
       activity('document_remove', { roomId: k.ex.id, docName: 'secret-plan.md', removed: 2 });
       assert.deepStrictEqual([got[1].room_id, got[1].room_title, got[1].doc_name], [k.ex.id, null, null], 'private room: no title, no name');
-      activity('room_toggle', { roomId: 99999999, enabled: true });
-      assert.deepStrictEqual([got[2].room_title, got[2].enabled, 'doc_name' in got[2], 'node_id' in got[2]], [null, true, false, false]);
+      activity('room_toggle', { roomId: 99999999, enabled: true, byOwner: true });
+      assert.deepStrictEqual([got[2].room_title, got[2].enabled, got[2].by_owner, 'doc_name' in got[2], 'node_id' in got[2]], [null, true, true, false, false]);
+      activity('node_delete', { roomId: k.rm.id, nodeId: 1, byOwner: 'yes' });
+      assert.strictEqual(got[3].by_owner, false, 'only true means the owner');
       assert.deepStrictEqual(errs, []);
 
       // A throwing broadcast never fails the operation (admin node delete, room toggle, document add).
@@ -31644,23 +31647,23 @@ async function run() {
       agA.ws.on('message', spy);
       const next = (kind) => waitForWsMessage(humanWs, m => m.type === 'knowledge_activity' && m.room_id === roomA && m.kind === kind, 3000);
       const strip = ({ at, ...m }) => { assert.ok(!Number.isNaN(Date.parse(at)), at); return m; };
-      const base = { type: 'knowledge_activity', room_id: roomA, room_title: flag.title, actor_name: null, sub_agent_label: null, node_ids: [], added: 0, updated: 0, removed: 0 };
+      const base = { type: 'knowledge_activity', room_id: roomA, room_title: flag.title, actor_name: null, sub_agent_label: null, by_owner: false, node_ids: [], added: 0, updated: 0, removed: 0 };
       try {
         humanWs.send(JSON.stringify({ type: 'subscribe_global' }));
         mDb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(roomA);
         let e = next('room_toggle');
         assert.strictEqual((await req('PUT', `/api/rooms/${roomA}/knowledge`, { enabled: true })).status, 200);
-        assert.deepStrictEqual(strip(await e), { ...base, kind: 'room_toggle', enabled: true });
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'room_toggle', enabled: true, by_owner: true });
 
         e = next('document_add');
         const up = await req('POST', `/api/rooms/${roomA}/knowledge/documents`, { name: 'act.md', content: '# A\nalpha part\n# B\nbeta part' });
         assert.strictEqual(up.status, 200, up.raw);
         const [nA, nB] = mDb.prepare('SELECT node_id FROM knowledge_sources WHERE document_id=? ORDER BY id').all(up.body.document_id).map(x => x.node_id);
-        assert.deepStrictEqual(strip(await e), { ...base, kind: 'document_add', actor_name: owner, node_ids: [nA, nB], added: 2, doc_name: 'act.md' });
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'document_add', actor_name: owner, by_owner: true, node_ids: [nA, nB], added: 2, doc_name: 'act.md' });
 
         e = next('node_delete');
         assert.strictEqual((await req('DELETE', `/api/knowledge/nodes/${nB}?room_id=${roomA}`)).status, 200);
-        assert.deepStrictEqual(strip(await e), { ...base, kind: 'node_delete', node_id: nB, removed: 1 });
+        assert.deepStrictEqual(strip(await e), { ...base, kind: 'node_delete', node_id: nB, removed: 1, by_owner: true });
 
         e = next('document_remove');
         assert.deepStrictEqual(await stoaOk(tokA, 'knowledge_document_delete', { id: up.body.document_id }), { deleted: up.body.document_id, sections_removed: 1 });

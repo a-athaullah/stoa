@@ -596,13 +596,14 @@ What the brain's live card says happened, sent next to (not instead of) `knowled
 
 ```json
 { "type": "knowledge_activity", "kind": "document_add", "room_id": 12, "room_title": "Ops", "actor_name": "Ara", "sub_agent_label": "Kenji",
-  "node_ids": [41, 42], "added": 2, "updated": 0, "removed": 0, "doc_name": "guide.md", "at": "2026-11-19T01:02:03.000Z" }
+  "by_owner": false, "node_ids": [41, 42], "added": 2, "updated": 0, "removed": 0, "doc_name": "guide.md", "at": "2026-11-19T01:02:03.000Z" }
 ```
 
 - `kind`: `extract_start` (an extraction job was sent to an agent; counts 0, no ids), `extract` (its result stored, sent even when nothing changed so the "writing" line closes), `extract_failed` (an announced job ended without a stored result: invalid output, agent error, `busy`, lease expired, or dropped after it was sent; counts 0, no ids; `actor_name` / `sub_agent_label` identical to its `extract_start` so the card closes that line; a job never announced sends none; a late answer after expiry sends nothing more), `document_add` (agent `knowledge_add` or panel upload that changed sections; not for unchanged or row-only re-adds), `document_remove` (agent `knowledge_document_delete` or panel), `node_delete` (panel; extra `node_id`, `removed: 1`), `room_toggle` (panel PUT that changed the setting; extra `enabled`). Search is `knowledge_used`.
 - `node_ids`: nodes the operation inserted, updated or attached sources to that are still active, deduplicated, at most 50 (`ACTIVITY_IDS_MAX`). The brain ignites them after its graph refetch.
 - `added` / `updated` / `removed`: node counts (`removed` = sections removed for documents, 1 for a deleted stale node / node delete).
-- `actor_name` / `sub_agent_label`: who did it; `actor_name` null for panel actions other than upload (the owner). `doc_name` only on document kinds (scrubbed).
+- `actor_name` / `sub_agent_label`: who did it; `actor_name` null for panel actions other than upload (the owner).
+- `by_owner`: `true` when the owner's panel / REST did it (upload, document remove, `node_delete`, `room_toggle`), `false` for agents, MCP tools and extraction. An upload still names the owner in `actor_name`, so tell owner from agent by `by_owner`, not by `actor_name`. `doc_name` only on document kinds (scrubbed).
 - Privacy: a room on `KNOWLEDGE_EXCLUDED_ROOM_IDS` sends `room_title` and `doc_name` null. All strings are untrusted (render with `textContent`).
 - A failing lookup or broadcast is logged (`knowledge_activity broadcast failed`) and never fails the operation.
 
