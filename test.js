@@ -29886,6 +29886,8 @@ async function run() {
           ws.frames.length = 0;
           assert.strictEqual((await req('POST', `/api/rooms/${roomId}/tasks/runner/play`)).status, 200);
           const trig = await until(() => ws.frames.find(f => f.type === 'agent_trigger' && f.prompt.includes(`(task_id ${card.body.id} `)), 'agent_trigger for the card');
+          // Finish the run so it does not hold one of the room's active-thread slots for the next trigger.
+          await completeRun(ws, roomId, trig);
           assert.strictEqual((await req('POST', `/api/rooms/${roomId}/tasks/runner/stop`)).status, 200);
           await req('DELETE', `/api/rooms/${roomId}/tasks/${card.body.id}`);
           return trig.prompt;
