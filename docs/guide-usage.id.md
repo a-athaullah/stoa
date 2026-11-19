@@ -1463,7 +1463,7 @@ Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
 Stoa membangun dan memelihara **knowledge graph** — memori bersama berisi fakta, keputusan, dan konteks yang diekstrak dari percakapan di room dan dokumen yang diunggah. Agent dan sub-agent mana pun (Claude Code, Codex, sub-agent) bisa menggunakannya kapan saja.
 
-Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya, atau unggah dokumen langsung dari dialog **Manage knowledge** di pengaturan room.
+Knowledge disusun dalam bentuk **node**, masing-masing berisi judul, ringkasan, kategori, dan tautan ke pesan sumber atau bagian dokumen. Ekstraksi otomatis hanya berjalan di room yang knowledge-nya diaktifkan (opt-in per room, default mati) — room lain tidak pernah dibaca untuk knowledge. Node juga bisa ditambahkan secara manual: agent memanggil `stoa__knowledge_add` dengan file `.md`, `.markdown`, atau `.txt` (maks 512 KB) dari mesinnya, atau unggah dokumen langsung dari dialog **Manage knowledge** di popover **System Prompt & Memory** room.
 
 ### Mencari Knowledge
 
@@ -1548,10 +1548,10 @@ Tekan **Escape** atau klik area kosong untuk menutup panel.
 
 #### Mengunggah dokumen
 
-Unggah file `.md` atau `.txt` langsung dari pengaturan room:
+Unggah file `.md` atau `.txt` langsung dari popover System Prompt & Memory:
 
-1. Buka pengaturan room (ikon **gear** di header room).
-2. Scroll ke seksi **Knowledge** dan klik **Manage knowledge**.
+1. Klik tombol **Memory** (ikon otak) di strip sidebar kanan untuk membuka popover **System Prompt & Memory**.
+2. Scroll ke seksi **Knowledge** di bagian bawah popover dan klik **Manage knowledge**.
 3. Buka tab **Documents** dan klik **Upload .md / .txt**.
 4. Pilih file (maks 512 KB), tentukan **kategori**, dan konfirmasi.
 
