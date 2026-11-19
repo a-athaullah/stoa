@@ -40,6 +40,13 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
   ```
   Detects by name pattern (room title `__<name>__`, actor `__test<name>` + known legacy names) and deletes via live API (archive → delete). Pakai `--dry-run` dulu.
 
+- **`requeue-knowledge-jobs.js`** — Requeue job ekstraksi knowledge yang `failed` hanya karena judul/ringkasan kepanjangan (`last_error` `invalid output: ... longer than ...`)
+  ```bash
+  node .claude/tools/requeue-knowledge-jobs.js --dry-run [--db=<path>]   # lihat dulu
+  node .claude/tools/requeue-knowledge-jobs.js [--db=<path>]             # backup DB otomatis, lalu tulis
+  ```
+  Output: `{db, dryRun, backup, requeued[], superseded[]}`. Job → `pending`, attempts 0, last_error/lease/next_attempt NULL dalam satu transaksi; job yang sudah punya twin `pending` dihapus (`superseded`); `claude result error` dan kegagalan lain tidak disentuh. Backup `db/stoa-backup-requeue-<timestamp>.db` dibuat sebelum menulis (tidak saat `--dry-run`). Jalankan SETELAH fix HARD limit merged + server restart. Logika di `requeueLengthFailures` (lib/knowledge-extraction.js).
+
 - **`rotate-logs.js`** — Rotate `logs/stoa.log` + `logs/stoa.err` (copy-truncate, inode tetap) tanpa restart server
   ```bash
   node .claude/tools/rotate-logs.js [--max-mb=10] [--dry-run]
