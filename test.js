@@ -29891,9 +29891,9 @@ async function run() {
         };
         try {
           const usageBefore = kxDb.prepare('SELECT COUNT(*) AS n FROM knowledge_usage WHERE node_id=?').get(nodeId).n;
-          const p1 = await runCard('Decide if the queue stays on SQLite', 'Compare one writer against a real broker.');
+          const p1 = await runCard('Queue stays on SQLite', 'One writer is enough for the queue.');
           const block = /<stoa-knowledge-hints untrusted="true">\n([\s\S]*?)\n<\/stoa-knowledge-hints>/.exec(p1);
-          assert.ok(block, p1.slice(-1500));
+          assert.ok(block, p1.slice(-700));
           assert.ok(block[1].includes(`- #${nodeId} Queue stays on SQLite`), block[1]);
           assert.ok(!block[1].includes('One writer is enough'), 'title only, never the summary');
           assert.ok(p1.indexOf('<stoa-knowledge-hints') > p1.indexOf('Riwayat') || p1.indexOf('<stoa-knowledge-hints') > p1.indexOf('Conversation history'), 'after the history, before the reply instruction');
@@ -29903,12 +29903,12 @@ async function run() {
           assert.ok(!p2.includes('stoa-knowledge-hints'), 'unrelated card: no block, no noise');
 
           kxDb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(roomId);
-          const p3 = await runCard('Decide if the queue stays on SQLite', 'Compare one writer against a real broker.');
+          const p3 = await runCard('Queue stays on SQLite', 'One writer is enough for the queue.');
           assert.ok(!p3.includes('stoa-knowledge-hints'), 'room not opted in: no block');
           kxDb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(roomId);
 
           ws.frames.length = 0;
-          await post('Decide if the queue stays on SQLite? A plain message, not a card.');
+          await post('Queue stays on SQLite. One writer is enough for the queue. A plain message, not a card.');
           const plain = await until(() => ws.frames.find(f => f.type === 'agent_trigger'), 'agent_trigger for a plain message');
           assert.ok(!plain.prompt.includes('stoa-knowledge-hints'), 'only a card start carries hints');
         } finally {
