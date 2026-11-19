@@ -2212,7 +2212,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 function setSecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  // frame-src 'self': a sandboxed HTML preview (?view=1) can still navigate its own frame
+  // (meta refresh, location=); the embedder's frame-src is what keeps it from leaving Stoa.
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'; frame-src 'self'");
   res.setHeader('Referrer-Policy', 'same-origin');
   if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
 }
@@ -2290,7 +2292,7 @@ function sendFileRanged(req, res, filepath, headers) {
   if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
   headers['Content-Length'] = size ? end - start + 1 : 0;
   res.writeHead(range ? 206 : 200, headers);
-  if (!size) return res.end();
+  if (!size || req.method === 'HEAD') return res.end();
   pipeline(fs.createReadStream(filepath, { start, end }), res, err => {
     if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error(`[files] stream ${filepath}: ${err.message}`);
   });
@@ -2536,7 +2538,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Static: uploaded files
-  if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/uploads/')) {
     const relative = path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(UPLOADS_DIR, relative);
     if (!filepath.startsWith(UPLOADS_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
@@ -2561,7 +2563,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Static: connector media files (WA downloads, etc.)
-  if (req.method === 'GET' && url.pathname.startsWith('/connector-media/')) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/connector-media/')) {
     const relative = path.normalize(url.pathname.slice('/connector-media/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(CONNECTOR_MEDIA_DIR, relative);
     if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }

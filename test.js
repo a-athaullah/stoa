@@ -13422,7 +13422,7 @@ async function run() {
       const r = await anon(() => req('GET', '/'));
       assert.strictEqual(r.headers['x-content-type-options'], 'nosniff');
       assert.strictEqual(r.headers['x-frame-options'], 'SAMEORIGIN');
-      assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
       assert.strictEqual(r.headers['referrer-policy'], 'same-origin');
       assert.strictEqual(r.headers['strict-transport-security'], undefined);
     });
@@ -13541,7 +13541,7 @@ async function run() {
       assert.ok(r.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), r.headers['content-security-policy']);
       const txt = await req('GET', txtUrl);
       assert.strictEqual(txt.headers['content-disposition'], 'inline');
-      assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
     });
 
     await test('/uploads ?download=1&name= — original filename, RFC 5987 encoded, ext pinned to stored file', async () => {
@@ -13589,7 +13589,7 @@ async function run() {
       assert.strictEqual(pdf.status, 200);
       assert.strictEqual(pdf.headers['content-type'], 'application/pdf');
       assert.strictEqual(pdf.headers['content-disposition'], 'inline');
-      assert.strictEqual(pdf.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(pdf.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'");
       const html = await req('GET', `${htmlUrl}?download=1&name=page.html`);
       assert.strictEqual(html.headers['content-disposition'], `attachment; filename="page.html"; filename*=UTF-8''page.html`);
       assert.ok(html.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), html.headers['content-security-policy']);
@@ -13621,7 +13621,7 @@ async function run() {
         assert.deepStrictEqual([r.status, r.headers['content-disposition'], r.headers['content-security-policy']], [200, 'attachment', "sandbox; frame-ancestors 'self'"], name);
       }
       const txt = await req('GET', `${txtUrl}?view=1`);
-      assert.deepStrictEqual([txt.headers['content-disposition'], txt.headers['content-security-policy']], ['inline', "frame-ancestors 'self'"]);
+      assert.deepStrictEqual([txt.headers['content-disposition'], txt.headers['content-security-policy']], ['inline', "frame-ancestors 'self'; frame-src 'self'"]);
       for (const trav of ['/uploads/../server.js?view=1', '/uploads/%2e%2e/server.js?view=1', '/uploads/..%2fserver.js?view=1', '/uploads/nope-missing.html?view=1']) {
         assert.strictEqual((await req('GET', trav)).status, 404, trav);
       }
@@ -13641,6 +13641,40 @@ async function run() {
       assert.deepStrictEqual([atLimit.status, atLimit.headers['content-disposition'], atLimit.raw], [206, 'inline', 'aaaaaaaaaa']);
       const dl = await req('GET', `/uploads/${path.basename(big)}`, null, { range: 'bytes=0-0' });
       assert.deepStrictEqual([dl.status, dl.headers['content-disposition']], [206, 'attachment']);
+    });
+
+    await test('/uploads HEAD — same status and headers as GET (view CSP, 413, 404, 401, attachment), no body on the wire', async () => {
+      const CSP = "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+      const name = `__head-${crypto.randomBytes(4).toString('hex')}.html`;
+      const big = `__head-big-${crypto.randomBytes(4).toString('hex')}.html`;
+      createdUploads.push(path.join(uploadsDir, name), path.join(uploadsDir, big));
+      fs.writeFileSync(path.join(uploadsDir, name), '<p>head</p>');
+      fs.writeFileSync(path.join(uploadsDir, big), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+      const pick = r => [r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['content-security-policy'], r.headers['content-length']];
+      for (const q of ['?view=1', '', '?view=1&download=1']) {
+        const g = await req('GET', `/uploads/${name}${q}`), h = await req('HEAD', `/uploads/${name}${q}`);
+        assert.deepStrictEqual(pick(h), pick(g), q);
+        assert.strictEqual(h.raw, '', q);
+      }
+      const hv = await req('HEAD', `/uploads/${name}?view=1`);
+      assert.deepStrictEqual(pick(hv), [200, 'text/html; charset=utf-8', 'inline', CSP, '11']);
+      assert.deepStrictEqual(pick(await req('HEAD', `/uploads/${name}`)).slice(2, 4), ['attachment', "sandbox; frame-ancestors 'self'"]);
+      assert.strictEqual((await req('HEAD', `/uploads/${big}?view=1`)).status, 413);
+      assert.strictEqual((await req('HEAD', '/uploads/__head-missing.html?view=1')).status, 404);
+      assert.strictEqual((await req('HEAD', '/uploads/../server.js?view=1')).status, 404);
+      assert.strictEqual((await anon(() => req('HEAD', `/uploads/${name}?view=1`), true)).status, 401);
+      const signed = `/uploads/${name}`;
+      assert.strictEqual((await anon(() => req('HEAD', `${signed}?${signedQuery(signed, nowSec() + 60)}&view=1`), true)).status, 200, 'signed URL works for HEAD');
+      const wire = await new Promise((resolve, reject) => {
+        const sock = require('net').connect(PORT, HOST, () => sock.end(
+          `HEAD /uploads/${name}?view=1 HTTP/1.1\r\nHost: ${HOST}:${PORT}\r\nCookie: ${cookieHeader()}\r\nConnection: close\r\n\r\n`));
+        let buf = '';
+        sock.on('data', c => { buf += c; });
+        sock.on('end', () => resolve(buf));
+        sock.on('error', reject);
+      });
+      assert.match(wire, /^HTTP\/1\.1 200/);
+      assert.strictEqual(wire.split('\r\n\r\n')[1], '', 'HEAD sends headers only');
     });
 
     await test('/uploads — .log/.yaml/.yml/.tsv served as inline utf-8 text', async () => {
@@ -13663,7 +13697,7 @@ async function run() {
         const r = await req('GET', u);
         assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['accept-ranges'], r.headers['content-length'], r.raw],
           [200, type, 'inline', 'bytes', '11', 'media-bytes'], name);
-        assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'", name);
+        assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'; frame-src 'self'", name);
       }
       const mp4 = await upload('dl-clip.mp4', 'media-bytes', 'video/mp4');
       const dl = await req('GET', `${mp4}?download=1&name=${encodeURIComponent('Rapat Senin.mp4')}`);
@@ -13743,6 +13777,12 @@ async function run() {
         const big = await req('GET', '/connector-media/__sectest__/big.htm?view=1');
         assert.deepStrictEqual([big.status, big.headers['content-disposition']], [413, undefined]);
         assert.strictEqual((await anon(() => req('GET', `${p}?view=1`), true)).status, 401, 'view=1 does not bypass auth');
+        const hv = await req('HEAD', `${p}?view=1`);
+        assert.deepStrictEqual([hv.status, hv.headers['content-disposition'], hv.headers['content-security-policy'], hv.headers['content-length'], hv.raw], [200, 'inline', CSP, '9', '']);
+        assert.strictEqual((await req('HEAD', p)).headers['content-disposition'], 'attachment');
+        assert.strictEqual((await req('HEAD', '/connector-media/__sectest__/big.htm?view=1')).status, 413);
+        assert.strictEqual((await req('HEAD', '/connector-media/__sectest__/gone.html?view=1')).status, 404);
+        assert.strictEqual((await anon(() => req('HEAD', `${p}?view=1`), true)).status, 401);
         assert.strictEqual((await req('GET', '/connector-media/../server.js?view=1')).status, 404);
       } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
     });
