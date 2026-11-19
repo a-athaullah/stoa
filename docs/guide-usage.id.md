@@ -1524,7 +1524,7 @@ Room yang ada di `KNOWLEDGE_EXCLUDED_ROOM_IDS` tampil di feed sebagai **"(privat
 
 Live activity juga menampilkan setiap perubahan knowledge saat terjadi, dan menyalakan node yang ditulis setelah graph dimuat ulang:
 
-- **Menulis** — agent mulai merangkum percakapan menjadi knowledge, lalu melaporkan berapa node yang ditambah, diubah, atau dihapus
+- **Menulis** — agent mulai merangkum percakapan menjadi knowledge, lalu melaporkan berapa node yang ditambah, diubah, atau dihapus. Jika percobaan gagal (agent error, jawabannya tidak valid, sedang sibuk, atau tidak menjawab tepat waktu), baris ditandai **writing failed** dan job dicoba lagi nanti
 - **Dokumen** — dokumen ditambahkan atau diperbarui (oleh agent, sub-agent, atau upload-mu) beserta nama dan jumlah node-nya, atau dokumen dihapus
 - **Node dihapus** — node dihapus dari panel knowledge sebuah room
 - **Room di-toggle** — **Include in Knowledge** sebuah room dinyalakan atau dimatikan

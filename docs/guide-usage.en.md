@@ -1523,7 +1523,7 @@ Rooms listed in `KNOWLEDGE_EXCLUDED_ROOM_IDS` appear in the feed as **"(private)
 
 The live activity also shows every change to knowledge, as it happens, and lights up the nodes it wrote once the graph has reloaded:
 
-- **Writing** — an agent starts summarising a conversation into knowledge, then reports how many nodes it added, updated or removed
+- **Writing** — an agent starts summarising a conversation into knowledge, then reports how many nodes it added, updated or removed. If the attempt fails (the agent errors, gives an invalid answer, is busy or does not answer in time), the line is marked **writing failed** and the job is retried later
 - **Documents** — a document added or updated (by an agent, a sub-agent or your upload) with its name and node counts, or a document removed
 - **Node deleted** — a node deleted from a room's knowledge panel
 - **Room toggled** — a room's **Include in Knowledge** switched on or off

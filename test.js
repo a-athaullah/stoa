@@ -28930,7 +28930,7 @@ async function run() {
       k.kdb.close();
     });
 
-    await test('knowledge brain — knowledge_activity: one per operation after its commit (extract_start, extract with added / updated / removed, document_add / document_remove by agent, sub-agent or owner, node_delete, room_toggle), node_ids active only; none for failed or no-op ones', async () => {
+    await test('knowledge brain — knowledge_activity: one per operation after its commit (extract_start, extract with added / updated / removed, extract_failed for a dropped answer, document_add / document_remove by agent, sub-agent or owner, node_delete, room_toggle), node_ids active only; none for failed or no-op ones', async () => {
       const k = kbSetup();
       const act = (kind, room, o = {}) => ({ type: 'knowledge_activity', kind, room_id: room, room_title: 'kx-room', actor_name: null, sub_agent_label: null,
         node_ids: [], added: 0, updated: 0, removed: 0, ...o });
@@ -28969,7 +28969,8 @@ async function run() {
       k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(conv.id);
       await k.answer(k.sent[k.sent.length - 1].job_id, [k.node('leak', 'not stored')]);
       k.kdb.prepare('UPDATE rooms SET knowledge_enabled=1 WHERE id=?').run(conv.id);
-      assert.deepStrictEqual(k.acts().map(a => a.kind), ['extract_start']);
+      assert.deepStrictEqual(k.acts(), [act('extract_start', conv.id, { actor_name: 'kx-agent' }), act('extract_failed', conv.id, { actor_name: 'kx-agent' })],
+        'the announced line is closed, nothing stored');
       // Stale node re-extracted to nothing: deleted, removed 1, no id (it is gone).
       k.notes.length = 0;
       k.kdb.prepare("UPDATE knowledge_nodes SET status='stale', stale_at=datetime('now') WHERE id=?").run(newId);
@@ -29022,6 +29023,67 @@ async function run() {
       assert.strictEqual(k.admin.setEnabled(String(conv.id), { enabled: true }).status, 200);
       assert.strictEqual(k.admin.setEnabled(String(k.ex.id), { enabled: true }).status, 403);
       assert.deepStrictEqual(k.acts(), [act('room_toggle', conv.id, { enabled: false }), act('room_toggle', conv.id, { enabled: true })]);
+      k.kdb.close();
+    });
+
+    await test('knowledge brain — knowledge_activity extract_failed: closes every announced job that ends without a result (invalid output, agent error, busy, lease expired, dropped); never for a job not announced; a late result adds nothing', async () => {
+      const k = kbSetup();
+      const conv = k.room();
+      const line = (kind) => ({ type: 'knowledge_activity', kind, room_id: conv.id, room_title: 'kx-room', actor_name: 'kx-agent', sub_agent_label: null,
+        node_ids: [], added: 0, updated: 0, removed: 0 });
+      const result = (o) => k.kx.handleResult(k.agent, { type: 'knowledge_extract_result', job_id: k.sent[k.sent.length - 1].job_id, ...o });
+      const again = async () => {
+        k.kdb.prepare("UPDATE knowledge_jobs SET next_attempt_at=datetime('now', '-1 seconds') WHERE status='pending'").run();
+        await k.kx.tick();
+      };
+      const root = k.msg(conv, 'root');
+      k.msg(conv, 'reply', { threadId: root });
+      k.kx.enqueueConversation(conv.id, root, 'thread_complete');
+      await k.kx.tick();
+      const jobId = k.sent[k.sent.length - 1].job_id;
+      const cases = [
+        ['invalid output', () => result({ ok: true, text: '{"nodes":[{"title":"x","summary":"y","category":"zzz"}]}' }), 'pending'],
+        ['busy (not an attempt)', () => result({ ok: false, busy: true }), 'pending'],
+        ['lease expired', async () => {
+          k.kdb.prepare("UPDATE knowledge_jobs SET leased_at=datetime('now', '-1 days') WHERE id=?").run(jobId);
+          await k.kx.tick();
+        }, 'pending'],
+        ['agent error, last attempt', () => result({ ok: false, error: 'boom' }), 'failed'],
+      ];
+      for (const [why, end, status] of cases) {
+        if (why !== cases[0][0]) await again();
+        assert.strictEqual(k.sent[k.sent.length - 1].job_id, jobId, why);
+        await end();
+        assert.deepStrictEqual(k.acts(), [line('extract_start'), line('extract_failed')], why);
+        assert.strictEqual(k.kdb.prepare('SELECT status FROM knowledge_jobs WHERE id=?').get(jobId).status, status, why);
+        k.notes.length = 0;
+        if (why === 'lease expired') {
+          // The expired agent answers late: ignored, no second line.
+          await k.answer(jobId, [k.node('late', 'ignored VEC[1,0,0,0,0,0,0,0]')]);
+          assert.deepStrictEqual(k.notes, []);
+        }
+      }
+      assert.strictEqual(k.kdb.prepare('SELECT attempts FROM knowledge_jobs WHERE id=?').get(jobId).attempts, 3, 'busy is not an attempt');
+      // The next job: a failure then a retry that succeeds: start, failed, start, extract.
+      const r1 = k.msg(conv, 'first');
+      k.msg(conv, 'reply', { threadId: r1 });
+      k.kx.enqueueConversation(conv.id, r1, 'thread_complete');
+      await k.kx.tick();
+      await result({ ok: false, error: 'flaky' });
+      await again();
+      await k.answer(k.sent[k.sent.length - 1].job_id, []);
+      assert.deepStrictEqual(k.acts().map(a => a.kind), ['extract_start', 'extract_failed', 'extract_start', 'extract']);
+      // A pending job dropped before it was sent (room off): never announced, nothing to close.
+      k.notes.length = 0;
+      const r2 = k.msg(conv, 'second');
+      k.msg(conv, 'reply', { threadId: r2 });
+      k.kx.enqueueConversation(conv.id, r2, 'thread_complete');
+      k.kdb.prepare('UPDATE rooms SET knowledge_enabled=0 WHERE id=?').run(conv.id);
+      const sentBefore = k.sent.length;
+      await k.kx.tick();
+      assert.strictEqual(k.sent.length, sentBefore);
+      assert.strictEqual(k.kdb.prepare("SELECT COUNT(*) AS n FROM knowledge_jobs WHERE status IN ('pending','running')").get().n, 0, 'dropped');
+      assert.deepStrictEqual(k.notes, []);
       k.kdb.close();
     });
 
