@@ -1492,6 +1492,8 @@ stoa__knowledge_search(query, limit?)
 - **query** — natural-language question or keywords (max 500 characters, must contain at least one letter or digit).
 - **limit** — number of results (1–20, default 8).
 
+**Automatic nudge.** The base system prompt of every agent and sub-agent session that can see `stoa__knowledge_search` carries one short line telling it to search the knowledge base first for a non-trivial task, before investigating or trying things out. The line is left out when the owner has hidden the tool, in a session without Stoa tools, and in rooms excluded from knowledge.
+
 The search combines **semantic matching** (embedding similarity) with **text matching** (keyword overlap in title and summary). If the embedding model is not ready or times out, the search falls back to text matching alone — results still return, just without semantic ranking.
 
 Each result includes: **title**, **summary**, **category**, **score**, and **sources** (links to the messages or document sections the node was built from).
