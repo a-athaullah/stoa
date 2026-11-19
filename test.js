@@ -28624,11 +28624,15 @@ async function run() {
       assert.strictEqual(at(0.33, 0.1, 0), 1, 'hemisphere centre (layout ray origin side)');
       assert.strictEqual(at(0.36, 0.08, 0), 1, 'HEMI_CENTRE inside');
       assert.strictEqual(at(0, 0.4, 0), 0, 'longitudinal fissure between the hemispheres');
+      assert.strictEqual(at(0.03, 0.5, 0), 1, 'thin fissure: the hemisphere stays high right beside it');
       assert.strictEqual(at(0.3, 0.05, 0.85), 1, 'blunt frontal pole');
       assert.strictEqual(at(0.6, -0.32, 0.2), 1, 'temporal lobe hangs below the side');
       assert.strictEqual(at(0.3, -0.4, 0.7), 0, 'notch under the frontal lobe, in front of the temporal pole');
       assert.strictEqual(at(0.15, -0.5, -0.55), 2, 'cerebellum below the back');
-      assert.strictEqual(at(0, -0.7, -0.2), 3, 'brain stem');
+      for (let y = -0.55; y <= 0; y += 0.01) assert.ok(at(0.15, y, -0.6) > 0, `cerebellum tucked under the occipital lobe, no gap at y ${y}`);
+      assert.strictEqual(at(0.4, -0.42, -0.6), 0, 'cerebellum narrower than the cerebrum');
+      assert.strictEqual(at(0, -0.6, -0.27), 3, 'brain stem');
+      assert.strictEqual(at(0, -0.8, -0.3), 0, 'short brain stem');
       assert.strictEqual(at(0.6, 0.55, -0.85), 0, 'occipital pole tapers (no box corner)');
 
       const L = klSetup();
