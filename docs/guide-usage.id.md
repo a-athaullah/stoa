@@ -444,14 +444,31 @@ File non-gambar ditampilkan sebagai **kartu file** berisi ikon, nama asli, dan l
 | JSON | Teks dengan format rapi |
 | Video (MP4, M4V, WebM, MOV) | Player bawaan di dialog lebar (maks 960 px); layar penuh di HP. Bisa di-seek. |
 | Audio (MP3, M4A, AAC, WAV, OGG, OGA, Opus, FLAC) | Player bawaan di dialog kecil (maks 480 px); mengambang di HP. |
+| HTML / HTM | Halaman dirender dalam overlay tersandbox — skrip berjalan, elemen interaktif berfungsi. |
 
-HTML, SVG, JavaScript, dan semua tipe lainnya hanya bisa **didownload** — menampilkan konten aktif akan menjalankan markup tidak tepercaya di origin Stoa.
+SVG, JavaScript, XML, dan semua tipe lainnya hanya bisa **didownload** — menampilkan konten aktif akan menjalankan markup tidak tepercaya di origin Stoa.
 
 File di atas 2 MB tidak dapat di-preview; sebuah pesan akan mengarahkan Anda untuk mendownload. File video dan audio di-stream langsung dan tidak terkena batasan 2 MB. Jika file sudah dihapus oleh pembersihan otomatis, preview menampilkan pemberitahuan "tidak tersedia lagi".
 
 Jika browser tidak bisa memutar format video atau audio, muncul pesan dengan tombol **Download**. Menutup modal atau membuka preview lain akan menghentikan media yang sedang diputar.
 
 Modal dapat ditutup dengan **Esc**, dengan mengklik di luar modal, atau dengan tombol **Close**.
+
+#### Preview HTML
+
+Tombol **Preview** pada lampiran `.html` atau `.htm` membuka **overlay tersandbox** yang merender halaman lengkap, dengan skrip yang berjalan — sehingga konten interaktif seperti filter laporan, kartu ringkasan, dan tombol navigasi berfungsi normal. Header menampilkan tombol **Open in new tab** di samping Download (tombol ini disembunyikan jika file terlalu besar atau tidak tersedia lagi; muncul kembali saat file berikutnya berhasil dimuat).
+
+Jika satu pesan berisi **beberapa lampiran HTML**, tombol panah prev/next dan penghitung (`1 / 3`) akan muncul. Tombol panah kiri dan kanan dapat digunakan untuk navigasi. Setelah mengklik di dalam halaman yang dirender, input keyboard (termasuk Esc dan tombol panah) diterima oleh halaman tersebut — gunakan tombol **×** atau klik di luar overlay untuk menutup.
+
+**Keamanan** — halaman berjalan di sandbox dengan origin terpisah (opaque):
+- Tidak dapat membaca cookie, data sesi, atau respons API Stoa.
+- Tidak dapat memuat resource eksternal atau mengirim data ke server mana pun.
+- Tidak dapat membuka popup, form, atau jendela tambahan.
+- Tidak dapat menavigasi halaman induk.
+
+**Catatan:** jika halaman dibuka melalui **Open in new tab**, halaman tersebut dapat mengarahkan tab browser itu ke situs lain, meskipun tetap tidak memiliki akses ke data Stoa. Hanya preview HTML dari sumber yang Anda percayai.
+
+**Batasan** — file di atas **5 MB** menampilkan pesan "file terlalu besar" beserta tombol Download; tidak ada preview yang dirender. SVG, JavaScript, dan XML tetap hanya bisa didownload.
 
 Gambar tetap menggunakan lightbox yang sudah ada.
 

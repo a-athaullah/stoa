@@ -443,14 +443,31 @@ Non-image files are displayed as a **file card** showing the file icon, original
 | JSON | Pretty-printed text |
 | Video (MP4, M4V, WebM, MOV) | Native player in a wide dialog (up to 960 px); fullscreen on mobile. Supports seeking. |
 | Audio (MP3, M4A, AAC, WAV, OGG, OGA, Opus, FLAC) | Native player in a compact dialog (up to 480 px); floating on mobile. |
+| HTML / HTM | Rendered page in a sandboxed overlay — scripts run, so interactive elements work. |
 
-HTML, SVG, JavaScript, and all other types are **download-only** — previewing active content would run untrusted markup on the Stoa origin.
+SVG, JavaScript, XML, and all other types are **download-only** — previewing active content would run untrusted markup on the Stoa origin.
 
 Files larger than 2 MB cannot be previewed; a message tells you to download instead. Video and audio files are streamed directly and are not subject to the 2 MB limit. If a file has been removed by cleanup, the preview shows a "no longer available" notice.
 
 If the browser cannot play a video or audio format, a message is shown with a **Download** button. Closing the modal or opening another preview stops any playing media.
 
 The modal can be closed with **Esc**, by clicking outside it, or with the **Close** button.
+
+#### HTML Preview
+
+The **Preview** button on an `.html` or `.htm` attachment opens a **sandboxed overlay** that renders the page, with scripts running — so interactive content such as report filters, summary cards, and navigation buttons works as expected. The header shows an **Open in new tab** button alongside Download (the button is hidden when the file is too large or no longer available; it reappears when the next file loads successfully).
+
+When one message contains **multiple HTML attachments**, prev/next arrow buttons and a counter (`1 / 3`) appear. Left and right arrow keys navigate the attachments. After clicking inside the rendered page, keyboard input (including Esc and arrow keys) goes to that page — use the **× button** or click outside the overlay to close.
+
+**Security** — the page runs in a sandboxed, opaque origin:
+- Cannot read Stoa cookies, session data, or API responses.
+- Cannot load external resources or send data to any server.
+- Cannot open popups, forms, or additional windows.
+- Cannot navigate the parent page.
+
+**Caveat:** if the page is opened via **Open in new tab**, it can navigate that browser tab to another site, though it still has no access to Stoa data. Only preview HTML from sources you trust.
+
+**Limits** — files larger than **5 MB** show a "file too large" message with a Download button; no preview is rendered. SVG, JavaScript, and XML remain download-only.
 
 Images continue to use the existing lightbox.
 
