@@ -1493,6 +1493,8 @@ stoa__knowledge_search(query, limit?)
 - **query** — pertanyaan atau kata kunci (maks 500 karakter, harus mengandung minimal satu huruf atau angka).
 - **limit** — jumlah hasil (1–20, default 8).
 
+**Dorongan otomatis.** System prompt dasar setiap sesi agent dan sub-agent yang bisa melihat `stoa__knowledge_search` memuat satu baris singkat yang menyuruhnya mencari di knowledge terlebih dulu untuk task non-trivial, sebelum menyelidiki atau mencoba-coba. Baris ini tidak dipasang bila pemilik menyembunyikan tool-nya, pada sesi tanpa tool Stoa, dan di room yang dikecualikan dari knowledge.
+
 Pencarian menggabungkan **kecocokan semantik** (kemiripan embedding) dengan **kecocokan teks** (overlap kata kunci di judul dan ringkasan). Jika model embedding belum siap atau timeout, pencarian jatuh ke kecocokan teks saja — hasil tetap dikembalikan, hanya tanpa peringkat semantik.
 
 Setiap hasil berisi: **judul**, **ringkasan**, **kategori**, **skor**, dan **sumber** (tautan ke pesan atau bagian dokumen tempat node dibuat).
