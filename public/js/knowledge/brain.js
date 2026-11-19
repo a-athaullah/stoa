@@ -1252,7 +1252,7 @@ function kbTermSegs(f) {
       return [...who, [null, ` used ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
     case 'extract_start': return [...who, [null, ' writing knowledge…']];
     case 'extract': return [...who, [null, ' wrote '], ...counts];
-    case 'extract_failed': return [...who, [null, ' writing '], ['kb-t-del', 'failed']];
+    case 'extract_failed': return [...who, [null, ' writing '], f.deferred ? ['kb-t-upd', 'deferred'] : ['kb-t-del', 'failed']];
     case 'document_add': return [...docLead, ['kb-t-q', doc], [null, ' ingested '], ...counts, ...docTail];
     case 'document_remove': return [...docLead, ['kb-t-q', doc], [null, ' removed '], ['kb-t-del', `-${kbCount(f.removed, 'node', 'nodes')}`], ...docTail];
     case 'node_delete': return [[null, 'node '], ['kb-t-q', f.nodeTitle ? `"${f.nodeTitle}"` : `#${f.nodeId ?? '?'}`], [null, ' removed'], ...inRoom];
@@ -1557,8 +1557,10 @@ function kbHandleActivity(msg) {
   const g = kb.graph;
   const nodeId = Number.isSafeInteger(Number(msg.node_id)) && Number(msg.node_id) > 0 ? Number(msg.node_id) : null;
   const gi = g && nodeId != null ? g.idx.get(nodeId) : undefined;
+  // A busy agent's job is retried without costing an attempt, so its line reads deferred, not failed.
+  const deferred = msg.kind === 'extract_failed' && msg.reason === 'busy';
   const f = {
-    kind: msg.kind, tone: KB_ACT_TONE[msg.kind],
+    kind: msg.kind, tone: deferred ? 'write' : KB_ACT_TONE[msg.kind], deferred,
     nodeIds: msg.kind === 'node_delete' || msg.kind === 'document_remove' ? [] : ids,
     who: msg.actor_name ? kbWho(msg.actor_name, msg.sub_agent_label) : msg.kind.startsWith('extract') ? 'An agent' : 'You',
     // by_owner marks panel actions that still carry the owner's name; servers without it send none.
