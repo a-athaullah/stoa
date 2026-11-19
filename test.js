@@ -19943,6 +19943,7 @@ async function run() {
       appendChild(c) { this.children.push(c); return c; }
       append(...c) { this.children.push(...c); }
       replaceChildren(...c) { this.children = c; }
+      querySelectorAll() { return []; }
     }
     const calls = [];
     let reply;
@@ -19965,7 +19966,13 @@ async function run() {
     assert.ok(group[0].src === files[0] && group[1].src === files[3], 'each entry keeps its attachment for the card to find its index');
 
     const file = group[0];
-    const run = async () => { const body = new N('div'); await ctx.filePreviewHtml(file, token(), body); return body; };
+    let newTab;
+    const run = async () => {
+      const body = new N('div');
+      newTab = { removed: false, remove() { this.removed = true; } };
+      await ctx.filePreviewHtml(file, token(), body, newTab);
+      return body;
+    };
     const text = n => [n.textContent, ...n.children.map(text)].join(' ');
 
     reply = () => ({ ok: true, status: 200, headers: { get: () => '1200' } });
@@ -19975,20 +19982,24 @@ async function run() {
     assert.strictEqual(frame.getAttribute('sandbox'), 'allow-scripts', 'scripts only: no same-origin, top navigation, forms or popups');
     assert.strictEqual(new URL(frame.src).searchParams.get('view'), '1', 'frame loads the CSP-sandboxed view, not the download');
     assert.deepStrictEqual(calls.pop(), { href: frame.src, method: 'HEAD' }, 'the probe is a HEAD to the same view URL');
+    assert.strictEqual(newTab.removed, false, 'a page that loads keeps its Open in new tab link');
 
     reply = () => ({ ok: false, status: 413, headers: { get: () => '40' } });
     body = await run();
     assert.ok(text(body).includes('too large to preview (limit 5 MB)'), text(body));
     assert.ok(body.children[0].children.some(c => c.tagName === 'a' && c.getAttribute('download') === ''), 'over-limit offers the download');
+    assert.strictEqual(newTab.removed, true, 'over-limit drops Open in new tab, which would only reach the 413');
 
     reply = () => ({ ok: true, status: 200, headers: { get: () => String(6 * 1048576) } });
     assert.ok(text(await run()).includes('6,144 KB, limit 5,120 KB'), 'an over-limit size reported by HEAD is shown too');
     reply = () => ({ ok: false, status: 404, headers: { get: () => null } });
     assert.ok(text(await run()).includes('no longer available'));
+    assert.strictEqual(newTab.removed, true, 'a missing file drops Open in new tab');
     reply = () => ({ ok: false, status: 405, headers: { get: () => null } });
     assert.strictEqual((await run()).children[0].tagName, 'iframe', 'a server without HEAD still gets the frame');
     reply = () => { throw new Error('offline'); };
     assert.ok(text(await run()).includes('Check your connection'));
+    assert.strictEqual(newTab.removed, true, 'a network failure drops Open in new tab');
 
     reply = () => ({ ok: true, status: 200, headers: { get: () => '10' } });
     body = new N('div');
@@ -19996,6 +20007,20 @@ async function run() {
     vm.runInContext('filePreviewToken++', ctx);
     await pending;
     assert.ok(!body.children.some(c => c.tagName === 'iframe'), 'a preview superseded while probing never mounts its frame');
+
+    // close() then a new preview in the same tick: the queued 'close' event arrives with the dialog open again.
+    const live = new N('div');
+    live.appendChild(new N('iframe'));
+    const reopened = { open: true, _group: { files: [], index: 0 } };
+    let before = token();
+    ctx.filePreviewOnClose(reopened, live);
+    assert.strictEqual(token(), before, 'a stale close event does not invalidate the preview that reopened the dialog');
+    assert.strictEqual(live.children.length, 1, 'nor clears its content');
+    assert.ok(reopened._group, 'nor drops its prev/next group');
+    const closed = { open: false, _group: { files: [], index: 0 } };
+    ctx.filePreviewOnClose(closed, live);
+    assert.strictEqual(token(), before + 1, 'a real close still cancels pending previews');
+    assert.deepStrictEqual([live.children.length, closed._group], [0, null], 'and clears the body and group');
   });
 
   await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {

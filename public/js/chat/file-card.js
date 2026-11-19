@@ -244,13 +244,18 @@ function filePreviewDialog() {
       filePreviewStep(dlg, e.key === 'ArrowLeft' ? -1 : 1);
     }
   });
-  dlg.addEventListener('close', () => {
-    filePreviewToken++;
-    dlg._group = null;
-    filePreviewClear(body);
-  });
+  dlg.addEventListener('close', () => filePreviewOnClose(dlg, body));
   document.body.appendChild(dlg);
   return dlg;
+}
+
+// 'close' is dispatched as a later task: when a preview reopens the dialog in the same tick, the
+// queued event must not tear down the new preview's content.
+function filePreviewOnClose(dlg, body) {
+  if (dlg.open) return;
+  filePreviewToken++;
+  dlg._group = null;
+  filePreviewClear(body);
 }
 
 function filePreviewStep(dlg, dir) {
@@ -287,7 +292,8 @@ function openFilePreview(file, group) {
   dlg.querySelector('.fp-sub').textContent = file.ext ? file.ext.toUpperCase() : 'File';
   const actions = dlg.querySelector('.fp-actions');
   actions.replaceChildren(fileDownloadLink(file.url, file.name, 'fp-btn'));
-  if (file.kind === 'html') actions.prepend(fileNewTabLink(file.url, file.name));
+  const newTab = file.kind === 'html' ? fileNewTabLink(file.url, file.name) : null;
+  if (newTab) actions.prepend(newTab);
   dlg.classList.toggle('is-pdf', file.kind === 'pdf');
   dlg.classList.toggle('is-html', file.kind === 'html');
   dlg.classList.toggle('is-video', file.kind === 'video');
@@ -299,7 +305,7 @@ function openFilePreview(file, group) {
   if (!wasOpen) dlg.querySelector('.fp-close').focus();
 
   if (file.kind === 'html') {
-    filePreviewHtml(file, token, body);
+    filePreviewHtml(file, token, body, newTab);
     return;
   }
 
@@ -333,7 +339,8 @@ function openFilePreview(file, group) {
 // The page runs only inside the sandbox: the iframe has no allow-same-origin, and ?view=1 is
 // served with a CSP sandbox that keeps the origin opaque and the network closed even in a new tab.
 // A HEAD first turns a missing or over-limit file into a readable note instead of an error page.
-async function filePreviewHtml(file, token, body) {
+// A page that cannot load here would fail in a new tab too, so the error state drops that link.
+async function filePreviewHtml(file, token, body, newTab) {
   body.appendChild(filePreviewNote('Loading preview…'));
   const href = fileViewHref(file.url);
   let err = null;
@@ -346,7 +353,11 @@ async function filePreviewHtml(file, token, body) {
     err = { reason: 'network' };
   }
   if (token !== filePreviewToken) return;
-  if (err) { body.replaceChildren(filePreviewError(err, file)); return; }
+  if (err) {
+    newTab?.remove();
+    body.replaceChildren(filePreviewError(err, file));
+    return;
+  }
   const frame = document.createElement('iframe');
   frame.className = 'fp-frame';
   frame.setAttribute('sandbox', 'allow-scripts');
