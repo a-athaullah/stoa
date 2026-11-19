@@ -1,17 +1,20 @@
 // Non-image attachments render as a card with Download (original name via ?download=1&name=)
-// and, for a fixed allowlist of passive types, an in-app Preview. HTML/SVG/JS and anything
-// else are download-only: previewing them would run untrusted markup on the Stoa origin.
+// and, for a fixed allowlist of types, an in-app Preview. HTML previews only through ?view=1,
+// which the server answers with a CSP sandbox (opaque origin, no network), shown in a sandboxed
+// iframe; SVG/JS and anything else are download-only.
 const FILE_PREVIEW_KINDS = {
   pdf: 'pdf',
   md: 'markdown', markdown: 'markdown',
   csv: 'csv', tsv: 'tsv',
   txt: 'text', log: 'text', yaml: 'text', yml: 'text',
   json: 'json',
+  html: 'html', htm: 'html',
   mp4: 'video', m4v: 'video', webm: 'video', mov: 'video',
   mp3: 'audio', m4a: 'audio', aac: 'audio', wav: 'audio', ogg: 'audio', oga: 'audio', opus: 'audio', flac: 'audio',
 };
 const FILE_MEDIA_KINDS = new Set(['video', 'audio']);
 const FILE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+const FILE_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const FILE_PREVIEW_MAX_ROWS = 500;
 const FILE_SERVED_PREFIXES = ['/uploads/', '/connector-media/'];
 let filePreviewToken = 0;
@@ -63,6 +66,13 @@ function fileDownloadHref(u, name) {
   return d.href;
 }
 
+// The sandboxed inline rendering of a served HTML file; without view=1 the server forces a download.
+function fileViewHref(u) {
+  const v = new URL(u.href);
+  v.searchParams.set('view', '1');
+  return v.href;
+}
+
 function fileDisplayName(a, u) {
   if (a.name) return String(a.name);
   const base = u ? u.pathname.split('/').pop() : '';
@@ -82,11 +92,19 @@ function fileCardExt(u, name) {
   return fileExtOf(name) || (u ? fileExtOf(u.pathname) : '');
 }
 
-function renderFileCard(a) {
+function filePreviewEntry(a) {
   const u = fileResolveUrl(a.url);
   const name = fileDisplayName(a, u);
-  const ext = fileCardExt(u, name);
-  const kind = filePreviewKind(u);
+  return { src: a, url: u, name, ext: fileCardExt(u, name), kind: filePreviewKind(u) };
+}
+
+// HTML attachments of one message, in order: the preview steps through them with prev/next.
+function fileHtmlGroup(files) {
+  return files.map(filePreviewEntry).filter(f => f.kind === 'html');
+}
+
+function renderFileCard(a, htmlGroup) {
+  const { url: u, name, ext, kind } = filePreviewEntry(a);
 
   const card = document.createElement('div');
   card.className = 'h-file-card';
@@ -118,12 +136,38 @@ function renderFileCard(a) {
     prev.className = 'h-file-card-btn';
     prev.textContent = 'Preview';
     prev.setAttribute('aria-label', `Preview ${name}`);
-    prev.onclick = () => openFilePreview({ url: u, name, ext, kind });
+    prev.onclick = () => {
+      const group = kind === 'html' && Array.isArray(htmlGroup) ? htmlGroup : [];
+      const index = group.findIndex(f => f.src === a);
+      if (index === -1) openFilePreview({ url: u, name, ext, kind });
+      else openFilePreview(group[index], { files: group, index });
+    };
     actions.appendChild(prev);
   }
   actions.appendChild(fileDownloadLink(u, name, 'h-file-card-btn'));
   card.appendChild(actions);
   return card;
+}
+
+function fileNewTabLink(u, name) {
+  const a = document.createElement('a');
+  a.className = 'fp-btn';
+  a.href = fileViewHref(u);
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = 'Open in new tab';
+  a.setAttribute('aria-label', `Open ${name} in a new tab`);
+  return a;
+}
+
+function fileNavButton(dir) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'fp-nav-btn';
+  b.dataset.dir = String(dir);
+  b.setAttribute('aria-label', dir < 0 ? 'Previous file' : 'Next file');
+  b.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="${dir < 0 ? '15 6 9 12 15 18' : '9 6 15 12 9 18'}"/></svg>`;
+  return b;
 }
 
 function fileDownloadLink(u, name, className) {
@@ -157,6 +201,17 @@ function filePreviewDialog() {
   const sub = document.createElement('span');
   sub.className = 'fp-sub';
   title.append(nameEl, sub);
+  const nav = document.createElement('div');
+  nav.className = 'fp-nav';
+  nav.hidden = true;
+  const navPrev = fileNavButton(-1);
+  const navNext = fileNavButton(1);
+  const counter = document.createElement('span');
+  counter.className = 'fp-counter';
+  counter.setAttribute('aria-live', 'polite');
+  nav.append(navPrev, counter, navNext);
+  navPrev.onclick = () => filePreviewStep(dlg, -1);
+  navNext.onclick = () => filePreviewStep(dlg, 1);
   const actions = document.createElement('div');
   actions.className = 'fp-actions';
   const close = document.createElement('button');
@@ -165,7 +220,7 @@ function filePreviewDialog() {
   close.setAttribute('aria-label', 'Close preview');
   close.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
   close.onclick = () => dlg.close();
-  head.append(icon, title, actions, close);
+  head.append(icon, title, nav, actions, close);
 
   const body = document.createElement('div');
   body.className = 'fp-body';
@@ -182,30 +237,71 @@ function filePreviewDialog() {
     pressedBackdrop = releasedBackdrop = false;
   });
   // Esc closes the dialog natively; keep it from reaching the global handler (stop generation, etc.)
-  dlg.addEventListener('keydown', e => { if (e.key === 'Escape') e.stopPropagation(); });
+  dlg.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); return; }
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && dlg._group && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      filePreviewStep(dlg, e.key === 'ArrowLeft' ? -1 : 1);
+    }
+  });
   dlg.addEventListener('close', () => {
     filePreviewToken++;
+    dlg._group = null;
     filePreviewClear(body);
   });
   document.body.appendChild(dlg);
   return dlg;
 }
 
-function openFilePreview(file) {
+function filePreviewStep(dlg, dir) {
+  const g = dlg._group;
+  if (!g) return;
+  const index = g.index + dir;
+  if (index < 0 || index >= g.files.length) return;
+  openFilePreview(g.files[index], { files: g.files, index });
+}
+
+function filePreviewSetNav(dlg, group) {
+  const multi = !!group && group.files.length > 1;
+  dlg._group = multi ? group : null;
+  const nav = dlg.querySelector('.fp-nav');
+  nav.hidden = !multi;
+  dlg.classList.toggle('has-nav', multi);
+  if (!multi) return;
+  const [prev, next] = nav.querySelectorAll('.fp-nav-btn');
+  const focused = document.activeElement;
+  prev.disabled = group.index === 0;
+  next.disabled = group.index === group.files.length - 1;
+  nav.querySelector('.fp-counter').textContent = `${group.index + 1} / ${group.files.length}`;
+  if (focused === prev && prev.disabled) next.focus();
+  else if (focused === next && next.disabled) prev.focus();
+}
+
+function openFilePreview(file, group) {
   const dlg = filePreviewDialog();
   const token = ++filePreviewToken;
+  const wasOpen = dlg.open;
   dlg.querySelector('.fp-icon').innerHTML = fileIconSvg(file.ext, 18);
   dlg.querySelector('.fp-name').textContent = file.name;
   dlg.querySelector('.fp-name').title = file.name;
   dlg.querySelector('.fp-sub').textContent = file.ext ? file.ext.toUpperCase() : 'File';
-  dlg.querySelector('.fp-actions').replaceChildren(fileDownloadLink(file.url, file.name, 'fp-btn'));
+  const actions = dlg.querySelector('.fp-actions');
+  actions.replaceChildren(fileDownloadLink(file.url, file.name, 'fp-btn'));
+  if (file.kind === 'html') actions.prepend(fileNewTabLink(file.url, file.name));
   dlg.classList.toggle('is-pdf', file.kind === 'pdf');
+  dlg.classList.toggle('is-html', file.kind === 'html');
   dlg.classList.toggle('is-video', file.kind === 'video');
   dlg.classList.toggle('is-audio', file.kind === 'audio');
   const body = dlg.querySelector('.fp-body');
   filePreviewClear(body);
-  if (!dlg.open) dlg.showModal();
-  dlg.querySelector('.fp-close').focus();
+  if (!wasOpen) dlg.showModal();
+  filePreviewSetNav(dlg, group);
+  if (!wasOpen) dlg.querySelector('.fp-close').focus();
+
+  if (file.kind === 'html') {
+    filePreviewHtml(file, token, body);
+    return;
+  }
 
   if (FILE_MEDIA_KINDS.has(file.kind)) {
     body.appendChild(filePreviewMedia(file, token, body));
@@ -232,6 +328,32 @@ function openFilePreview(file) {
       if (token !== filePreviewToken) return;
       body.replaceChildren(filePreviewError(err, file));
     });
+}
+
+// The page runs only inside the sandbox: the iframe has no allow-same-origin, and ?view=1 is
+// served with a CSP sandbox that keeps the origin opaque and the network closed even in a new tab.
+// A HEAD first turns a missing or over-limit file into a readable note instead of an error page.
+async function filePreviewHtml(file, token, body) {
+  body.appendChild(filePreviewNote('Loading preview…'));
+  const href = fileViewHref(file.url);
+  let err = null;
+  try {
+    const res = await fetch(href, { method: 'HEAD', credentials: 'same-origin' });
+    const len = Number(res.headers.get('content-length'));
+    if (res.status === 413 || (res.ok && len > FILE_HTML_MAX_BYTES)) err = { reason: 'large', size: res.ok ? len : null, limit: FILE_HTML_MAX_BYTES };
+    else if (!res.ok && res.status !== 405) err = { reason: 'http', status: res.status };
+  } catch {
+    err = { reason: 'network' };
+  }
+  if (token !== filePreviewToken) return;
+  if (err) { body.replaceChildren(filePreviewError(err, file)); return; }
+  const frame = document.createElement('iframe');
+  frame.className = 'fp-frame';
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.src = href;
+  frame.title = file.name;
+  body.replaceChildren(frame);
 }
 
 // A detached element can keep buffering, so media is paused and its source released before it goes.
@@ -334,8 +456,10 @@ function filePreviewError(err, file) {
   const box = document.createElement('div');
   box.className = 'fp-empty';
   let msg;
-  if (err?.reason === 'large') {
-    const [size, limit] = fileSizePair(err.size, FILE_PREVIEW_MAX_BYTES);
+  if (err?.reason === 'large' && !err.size) {
+    msg = `This file is too large to preview (limit ${Math.floor(err.limit / 1048576)} MB). Download it to view.`;
+  } else if (err?.reason === 'large') {
+    const [size, limit] = fileSizePair(err.size, err.limit || FILE_PREVIEW_MAX_BYTES);
     msg = `This file is too large to preview (${size}, limit ${limit}). Download it to view.`;
   } else if (err?.reason === 'unplayable') {
     msg = `This browser can't play this ${file.kind === 'audio' ? 'audio' : 'video'} file. Download it to play in another app.`;

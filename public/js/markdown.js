@@ -264,7 +264,8 @@ function renderAttachments(bubble, m) {
   if (files.length) {
     const list = document.createElement('div');
     list.className = 'h-file-cards';
-    files.forEach(a => list.appendChild(renderFileCard(a)));
+    const htmlGroup = fileHtmlGroup(files);
+    files.forEach(a => list.appendChild(renderFileCard(a, htmlGroup)));
     bubble.appendChild(list);
   }
 }
