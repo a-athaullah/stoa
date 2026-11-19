@@ -590,6 +590,23 @@ Sent once per `stoa__knowledge_search` call that returned at least one note, thr
 
 `{ "type": "knowledge_graph_changed", "reason": "extract" | "document_add" | "document_remove" | "node_delete" | "message_delete" | "room_delete", "room_id": 12 | null }` via `broadcastGlobal`, once per operation that wrote knowledge nodes or edges, after its commit (the brain refetches `GET /api/knowledge/graph`, debounced). Sources: lib/knowledge-extraction.js (a job that changed, attached, deleted or staled nodes), lib/knowledge-documents.js `store()` (agent `knowledge_add` and the panel upload; not when only the document row changed) and `remove()` (agent and panel), `deleteNode` in lib/knowledge-admin.js, and server.js message / thread / room delete when `knowledgeAdmin.sourcesIn()` found knowledge sources in what goes (knowledge_sources_ad then deletes or stales nodes). Failed and no-op operations send nothing. The room toggle changes no node and sends only `room_knowledge_changed`; a message edit stales nodes in a trigger without this event (its re-extraction sends `extract`).
 
+#### knowledge_activity (server → browsers only)
+
+What the brain's live card says happened, sent next to (not instead of) `knowledge_graph_changed`, via `broadcastGlobal`, after the operation's commit. Built by `createKnowledgeActivity` (lib/knowledge-graph.js):
+
+```json
+{ "type": "knowledge_activity", "kind": "document_add", "room_id": 12, "room_title": "Ops", "actor_name": "Ara", "sub_agent_label": "Kenji",
+  "by_owner": false, "node_ids": [41, 42], "added": 2, "updated": 0, "removed": 0, "doc_name": "guide.md", "at": "2026-11-19T01:02:03.000Z" }
+```
+
+- `kind`: `extract_start` (an extraction job was sent to an agent; counts 0, no ids), `extract` (its result stored, sent even when nothing changed so the "writing" line closes), `extract_failed` (an announced job ended without a stored result; extra `reason`: `failed` = invalid output, agent error, the index not ready or the lease lost while storing, `busy` = the agent answered busy (retried later, not an attempt), `expired` = no result within the lease, `dropped` = the job was dropped after it was sent (room switched off, etc.); counts 0, no ids; `actor_name` / `sub_agent_label` identical to its `extract_start` so the card closes that line; a job never announced sends none; a late answer after expiry sends nothing more), `document_add` (agent `knowledge_add` or panel upload that changed sections; not for unchanged or row-only re-adds), `document_remove` (agent `knowledge_document_delete` or panel), `node_delete` (panel; extra `node_id`, `removed: 1`), `room_toggle` (panel PUT that changed the setting; extra `enabled`). Search is `knowledge_used`.
+- `node_ids`: nodes the operation inserted, updated or attached sources to that are still active, deduplicated, at most 50 (`ACTIVITY_IDS_MAX`). The brain ignites them after its graph refetch.
+- `added` / `updated` / `removed`: node counts (`removed` = sections removed for documents, 1 for a deleted stale node / node delete).
+- `actor_name` / `sub_agent_label`: who did it; `actor_name` null for panel actions other than upload (the owner).
+- `by_owner`: `true` when the owner's panel / REST did it (upload, document remove, `node_delete`, `room_toggle`), `false` for agents, MCP tools and extraction. An upload still names the owner in `actor_name`, so tell owner from agent by `by_owner`, not by `actor_name`. `doc_name` only on document kinds (scrubbed).
+- Privacy: a room on `KNOWLEDGE_EXCLUDED_ROOM_IDS` sends `room_title` and `doc_name` null. All strings are untrusted (render with `textContent`).
+- A failing lookup or broadcast is logged (`knowledge_activity broadcast failed`) and never fails the operation.
+
 #### Live Run Events (server → room clients)
 
 Key WS events broadcast to room browsers during a run. All carry `message_id` and `room_id`.

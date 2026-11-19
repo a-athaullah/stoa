@@ -1953,7 +1953,7 @@ if (!SMOKE_BOOT) knowledge.start();
 const knowledgeDocs = createKnowledgeDocuments({
   db, semantic: semanticIndex, eligibleRoom: (roomId) => knowledge.eligibleRoom(roomId),
   readFile: (ident, filePath) => readAgentKnowledgeFile(ident, filePath), notify: (data) => broadcastGlobal(data),
-  edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
+  excludedRoom: (roomId) => knowledge.excludedRoom(roomId), edgeSim: parseFloat(process.env.KNOWLEDGE_EDGE_SIM) || 0.85,
 });
 // stoa__knowledge_search + GET /api/knowledge/usage (lib/knowledge-search.js). knowledge_used goes to
 // the owner's browsers only (broadcastGlobal), never to agent connections.

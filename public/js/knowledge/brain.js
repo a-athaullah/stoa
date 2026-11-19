@@ -1,8 +1,9 @@
 // ── Knowledge brain ─────────────────────────────────────────────────────────
 // Settings tab "Knowledge": the knowledge graph drawn as a 3D brain. Positions come from the server
 // (GET /api/knowledge/graph, layout kept stable by lib/knowledge-layout.js); the client only rotates
-// and projects them. Live mode lights the nodes agents read (WS knowledge_used) and lists the
-// searches; History shades every node by its use in a range (GET /api/knowledge/usage).
+// and projects them. Live mode lights the nodes agents read (WS knowledge_used) or write (WS
+// knowledge_activity) and types every knowledge event into a terminal card; History shades every
+// node by its use in a range (GET /api/knowledge/usage).
 //
 // Data (kb.graph, typed arrays) is kept apart from drawing (kbCreateRenderer). Canvas 2D holds up to
 // roughly 10 000 nodes at a smooth frame rate; past that the renderer should move to WebGL behind the
@@ -22,17 +23,35 @@ const KB_DEPTH_BUCKETS = 96;
 const KB_EDGE_LEVELS = 6;
 const KB_LABEL_MAX = 12;
 const KB_LABEL_CHARS = 32;
+// Live card: a new line types out at KB_TYPE_MS per character (faster while lines wait), and the
+// card stays awake KB_AWAKE_MS after the last line is done.
+const KB_TYPE_MS = 25;
+const KB_AWAKE_MS = 8000;
+const KB_IGNITE_MAX = 200;
+// Fold lines: depth bands per frame, and the slow pulse (period and depth); none under reduced motion.
+const KB_FOLD_BANDS = 5;
+const KB_FOLD_PULSE_MS = 6000;
+const KB_FOLD_PULSE = 0.18;
+// knowledge_activity kinds → line tone (color in knowledge-brain.css).
+const KB_ACT_TONE = {
+  extract_start: 'write', extract: 'write', extract_failed: 'drop', document_add: 'write',
+  document_remove: 'drop', node_delete: 'drop', room_toggle: 'sys',
+};
 
 const KB_PALETTE = {
   dark: {
     cats: ['oklch(0.74 0.065 250)', 'oklch(0.78 0.07 78)', 'oklch(0.77 0.06 152)', 'oklch(0.73 0.065 320)'],
     lit: 'oklch(0.93 0.05 85)', dust: 'oklch(0.66 0.03 250)', label: 'oklch(0.9 0.012 250)', knock: 'oklch(0.17 0.02 260)', ring: 'oklch(0.94 0.03 85)',
     halo: 0.2, node: 0.9, edge: 0.2, dust_a: 0.5,
+    fold: 'oklch(0.8 0.12 222)', fold_glow: 'oklch(0.68 0.15 238)', fissure: 'oklch(0.88 0.1 212)',
+    fold_a: 0.34, fold_glow_a: 0.07, fold_blend: 'lighter',
   },
   light: {
     cats: ['oklch(0.5 0.085 252)', 'oklch(0.55 0.095 62)', 'oklch(0.5 0.075 152)', 'oklch(0.48 0.08 320)'],
     lit: 'oklch(0.6 0.14 52)', dust: 'oklch(0.55 0.025 70)', label: 'oklch(0.3 0.02 60)', knock: 'oklch(0.97 0.01 85)', ring: 'oklch(0.42 0.1 52)',
     halo: 0.1, node: 0.85, edge: 0.2, dust_a: 0.42,
+    fold: 'oklch(0.5 0.12 240)', fold_glow: 'oklch(0.68 0.1 232)', fissure: 'oklch(0.45 0.13 245)',
+    fold_a: 0.4, fold_glow_a: 0.1, fold_blend: 'source-over',
   },
 };
 
@@ -42,14 +61,15 @@ const kb = {
   graph: null, graphSeq: 0, graphError: null,
   usage: { seq: 0, range: null, counts: null, max: 0, error: null },
   feed: [], usedBy: new Map(), recentLoaded: false, recentSeq: 0, recentError: null,
-  pulses: [], scaffold: null, ranked: [], blocked: [],
+  term: { queue: [], typing: null, timer: 0, sleepTimer: 0, awake: false }, igniteAfterLoad: [],
+  pulses: [], scaffold: null, folds: null, ranked: [], blocked: [],
   view: {
     yaw: -1.05, pitch: 0.18, zoom: 1, yawTo: null, pitchTo: null,
     drag: null, pauseUntil: 0, mouse: null, mouseMoved: false,
     hover: -1, selected: -1, cx: 0, cy: 0, size: 1,
   },
   detail: { seq: 0, id: null },
-  raf: 0, lastTs: 0, refreshTimer: null, clockTimer: null,
+  raf: 0, lastTs: 0, refreshTimer: null,
   reducedMotion: false, scheme: 'dark',
 };
 
@@ -127,6 +147,145 @@ function kbBuildScaffold() {
     n++;
   }
   return out;
+}
+
+// Glowing folds: the zero contours of a seeded wavy field on the outer surface of each kbInside
+// ellipsoid (sulci; parallel folia on the cerebellum), plus the seams where a surface stops being
+// outer cortex (longitudinal and lateral fissures, the cerebellum's edge). Built once as 3D segments
+// marching-squares segments, then chained into polylines and thinned (fewer, longer subpaths stroke
+// much faster). Result: points pos[xyz], polyline j = points start[j]..start[j+1]-1, kind 1 = fissure.
+// The brainstem (3) counts as outside, so it doesn't punch a seam ring into the cerebellum.
+const KB_FOLD_SURFACES = [
+  { c: [0.36, 0.08, 0], r: [0.40, 0.56, 0.88], k: 1, nu: 330, nv: 230 },
+  { c: [-0.36, 0.08, 0], r: [0.40, 0.56, 0.88], k: 1, nu: 330, nv: 230 },
+  { c: [0.42, -0.28, 0.18], r: [0.26, 0.22, 0.48], k: 1, nu: 200, nv: 140 },
+  { c: [-0.42, -0.28, 0.18], r: [0.26, 0.22, 0.48], k: 1, nu: 200, nv: 140 },
+  { c: [0, -0.5, -0.62], r: [0.46, 0.21, 0.27], k: 2, nu: 200, nv: 110 },
+];
+
+function kbBuildFolds() {
+  let seed = 11;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const waves = [];
+  for (let i = 0; i < 12; i++) {
+    const th = rnd() * Math.PI * 2, ph = Math.acos(2 * rnd() - 1), K = 44 + rnd() * 16;
+    waves.push([K * Math.sin(ph) * Math.cos(th), K * Math.sin(ph) * Math.sin(th), K * Math.cos(ph), rnd() * Math.PI * 2]);
+  }
+  const cortex = (x, y, z) => {
+    const wx = x + 0.035 * Math.sin(7.1 * y + 2.3 * z), wy = y + 0.035 * Math.sin(6.3 * z + 1.7 * x), wz = z + 0.035 * Math.sin(5.7 * x + 2.9 * y);
+    let f = 0;
+    for (const w of waves) f += Math.sin(w[0] * wx + w[1] * wy + w[2] * wz + w[3]);
+    return f;
+  };
+  const folia = (x, y, z) => Math.sin(62 * y + 2.2 * Math.sin(6 * x) + 1.6 * Math.sin(5 * z));
+  const segs = [], kinds = [];
+  const push = (a, b, kind) => { segs.push(a[0], a[1], a[2], b[0], b[1], b[2]); kinds.push(kind); };
+  const EPS = 0.012;
+
+  for (const S of KB_FOLD_SURFACES) {
+    const [cx, cy, cz] = S.c, [rx, ry, rz] = S.r;
+    const at = (u, v) => {
+      const sv = Math.sin(v);
+      return [cx + rx * sv * Math.cos(u), cy + ry * sv * Math.sin(u), cz + rz * Math.cos(v)];
+    };
+    const outer = (u, v) => {
+      const p = at(u, v);
+      let nx = (p[0] - cx) / (rx * rx), ny = (p[1] - cy) / (ry * ry), nz = (p[2] - cz) / (rz * rz);
+      const l = Math.hypot(nx, ny, nz) || 1;
+      nx /= l; ny /= l; nz /= l;
+      if (kbInside(p[0] - nx * EPS, p[1] - ny * EPS, p[2] - nz * EPS) !== S.k) return false;
+      const beyond = kbInside(p[0] + nx * EPS, p[1] + ny * EPS, p[2] + nz * EPS);
+      return beyond === 0 || beyond === 3;
+    };
+    const field = S.k === 2 ? folia : cortex;
+    const NU = S.nu, NV = S.nv, du = Math.PI * 2 / NU, dv = Math.PI / NV;
+    const W = NU + 1, ok = new Uint8Array(W * (NV + 1)), val = new Float32Array(W * (NV + 1));
+    for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
+      const u = i * du, v = j * dv, o = j * W + i;
+      ok[o] = outer(u, v) ? 1 : 0;
+      if (ok[o]) { const p = at(u, v); val[o] = field(p[0], p[1], p[2]); }
+    }
+    // Where the outer test flips along a grid edge, bisect in (u, v) for the exact seam point.
+    const seam = (u0, v0, u1, v1, in0) => {
+      for (let t = 0; t < 7; t++) {
+        const um = (u0 + u1) / 2, vm = (v0 + v1) / 2;
+        if (outer(um, vm) === in0) { u0 = um; v0 = vm; } else { u1 = um; v1 = vm; }
+      }
+      return at((u0 + u1) / 2, (v0 + v1) / 2);
+    };
+    for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
+      const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+      const o = c.map(([a, b]) => b * W + a);
+      const n = ok[o[0]] + ok[o[1]] + ok[o[2]] + ok[o[3]];
+      if (n === 4) {
+        const pts = [];
+        for (let e = 0; e < 4; e++) {
+          const a = val[o[e]], b = val[o[(e + 1) % 4]];
+          if ((a < 0) === (b < 0)) continue;
+          const t = a / (a - b), [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
+          pts.push(at((i0 + (i1 - i0) * t) * du, (j0 + (j1 - j0) * t) * dv));
+        }
+        if (pts.length >= 2) push(pts[0], pts[1], 0);
+        if (pts.length === 4) push(pts[2], pts[3], 0);
+      } else if (n) {
+        const pts = [];
+        for (let e = 0; e < 4; e++) {
+          const a = ok[o[e]], b = ok[o[(e + 1) % 4]];
+          if (a === b) continue;
+          const [i0, j0] = c[e], [i1, j1] = c[(e + 1) % 4];
+          pts.push(seam(i0 * du, j0 * dv, i1 * du, j1 * dv, a === 1));
+        }
+        if (pts.length >= 2) push(pts[0], pts[1], 1);
+        if (pts.length === 4) push(pts[2], pts[3], 1);
+      }
+    }
+  }
+  return kbChainFolds(segs, kinds);
+}
+
+function kbChainFolds(segs, kinds) {
+  const key = (o) => `${Math.round(segs[o] * 2e4)},${Math.round(segs[o + 1] * 2e4)},${Math.round(segs[o + 2] * 2e4)}`;
+  const ends = new Map();
+  const m = kinds.length;
+  for (let k = 0; k < m; k++) for (let e = 0; e < 2; e++) {
+    const kk = kinds[k] + '|' + key(k * 6 + e * 3);
+    const list = ends.get(kk);
+    if (list) list.push(k * 2 + e); else ends.set(kk, [k * 2 + e]);
+  }
+  const used = new Uint8Array(m), pos = [], start = [], kind = [];
+  const other = (end) => { const list = ends.get(kinds[end >> 1] + '|' + key((end >> 1) * 6 + (end & 1) * 3)); for (const x of list) if (!used[x >> 1]) return x; return -1; };
+  const pt = (end) => { const o = (end >> 1) * 6 + (end & 1) * 3; return [segs[o], segs[o + 1], segs[o + 2]]; };
+  for (let k = 0; k < m; k++) {
+    if (used[k]) continue;
+    used[k] = 1;
+    const fwd = walk(k * 2 + 1), back = walk(k * 2);
+    const line = [...back.reverse(), pt(k * 2), pt(k * 2 + 1), ...fwd];
+    start.push(pos.length / 3);
+    kind.push(kinds[k]);
+    let last = line[0];
+    pos.push(...last);
+    for (let i = 1; i < line.length; i++) {
+      const p = line[i], q = line[i + 1];
+      if (q && i < line.length - 1) {
+        const ax = q[0] - last[0], ay = q[1] - last[1], az = q[2] - last[2];
+        const bx = p[0] - last[0], by = p[1] - last[1], bz = p[2] - last[2];
+        const L = ax * ax + ay * ay + az * az;
+        const t = L ? (ax * bx + ay * by + az * bz) / L : 0;
+        const dx = bx - ax * t, dy = by - ay * t, dz = bz - az * t;
+        if (dx * dx + dy * dy + dz * dz < 1.6e-6) continue;
+      }
+      pos.push(...p);
+      last = p;
+    }
+  }
+  start.push(pos.length / 3);
+  // Points past a segment end, following unused segments that share it.
+  function walk(end) {
+    const out = [];
+    for (let at = other(end); at >= 0; at = other(at ^ 1)) { used[at >> 1] = 1; out.push(pt(at ^ 1)); }
+    return out;
+  }
+  return { pos: new Float32Array(pos), start: Uint32Array.from(start), kind: Uint8Array.from(kind), count: kind.length, points: pos.length / 3 };
 }
 
 // ── Renderer (Canvas 2D) ────────────────────────────────────────────────────
@@ -226,6 +385,55 @@ function kbCreateRenderer(canvas) {
       }
       ctx.fill();
     }
+  }
+
+  // Folds in KB_FOLD_BANDS depth bands per kind, each band one thin stroke over one soft wide one;
+  // the far side stays visible but dim, as through a translucent brain. breathe is the slow pulse.
+  let FX = null, FY = null, FZ = null;
+  function drawFolds(view, folds, breathe) {
+    const N = folds.points, P = folds.pos, B = KB_FOLD_BANDS, st = folds.start;
+    if (!folds.count) return;
+    if (!FX || FX.length < N) { FX = new Float32Array(N); FY = new Float32Array(N); FZ = new Float32Array(N); }
+    const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw), cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+    const sc = view.size * 0.42 * view.zoom;
+    for (let i = 0; i < N; i++) {
+      const a = P[i * 3], b = P[i * 3 + 1], c = P[i * 3 + 2];
+      const X = a * cy - c * sy;
+      let Z = a * sy + c * cy;
+      const Y = b * cp - Z * sp;
+      Z = b * sp + Z * cp;
+      const f = 3.2 / (3.2 + Z);
+      FX[i] = view.cx + X * sc * f; FY[i] = view.cy - Y * sc * f; FZ[i] = Z;
+    }
+    const band = i => Math.min(B - 1, Math.floor((dep((FZ[i] + FZ[i + 1]) / 2) - 0.25) / 0.75 * B));
+    const lw = Math.min(1.6, 0.6 + 0.4 * view.zoom);
+    ctx.globalCompositeOperation = pal.fold_blend;
+    ctx.lineJoin = 'round';
+    for (let kind = 0; kind < 2; kind++) {
+      for (let bd = 0; bd < B; bd++) {
+        const d = 0.12 + 0.88 * ((bd + 1) / B) ** 1.6;
+        ctx.beginPath();
+        for (let j = 0; j < folds.count; j++) {
+          if (folds.kind[j] !== kind) continue;
+          let pen = false;
+          for (let i = st[j], e = st[j + 1] - 1; i < e; i++) {
+            if (band(i) !== bd) { pen = false; continue; }
+            if (!pen) { ctx.moveTo(FX[i], FY[i]); pen = true; }
+            ctx.lineTo(FX[i + 1], FY[i + 1]);
+          }
+        }
+        const boost = kind ? 0.75 : 1;
+        ctx.strokeStyle = pal.fold_glow;
+        ctx.globalAlpha = Math.min(1, pal.fold_glow_a * d * boost * breathe);
+        ctx.lineWidth = lw * 3.2;
+        ctx.stroke();
+        ctx.strokeStyle = kind ? pal.fissure : pal.fold;
+        ctx.globalAlpha = Math.min(1, pal.fold_a * d * boost * breathe);
+        ctx.lineWidth = lw * 0.8;
+        ctx.stroke();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   // Edges batched by (category, alpha level) in one path each; lit edges drawn on top.
@@ -363,10 +571,11 @@ function kbCreateRenderer(canvas) {
   }
 
   function frame(scene) {
-    const { view, graph: g, bright, glow, scaffoldCount, pulses, litIdx, ranked, blocked } = scene;
+    const { view, graph: g, bright, glow, scaffoldCount, pulses, litIdx, ranked, blocked, breathe } = scene;
     ctx.setTransform(D, 0, 0, D, 0, 0);
     ctx.clearRect(0, 0, W, H);
     ctx.globalCompositeOperation = 'source-over';
+    if (kb.folds) drawFolds(view, kb.folds, breathe);
     drawScaffold(view, kb.scaffold, scaffoldCount);
     if (g && g.n) {
       ensure(g.n, g.edgeCount);
@@ -556,7 +765,12 @@ function kbBuild() {
   const sideNote = kbEl('div', 'kb-side-note');
   sideNote.hidden = true;
   const list = kbEl('ol', 'kb-list');
-  side.append(sideTitle, sideNote, list);
+  const prompt = kbEl('div', 'kb-term-prompt');
+  prompt.setAttribute('aria-hidden', 'true');
+  const announce = kbEl('div', 'kb-sr');
+  announce.setAttribute('role', 'status');
+  announce.setAttribute('aria-live', 'polite');
+  side.append(sideTitle, sideNote, list, prompt, announce);
 
   const detail = kbEl('section', 'kb-detail');
   detail.hidden = true;
@@ -570,9 +784,10 @@ function kbBuild() {
   root.append(canvas, head, empty, legend, side, detail, tip);
   tab.replaceChildren(root);
 
-  kb.els = { tab, root, canvas, head, counts, msg, empty, side, sideTitle, sideNote, list, detail, tip, mode, range, legend, hint };
+  kb.els = { tab, root, canvas, head, counts, msg, empty, side, sideTitle, sideNote, list, prompt, announce, detail, tip, mode, range, legend, hint };
   kb.renderer = kbCreateRenderer(canvas);
   kb.scaffold = kbBuildScaffold();
+  kb.folds = kbBuildFolds();
   kb.scheme = kbSchemeNow();
   root.dataset.scheme = kb.scheme;
   kb.renderer.setScheme(kb.scheme);
@@ -591,7 +806,11 @@ function kbBuild() {
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
   kb.reducedMotion = mq.matches;
-  mq.addEventListener('change', (e) => { kb.reducedMotion = e.matches; if (e.matches) kb.pulses = []; kbKick(); });
+  mq.addEventListener('change', (e) => {
+    kb.reducedMotion = e.matches;
+    if (e.matches) { kb.pulses = []; kbTermFlush(); }
+    kbKick();
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) kbKick(); });
   document.addEventListener('keydown', kbOnKey, true);
 
@@ -728,6 +947,7 @@ function kbLoop(ts) {
     view: kb.view, graph: g, bright: g ? g.bright : null, glow: g ? g.glow : null, pulses: kb.pulses, litIdx,
     ranked: kb.ranked, blocked: kb.blocked,
     scaffoldCount: Math.max(0, KB_SCAFFOLD_TARGET - (g ? g.n : 0)),
+    breathe: kb.reducedMotion ? 1 : 1 - KB_FOLD_PULSE * (0.5 + 0.5 * Math.cos(ts / KB_FOLD_PULSE_MS * Math.PI * 2)),
   });
   if (kb.view.mouseMoved) {
     kb.view.mouseMoved = false;
@@ -831,8 +1051,12 @@ async function kbLoadGraph() {
     kbRenderCounts(data);
     kbApplyTargets();
     kbRenderSide();
+    const ids = kb.igniteAfterLoad;
+    kb.igniteAfterLoad = [];
+    if (ids.length && kb.mode === 'live' && kbVisible()) kbIgnite([...new Set(ids)]);
   } catch (e) {
     if (seq !== kb.graphSeq) return;
+    kb.igniteAfterLoad = [];
     kb.graphError = e.message || 'Failed to load the knowledge graph';
     kbRenderCounts(null);
   }
@@ -886,7 +1110,7 @@ async function kbLoadUsage() {
 
 function kbFeedKey(f) {
   const t = f.at ? Math.floor(f.at.getTime() / 1000) : 0;
-  return `${f.actorId}|${f.subId}|${f.roomId}|${t}`;
+  return `${f.kind}|${f.actorId}|${f.subId}|${f.roomId}|${t}`;
 }
 
 async function kbLoadRecent() {
@@ -897,6 +1121,7 @@ async function kbLoadRecent() {
     const have = new Set(kb.feed.map(kbFeedKey));
     for (const it of Array.isArray(data.items) ? data.items : []) {
       const f = {
+        kind: 'search', tone: 'use', shown: Infinity,
         nodeIds: Array.isArray(it.node_ids) ? it.node_ids.map(Number) : [],
         who: kbWho(it.actor?.name, it.sub_agent?.label),
         actorId: it.actor?.id ?? null, subId: it.sub_agent?.id ?? null, roomId: it.room?.id ?? null,
@@ -924,16 +1149,21 @@ function kbWho(actor, sub) {
 
 function kbRenderSide() {
   if (!kb.built) return;
-  const { sideTitle, sideNote, list } = kb.els;
-  if (kb.mode === 'live') {
-    sideTitle.textContent = 'Live';
+  const { side, sideTitle, sideNote, list, prompt } = kb.els;
+  const live = kb.mode === 'live';
+  side.classList.toggle('kb-term', live);
+  prompt.hidden = !live;
+  if (live) {
+    const state = kbEl('span', 'kb-term-state', kb.term.awake ? 'active' : 'idle');
+    sideTitle.replaceChildren(kbEl('span', 'kb-term-name', 'Live activity'), state);
     const items = kb.feed.map(kbFeedRow);
     if (!items.length) {
-      sideNote.textContent = kb.recentError ? kb.recentError : kb.recentLoaded ? 'No agent has searched knowledge yet. Searches show up here as they happen.' : 'loading…';
+      sideNote.textContent = kb.recentError ? kb.recentError : kb.recentLoaded ? 'No knowledge activity yet. Searches, writes and documents show up here as they happen.' : 'loading…';
       sideNote.classList.toggle('kb-error', !!kb.recentError);
       sideNote.hidden = false;
     } else sideNote.hidden = true;
     list.replaceChildren(...items);
+    kbTermPrompt();
     return;
   }
   sideTitle.textContent = `Most used · ${kb.range}`;
@@ -970,8 +1200,10 @@ function kbRenderSide() {
   }));
 }
 
+// One terminal line: `> [HH:MM:SS] who@room did what`. The visible text types out (kbTermType);
+// screen readers get the whole line from .kb-sr and the announcement from kbTermPush.
 function kbFeedRow(f) {
-  const li = kbEl('li', 'kb-row kb-feed');
+  const li = kbEl('li', `kb-row kb-feed kb-tone-${f.tone}`);
   const g = kb.graph;
   const first = g ? f.nodeIds.map(id => g.idx.get(id)).find(i => i !== undefined) : undefined;
   const body = kbEl(first !== undefined ? 'button' : 'div', 'kb-feed-body');
@@ -979,19 +1211,134 @@ function kbFeedRow(f) {
     body.type = 'button';
     body.addEventListener('click', () => kbFocusNode(first, true));
   }
-  const line = kbEl('div', 'kb-feed-line');
-  line.appendChild(kbEl('b', null, f.who));
-  if (f.query === null) line.append(' searched ', kbEl('span', 'kb-private', '(private)'));
-  else if (typeof f.query === 'string' && f.query) line.append(' searched ', kbEl('q', null, f.query));
-  else line.append(` used ${kbPlural(f.nodeIds.length, 'node', 'nodes')}`);
-  const meta = kbEl('div', 'kb-feed-meta');
-  if (f.room) meta.appendChild(kbEl('span', null, f.room));
-  const t = kbEl('time', null, kbAgo(f.at));
+  const gt = kbEl('span', 'kb-t-gt', '>');
+  gt.setAttribute('aria-hidden', 'true');
+  const t = kbEl('time', 'kb-t-ts', `[${kbClock(f.at)}]`);
   if (f.at) { t.dateTime = f.at.toISOString(); t.title = f.at.toLocaleString(); }
-  meta.appendChild(t);
-  body.append(line, meta);
+  const line = kbEl('span', 'kb-feed-line');
+  line.setAttribute('aria-hidden', 'true');
+  kbTermFill(line, f);
+  f.el = line;
+  body.append(gt, t, ' ', line, kbEl('span', 'kb-sr', kbTermText(f)));
   li.appendChild(body);
   return li;
+}
+
+function kbClock(d) {
+  if (!d) return '--:--:--';
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, '0')).join(':');
+}
+
+function kbCount(n, one, many) { return kbPlural(Number(n) || 0, one, many); }
+
+// The line as [class, text] parts; strings come from the server and are only ever set as text.
+function kbTermSegs(f) {
+  const who = [['kb-t-who', f.who]];
+  if (f.room) who.push(['kb-t-room', `@${f.room}`]);
+  const doc = f.doc ? `"${f.doc}"` : '(private)';
+  const diff = [];
+  if (f.added) diff.push(['kb-t-add', `+${kbCount(f.added, 'node', 'nodes')}`]);
+  if (f.updated) diff.push(['kb-t-upd', `~${f.updated} updated`]);
+  if (f.removed) diff.push(['kb-t-del', `-${f.removed} removed`]);
+  const counts = diff.length ? diff.flatMap((d, i) => (i ? [[null, ' '], d] : [d])) : [['kb-t-dim', 'no changes']];
+  const inRoom = f.room ? [[null, ' '], ['kb-t-room', `[${f.room}]`]] : [];
+  // An agent's document line leads with who@room, so the trailing [room] would repeat it.
+  const docLead = f.byAgent ? [...who, [null, ' document ']] : [[null, 'document ']];
+  const docTail = f.byAgent ? [] : inRoom;
+  switch (f.kind) {
+    case 'search':
+      if (f.query === null) return [...who, [null, ' searched '], ['kb-t-dim', '(private)'], [null, ` → ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+      if (typeof f.query === 'string' && f.query) return [...who, [null, ' searched '], ['kb-t-q', `"${f.query}"`], [null, ` → ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+      return [...who, [null, ` used ${kbCount(f.nodeIds.length, 'node', 'nodes')}`]];
+    case 'extract_start': return [...who, [null, ' writing knowledge…']];
+    case 'extract': return [...who, [null, ' wrote '], ...counts];
+    case 'extract_failed': return [...who, [null, ' writing '], f.deferred ? ['kb-t-upd', 'deferred'] : ['kb-t-del', 'failed']];
+    case 'document_add': return [...docLead, ['kb-t-q', doc], [null, ' ingested '], ...counts, ...docTail];
+    case 'document_remove': return [...docLead, ['kb-t-q', doc], [null, ' removed '], ['kb-t-del', `-${kbCount(f.removed, 'node', 'nodes')}`], ...docTail];
+    case 'node_delete': return [[null, 'node '], ['kb-t-q', f.nodeTitle ? `"${f.nodeTitle}"` : `#${f.nodeId ?? '?'}`], [null, ' removed'], ...inRoom];
+    case 'room_toggle': return [[null, 'room '], ['kb-t-q', f.room ? `"${f.room}"` : `#${f.roomId ?? '?'}`], [null, f.enabled ? ' included in knowledge' : ' left knowledge']];
+    default: return [['kb-t-dim', f.kind]];
+  }
+}
+
+function kbTermText(f) { return kbTermSegs(f).map(s => s[1]).join(''); }
+
+function kbTermFill(el, f) {
+  const typing = kb.term.typing === f;
+  let left = f.shown ?? Infinity;
+  const out = [];
+  for (const [cls, text] of kbTermSegs(f)) {
+    if (left <= 0) break;
+    const part = left >= text.length ? text : text.slice(0, left);
+    left -= part.length;
+    out.push(cls ? kbEl('span', cls, part) : part);
+  }
+  if (typing) out.push(kbEl('span', 'kb-t-cursor', '_'));
+  el.replaceChildren(...out);
+}
+
+function kbTermPrompt() {
+  const { prompt, side, sideTitle } = kb.els;
+  const typing = !!kb.term.typing;
+  side.classList.toggle('kb-term-awake', kb.term.awake);
+  const state = sideTitle.querySelector('.kb-term-state');
+  if (state) state.textContent = kb.term.awake ? 'active' : 'idle';
+  const cursor = kbEl('span', 'kb-t-cursor', '_');
+  cursor.hidden = typing;
+  prompt.replaceChildren(kbEl('span', 'kb-t-gt', '>'), kb.term.awake ? '' : 'idle', cursor);
+}
+
+// A new feed entry: typed out when the card is on screen in Live, shown whole otherwise.
+function kbTermPush(f) {
+  const show = kb.built && kb.mode === 'live' && kbVisible();
+  if (!show || kb.reducedMotion) f.shown = Infinity;
+  else { f.shown = 0; kb.term.queue.push(f); }
+  if (!show) return;
+  kb.els.announce.textContent = kbTermText(f);
+  kb.term.awake = true;
+  clearTimeout(kb.term.sleepTimer);
+  if (!kb.term.timer && kb.term.queue.length) kb.term.timer = setInterval(kbTermType, KB_TYPE_MS);
+  if (!kb.term.timer) kb.term.sleepTimer = setTimeout(kbTermSleep, KB_AWAKE_MS);
+}
+
+function kbTermType() {
+  const t = kb.term;
+  if (kb.mode !== 'live' || !kbVisible()) { kbTermFlush(); return; }
+  if (!t.typing) {
+    t.typing = t.queue.shift() || null;
+    if (!t.typing) { kbTermFlush(); return; }
+    kbTermPrompt();
+  }
+  const f = t.typing;
+  f.shown += 1 + t.queue.length;
+  if (f.shown >= kbTermText(f).length) {
+    f.shown = Infinity;
+    t.typing = null;
+  }
+  if (f.el && f.el.isConnected) kbTermFill(f.el, f);
+  if (!t.typing && !t.queue.length) kbTermFlush();
+}
+
+// Stop typing: every waiting line shows whole, the card dozes off after KB_AWAKE_MS.
+function kbTermFlush() {
+  const t = kb.term;
+  clearInterval(t.timer);
+  t.timer = 0;
+  for (const f of [t.typing, ...t.queue]) {
+    if (!f) continue;
+    f.shown = Infinity;
+    if (f.el && f.el.isConnected) kbTermFill(f.el, f);
+  }
+  t.typing = null;
+  t.queue = [];
+  clearTimeout(t.sleepTimer);
+  if (t.awake) t.sleepTimer = setTimeout(kbTermSleep, KB_AWAKE_MS);
+  if (kb.built) kbTermPrompt();
+}
+
+function kbTermSleep() {
+  kb.term.awake = false;
+  if (kb.built) kbTermPrompt();
 }
 
 // ── Modes ───────────────────────────────────────────────────────────────────
@@ -1179,6 +1526,7 @@ function kbHandleUsed(msg) {
   if (!msg || !Array.isArray(msg.node_ids)) return;
   const at = kbDate(msg.at) || new Date();
   const f = {
+    kind: 'search', tone: 'use',
     nodeIds: msg.node_ids.map(Number).filter(n => n > 0),
     who: kbWho(msg.actor_name, msg.sub_agent_label),
     actorId: msg.actor_id ?? null, subId: msg.sub_agent_id ?? null, roomId: msg.room_id ?? null,
@@ -1194,9 +1542,61 @@ function kbHandleUsed(msg) {
     if (list.length > 3) list.length = 3;
     kb.usedBy.set(id, list);
   }
+  kbTermPush(f);
   if (!kb.built) return;
   if (kb.mode === 'live') kbRenderSide();
   if (kb.mode === 'live' && kbVisible()) kbIgnite(f.nodeIds);
+}
+
+// knowledge_activity (owner browsers only): writes, documents, deletions and room opt-in, typed into
+// the same card. Nodes a write touched may not be in kb.graph yet, so they light up after the next
+// graph load; a deleted node is named from the graph before that load drops it.
+function kbHandleActivity(msg) {
+  if (!msg || typeof msg.kind !== 'string' || !Object.hasOwn(KB_ACT_TONE, msg.kind)) return;
+  const ids = Array.isArray(msg.node_ids) ? msg.node_ids.map(Number).filter(n => Number.isSafeInteger(n) && n > 0) : [];
+  const g = kb.graph;
+  const nodeId = Number.isSafeInteger(Number(msg.node_id)) && Number(msg.node_id) > 0 ? Number(msg.node_id) : null;
+  const gi = g && nodeId != null ? g.idx.get(nodeId) : undefined;
+  // A busy agent's job is retried without costing an attempt, so its line reads deferred, not failed.
+  const deferred = msg.kind === 'extract_failed' && msg.reason === 'busy';
+  const f = {
+    kind: msg.kind, tone: deferred ? 'write' : KB_ACT_TONE[msg.kind], deferred,
+    nodeIds: msg.kind === 'node_delete' || msg.kind === 'document_remove' ? [] : ids,
+    who: msg.actor_name ? kbWho(msg.actor_name, msg.sub_agent_label) : msg.kind.startsWith('extract') ? 'An agent' : 'You',
+    // by_owner marks panel actions that still carry the owner's name; servers without it send none.
+    byAgent: msg.by_owner !== true && !!msg.actor_name,
+    actorId: null, subId: null, roomId: msg.room_id ?? null,
+    room: typeof msg.room_title === 'string' && msg.room_title ? msg.room_title : null,
+    doc: typeof msg.doc_name === 'string' && msg.doc_name ? msg.doc_name : null,
+    added: Number(msg.added) || 0, updated: Number(msg.updated) || 0, removed: Number(msg.removed) || 0,
+    enabled: msg.enabled === true, nodeId, nodeTitle: gi !== undefined ? g.titles[gi] : null,
+    at: kbDate(msg.at) || new Date(),
+  };
+  if (f.kind === 'extract' || f.kind === 'extract_failed') kbCloseWriting(f);
+  kb.feed.unshift(f);
+  if (kb.feed.length > KB_FEED_MAX) kb.feed.length = KB_FEED_MAX;
+  kbTermPush(f);
+  if (!kb.built) return;
+  if (kb.mode === 'live') kbRenderSide();
+  if (f.kind === 'extract_start' || f.kind === 'extract_failed') return;
+  if (f.nodeIds.length && kb.mode === 'live' && kbVisible()) {
+    kb.igniteAfterLoad.push(...f.nodeIds);
+    if (kb.igniteAfterLoad.length > KB_IGNITE_MAX) kb.igniteAfterLoad.splice(0, kb.igniteAfterLoad.length - KB_IGNITE_MAX);
+  }
+  kbScheduleRefresh();
+}
+
+// The newest open "writing…" line of the same writer is settled by its result: a success leaves it
+// in place, a failure takes its place so a retrying job doesn't pile up dangling lines.
+function kbCloseWriting(f) {
+  const open = kb.feed.find(o => o.kind === 'extract_start' && !o.closed && o.roomId === f.roomId && o.who === f.who);
+  if (!open) return;
+  open.closed = true;
+  if (f.kind !== 'extract_failed') return;
+  kb.feed.splice(kb.feed.indexOf(open), 1);
+  const t = kb.term;
+  if (t.typing === open) t.typing = null;
+  t.queue = t.queue.filter(q => q !== open);
 }
 
 function kbIgnite(ids) {
@@ -1249,10 +1649,5 @@ function sLoadKnowledgeTab() {
     kbScheduleRefresh();
     kbRenderSide();
   }
-  clearInterval(kb.clockTimer);
-  kb.clockTimer = setInterval(() => {
-    if (!kbVisible()) { clearInterval(kb.clockTimer); kb.clockTimer = null; return; }
-    if (kb.mode === 'live') kbRenderSide();
-  }, 30000);
   requestAnimationFrame(kbLayout);
 }
