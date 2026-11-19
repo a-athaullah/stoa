@@ -1959,6 +1959,8 @@ const knowledgeDocs = createKnowledgeDocuments({
 // the owner's browsers only (broadcastGlobal), never to agent connections.
 const knowledgeSearch = createKnowledgeSearch({
   db, semantic: semanticIndex, notify: (data) => broadcastGlobal(data), excludedRoom: (roomId) => knowledge.excludedRoom(roomId),
+  // Task-start hints (suggest): only for a room that feeds the graph; floor tunable with KNOWLEDGE_HINT_MIN_SIM.
+  eligibleRoom: (roomId) => knowledge.eligibleRoom(roomId), hintMinSim: parseFloat(process.env.KNOWLEDGE_HINT_MIN_SIM) || undefined,
 });
 // Knowledge brain positions + GET /api/knowledge/graph (lib/knowledge-layout.js), session-only.
 const knowledgeLayout = createKnowledgeLayout({ db, model: semanticIndex.model });
