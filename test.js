@@ -29884,7 +29884,7 @@ async function run() {
           assert.strictEqual(card.status, 201, JSON.stringify(card.body));
           ws.frames.length = 0;
           assert.strictEqual((await req('POST', `/api/rooms/${roomId}/tasks/runner/play`)).status, 200);
-          const trig = await until(() => ws.frames.find(f => f.type === 'agent_trigger'), 'agent_trigger for the card');
+          const trig = await until(() => ws.frames.find(f => f.type === 'agent_trigger' && f.prompt.includes(`(task_id ${card.body.id} `)), 'agent_trigger for the card');
           assert.strictEqual((await req('POST', `/api/rooms/${roomId}/tasks/runner/stop`)).status, 200);
           await req('DELETE', `/api/rooms/${roomId}/tasks/${card.body.id}`);
           return trig.prompt;
