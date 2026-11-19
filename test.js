@@ -28645,6 +28645,20 @@ async function run() {
 
     // ── Knowledge search (lib/knowledge-search.js), on the same boot schema and vectors.
     const { createKnowledgeSearch } = require('./lib/knowledge-search');
+    await test('knowledge search prompt line — one short line, only when the session sees the tool and the room is not excluded', async () => {
+      const { promptLine } = require('./lib/knowledge-search');
+      const full = 'mcp__stoa__stoa__knowledge_search';
+      const line = promptLine({ visible: true, excluded: false, fullName: full });
+      assert.ok(line.includes('`' + full + '`') && /non-trivial/.test(line) && /before investigating/.test(line), line);
+      assert.ok(line.length < 400, 'short: ' + line.length);
+      assert.strictEqual(promptLine({ visible: false, excluded: false, fullName: full }), '', 'tool hidden by the owner or tool-less session: no mention');
+      assert.strictEqual(promptLine({ visible: true, excluded: true, fullName: full }), '', 'excluded (private) room: no mention');
+      // Wiring: server.js feeds it the gateway's visible built-ins and puts it in the prompt of main and sub-agent sessions alike.
+      const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+      assert.match(src, /visible: mcpGateway\.visibleBuiltins\(mcpIdent\)\.includes\('knowledge_search'\)/);
+      assert.match(src, /excluded: knowledge\.excludedRoom\(roomId\)/);
+      assert.match(src, /veniceMediaLine,\n\s+knowledgeLine,\n\s+emailThreadSection,/);
+    });
     const { toBlob } = require('./lib/knowledge-graph');
     const ksSetup = ({ ready = true, embed = null } = {}) => {
       const k = kxSetup();

@@ -290,7 +290,7 @@ const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query')
 const { createSemanticIndex } = require('./lib/semantic-index');
 const { createKnowledgeExtraction } = require('./lib/knowledge-extraction');
 const { createKnowledgeDocuments } = require('./lib/knowledge-documents');
-const { createKnowledgeSearch } = require('./lib/knowledge-search');
+const { createKnowledgeSearch, promptLine: knowledgeSearchPromptLine } = require('./lib/knowledge-search');
 const { createKnowledgeAdmin } = require('./lib/knowledge-admin');
 const { createKnowledgeLayout } = require('./lib/knowledge-layout');
 const { KNOWLEDGE_DOC_MAX_BYTES } = require('./lib/knowledge-file');
@@ -8838,6 +8838,15 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       veniceMediaLine = veniceMediaSection(venice.MEDIA_TOOLS.filter(n => shown.has(n)));
     } catch (e) { console.error('[mcp] media tool list failed:', e.message); }
   }
+  let knowledgeLine = '';
+  if (stoaTools) {
+    try {
+      knowledgeLine = knowledgeSearchPromptLine({
+        visible: mcpGateway.visibleBuiltins(mcpIdent).includes('knowledge_search'),
+        excluded: knowledge.excludedRoom(roomId), fullName: cliStoaToolName('knowledge_search'),
+      });
+    } catch (e) { console.error('[knowledge] prompt line failed:', e.message); }
+  }
   const sessionTarget = threadId ? `the thread this session runs in (thread ${threadId})` : 'the room\'s main feed';
 
   const proactiveCurlBody = threadId
@@ -9007,6 +9016,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     orchestrationLine,
     '\n' + L.sendFileInstruction,
     veniceMediaLine,
+    knowledgeLine,
     emailThreadSection,
   ].filter(Boolean).join('\n');
 
