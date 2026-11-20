@@ -8,7 +8,8 @@
 //
 // Boots a throwaway server (temp DB seeded from demo-data.js, empty .env, random port and
 // password), fakes the "online" agents over WS, drives headless Chrome with Playwright, writes
-// PNGs to docs/screenshots/, then deletes the temp dir. Never touches db/stoa.db or the live port.
+// PNGs to docs/screenshots/, then deletes the temp dir. Never touches db/stoa.db, the live file dirs (uploads, connector-media,
+// skill blobs) or the live port.
 // Playwright is not a repo dependency: set STOA_PLAYWRIGHT=/path/to/node_modules/playwright
 // when `require('playwright')` can't resolve it. Output: JSON {ok, outDir, shots: [{name, file, bytes}]}.
 'use strict';
@@ -53,6 +54,10 @@ function startServer(dir, port, password) {
     ...process.env, PORT: String(port), DB_PATH: path.join(dir, 'stoa.db'), STOA_ENV_FILE: path.join(dir, '.env'),
     STOA_TEST: '1', STOA_INITIAL_PASSWORD: password, HUMAN_NAME: demo.HUMAN.name,
     STOA_AGENT_BUNDLE_DIR: fs.mkdtempSync(path.join(dir, 'dist-')), STOA_MCP_WORK_DIR: fs.mkdtempSync(path.join(dir, 'mcp-')),
+    // Same dirs on both boots; removed with `dir`. Left at the default, the demo server's GC compares the
+    // live files with the demo DB and deletes them (skill blobs wiped 2026-11-19).
+    STOA_UPLOADS_DIR: path.join(dir, 'uploads'), STOA_CONNECTOR_MEDIA_DIR: path.join(dir, 'connector-media'),
+    STOA_SKILL_BLOBS_DIR: path.join(dir, 'skill-blobs'),
     STOA_UPDATE_REPO_DIR: path.join(dir, 'upd'), STOA_UPDATE_STATE_FILE: path.join(dir, 'upd.json'), STOA_UPDATE_CHECK_DELAY_MS: String(864e5),
   };
   delete env.NODE_ENV;
