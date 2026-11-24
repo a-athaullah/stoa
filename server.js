@@ -5480,7 +5480,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     });
     if (r.status !== 200) return json(res, r.body, r.status);
     const result = r.body;
-    const compactState = pendingCompacts.get(`${roomId}:${rootId}`);
+    const compactState = threadCompactState(roomId, rootId);
     if (compactState) {
       result.is_compacting = true;
       result.compacting_participants = compactState.targets || [];
@@ -6247,9 +6247,36 @@ function withTiming(resultMetaJson, timing) {
   if (!timing) return resultMetaJson;
   return JSON.stringify({ ...(resultMetaJson ? JSON.parse(resultMetaJson) : {}), timing });
 }
-const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
-const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
-const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
+const pendingCompacts = new Map();  // compactKeyFor() → { total, completed, agents[] }
+const recentCompacts = new Map();      // compactKeyFor() → timestamp — suppresses duplicate auto_compact_start within 30s
+const recentCompactTimers = new Map(); // compactKeyFor() → timer handle — cleared before reset to avoid early expiry
+// `room`, `room:thread`, or `room:thread:sa<id>` for a sub-agent session: a sub-agent and its parent
+// compact different sessions of the same thread, so they must not share pending/recent state.
+function compactKeyFor(roomId, threadId, subAgentId = null) {
+  if (subAgentId) return `${roomId}:${threadId || 0}:sa${subAgentId}`;
+  return threadId ? `${roomId}:${threadId}` : String(roomId);
+}
+function parseCompactKey(compactKey) {
+  const [roomPart, threadPart] = String(compactKey).split(':');
+  return { roomId: parseInt(roomPart), threadId: parseInt(threadPart) || null };
+}
+// Pending compact shown on a thread: the parent agent's, else any of its sub-agents'.
+function threadCompactState(roomId, threadId) {
+  const own = pendingCompacts.get(compactKeyFor(roomId, threadId));
+  if (own) return own;
+  const prefix = `${roomId}:${threadId}:sa`;
+  for (const [key, cs] of pendingCompacts) if (key.startsWith(prefix)) return cs;
+  return null;
+}
+// sub_agent_id on compact events comes from the agent process. Returns { subAgent } (null = the
+// agent's own session) or null when the id is not one of this agent's sub-agents: the caller drops
+// the event instead of falling back to the parent's session row.
+function resolveCompactSubAgent(agentActorId, rawSubAgentId) {
+  if (rawSubAgentId === null || rawSubAgentId === undefined) return { subAgent: null };
+  if (!Number.isInteger(rawSubAgentId) || rawSubAgentId <= 0) return null;
+  const subAgent = db.prepare('SELECT id, label FROM sub_agents WHERE id=? AND parent_actor_id=?').get(rawSubAgentId, agentActorId);
+  return subAgent ? { subAgent } : null;
+}
 let reauthProcess = null;  // true when remote reauth is in progress
 let reauthRoomId = null;   // room that triggered /reauth
 let reauthAgentActorId = null; // actor_id of the agent handling reauth
@@ -6438,7 +6465,7 @@ wss.on('connection', (ws, req) => {
       const roomPrefix = `${subscribedRoom}:`;
       for (const [compactKey, cs] of pendingCompacts) {
         if (compactKey === String(subscribedRoom) || compactKey.startsWith(roomPrefix)) {
-          const threadId = compactKey.includes(':') ? parseInt(compactKey.split(':')[1]) : null;
+          const { threadId } = parseCompactKey(compactKey);
           ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, thread_id: threadId, total: cs.total, participants: cs.targets || [] }));
           if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, thread_id: threadId, completed: cs.completed, total: cs.total, completed_participant_ids: cs.completedParticipantIds || [] }));
         }
@@ -6887,37 +6914,50 @@ wss.on('connection', (ws, req) => {
           if (acThreadId === null) acThreadId = s.thread_id || null;
         }
       }
+      const acOwner = resolveCompactSubAgent(agentActorId, msg.sub_agent_id);
+      if (!acOwner) {
+        console.warn(`[server] auto_compact_start ignored: sub_agent_id=${msg.sub_agent_id} is not a sub-agent of agent=${agentActorId}`);
+        return;
+      }
+      const acSubAgentId = acOwner.subAgent?.id ?? null;
       if (roomId) {
-        const acKey = acThreadId ? `${roomId}:${acThreadId}` : String(roomId);
+        const acKey = compactKeyFor(roomId, acThreadId, acSubAgentId);
         if (recentCompacts.has(acKey)) {
-          console.log(`[server] auto_compact_start suppressed for room=${roomId} thread=${acThreadId || 0} (compact recently completed)`);
+          console.log(`[server] auto_compact_start suppressed for ${acKey} (compact recently completed)`);
         } else if (!pendingCompacts.has(acKey)) {
           const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
           const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
           if (participant) {
-            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participant.id, roomId, acThreadId || 0);
+            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?').get(participant.id, roomId, acThreadId || 0, acSubAgentId);
             if (sess?.compact_failure_cooldown_until && sess.compact_failure_cooldown_until > new Date().toISOString()) {
-              console.warn(`[server] auto_compact_start suppressed for room=${roomId} agent=${agentActorId} (failure cooldown until ${sess.compact_failure_cooldown_until})`);
+              console.warn(`[server] auto_compact_start suppressed for ${acKey} agent=${agentActorId} (failure cooldown until ${sess.compact_failure_cooldown_until})`);
               return;
             }
           }
-          const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
-          pendingCompacts.set(acKey, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
+          const displayName = acOwner.subAgent?.label || actor?.name;
+          const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: displayName }] : [];
+          pendingCompacts.set(acKey, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants, subAgentId: acSubAgentId });
           broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: acThreadId, total: 1, participants });
-          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting', thread_id: acThreadId });
-          console.log(`[server] auto-compact started room=${roomId} thread=${acThreadId || 0} by agent=${agentActorId}`);
+          if (displayName) broadcast(roomId, { type: 'system_event', actor_name: displayName, status: 'session compacting', thread_id: acThreadId });
+          console.log(`[server] auto-compact started ${acKey} by agent=${agentActorId}`);
         } else {
           const cs = pendingCompacts.get(acKey);
           if (!cs.agents.includes(agentActorId)) {
             cs.total++;
             cs.agents.push(agentActorId);
-            console.log(`[server] auto-compact: added agent=${agentActorId} to room=${roomId} (total=${cs.total})`);
+            console.log(`[server] auto-compact: added agent=${agentActorId} to ${acKey} (total=${cs.total})`);
           }
         }
       }
     }
 
     if (msg.type === 'compact_complete' && agentActorId) {
+      const cOwner = resolveCompactSubAgent(agentActorId, msg.sub_agent_id);
+      if (!cOwner) {
+        console.warn(`[server] compact_complete ignored: sub_agent_id=${msg.sub_agent_id} is not a sub-agent of agent=${agentActorId}`);
+        return;
+      }
+      const cSubAgentId = cOwner.subAgent?.id ?? null;
       if (!msg.room_id) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         if (lookup) {
@@ -6934,43 +6974,29 @@ wss.on('connection', (ws, req) => {
       let cThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
       if (cThreadId === null && (msg.orig_session_id || msg.claude_session_id)) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
-        const sessRow = db.prepare('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+        const sessRow = db.prepare('SELECT thread_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
         if (sessRow) {
           cThreadId = typeof sessRow.thread_id === 'number' ? sessRow.thread_id : 0;
         } else {
           console.warn(`[server] compact_complete: no session row for ${lookup}, cannot resolve thread_id — skipping session UPDATE`);
         }
       }
-      const cSubAgentId = typeof msg.sub_agent_id === 'number' ? msg.sub_agent_id : null;
-      const cKey = cThreadId !== null && cThreadId > 0 ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
-      if (cThreadId !== null && msg.claude_session_id) {
-        const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-        if (participant) {
-          if (cSubAgentId) {
-            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId, cSubAgentId);
-          } else {
-            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId);
-          }
+      const cKey = compactKeyFor(msg.room_id, cThreadId, cSubAgentId);
+      const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      if (cThreadId !== null && participant) {
+        if (msg.claude_session_id) {
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId, cSubAgentId);
         }
-      }
-      if (cThreadId !== null) {
-        const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-        if (successParticipant) {
-          if (cSubAgentId) {
-            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(successParticipant.id, msg.room_id, cThreadId, cSubAgentId);
-          } else {
-            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId);
-          }
-        }
+        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?`).run(participant.id, msg.room_id, cThreadId, cSubAgentId);
       }
       const state = pendingCompacts.get(cKey);
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
-      const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      const displayName = cOwner.subAgent?.label || actor?.name;
       if (!state) {
         // No pendingCompacts entry — background compact with failed auto_compact_start, or disconnect cleared it.
         // Still write marker and unstick any UI that may be in compacting state.
-        if (participant && actor) {
-          const content = `${actor.name} · session compacted`;
+        if (participant && displayName) {
+          const content = `${displayName} · session compacted`;
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(msg.room_id, participant.id, content, cThreadId);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
@@ -6983,7 +7009,7 @@ wss.on('connection', (ws, req) => {
       if (!state.names) state.names = [];
       if (!state.completedAgentIds) state.completedAgentIds = [];
       if (!state.completedParticipantIds) state.completedParticipantIds = [];
-      if (actor) state.names.push(actor.name);
+      if (displayName) state.names.push(displayName);
       state.completedAgentIds.push(agentActorId);
       if (participant) state.completedParticipantIds.push(participant.id);
       state.completed++;
@@ -6997,11 +7023,13 @@ wss.on('connection', (ws, req) => {
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
+        // Reset only the compacted sessions. The context bar tracks the parent agents' own sessions,
+        // so a sub-agent compact does not broadcast context_update (it would zero the parent's bar).
         for (const aid of state.completedAgentIds) {
           if (cThreadId !== null) {
-            db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId, aid);
+            db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND sub_agent_id IS ? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId, cSubAgentId, aid);
           }
-          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, thread_id: cThreadId, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
+          if (!cSubAgentId) broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, thread_id: cThreadId, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
         }
       } else {
         broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, thread_id: cThreadId, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
@@ -7009,8 +7037,14 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact_error' && agentActorId) {
+      const ceOwner = resolveCompactSubAgent(agentActorId, msg.sub_agent_id);
+      if (!ceOwner) {
+        console.warn(`[server] compact_error ignored: sub_agent_id=${msg.sub_agent_id} is not a sub-agent of agent=${agentActorId}`);
+        return;
+      }
+      const ceSubAgentId = ceOwner.subAgent?.id ?? null;
       // Resolve room_id / thread_id from the session row when the agent did not send them
-      // (older agent builds). pendingCompacts is keyed `room:thread`, so a missing thread_id
+      // (older agent builds). pendingCompacts is keyed by thread, so a missing thread_id
       // would otherwise leave the compact stuck in "compacting" state.
       if (!msg.room_id || msg.thread_id == null) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
@@ -7025,13 +7059,11 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const ceThreadId = msg.thread_id ?? null;
-      const ceKey = ceThreadId ? `${msg.room_id}:${ceThreadId}` : String(msg.room_id);
-      const state = pendingCompacts.get(ceKey);
-      if (!state) return;
-      if (!state.completedParticipantIds) state.completedParticipantIds = [];
+      const ceKey = compactKeyFor(msg.room_id, ceThreadId, ceSubAgentId);
+      // Cooldown goes on the failed session's own row (sub-agent or parent), also when the start
+      // event was suppressed and no pending state exists, so a failing session cannot retry every run.
       const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (participant) {
-        state.completedParticipantIds.push(participant.id);
         const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
         const errorText = (msg.error || 'compact failed').slice(0, 500);
         db.prepare(`UPDATE ai_sessions SET
@@ -7040,10 +7072,14 @@ wss.on('connection', (ws, req) => {
             ELSE compact_failure_cooldown_until
           END,
           compact_failure_error = ?
-          WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`
-        ).run(cooldownUntil, cooldownUntil, errorText, participant.id, msg.room_id, ceThreadId || 0);
-        console.warn(`[server] compact failure cooldown set for participant=${participant.id} until ${cooldownUntil}: ${errorText}`);
+          WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?`
+        ).run(cooldownUntil, cooldownUntil, errorText, participant.id, msg.room_id, ceThreadId || 0, ceSubAgentId);
+        console.warn(`[server] compact failure cooldown set for ${ceKey} participant=${participant.id} until ${cooldownUntil}: ${errorText}`);
       }
+      const state = pendingCompacts.get(ceKey);
+      if (!state) return;
+      if (!state.completedParticipantIds) state.completedParticipantIds = [];
+      if (participant) state.completedParticipantIds.push(participant.id);
       if (!state.errors) state.errors = 0;
       state.errors++;
       state.completed++;
@@ -7058,6 +7094,50 @@ wss.on('connection', (ws, req) => {
       } else {
         broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, thread_id: ceThreadId, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
+    }
+
+    // The agent compacted a session but it is still above the auto-compact threshold (compact loop
+    // guard in stoa.js). The agent pauses auto-compact for that session and reports once per pause;
+    // mirror the pause on the session row and leave one human-readable marker.
+    if (msg.type === 'compact_ineffective' && agentActorId) {
+      const ciOwner = resolveCompactSubAgent(agentActorId, msg.sub_agent_id);
+      if (!ciOwner) {
+        console.warn(`[server] compact_ineffective ignored: sub_agent_id=${msg.sub_agent_id} is not a sub-agent of agent=${agentActorId}`);
+        return;
+      }
+      const ciSubAgentId = ciOwner.subAgent?.id ?? null;
+      const ciSessionId = typeof msg.claude_session_id === 'string' ? msg.claude_session_id : null;
+      let ciRoomId = Number.isInteger(msg.room_id) ? msg.room_id : null;
+      let ciThreadId = Number.isInteger(msg.thread_id) ? msg.thread_id : null;
+      if ((!ciRoomId || ciThreadId === null) && ciSessionId) {
+        const s = db.prepare('SELECT room_id, thread_id FROM ai_sessions WHERE claude_session_id=?').get(ciSessionId);
+        if (s && !ciRoomId) ciRoomId = s.room_id;
+        if (s && ciThreadId === null) ciThreadId = s.thread_id || null;
+      }
+      if (!ciRoomId) {
+        console.warn(`[server] compact_ineffective: unresolvable room_id for session ${ciSessionId}`);
+        return;
+      }
+      const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(ciRoomId, agentActorId);
+      if (!participant) return;
+      const sizeKb = Number.isInteger(msg.size_kb) && msg.size_kb > 0 ? msg.size_kb : null;
+      const thresholdKb = Number.isInteger(msg.threshold_kb) && msg.threshold_kb > 0 ? msg.threshold_kb : null;
+      const nowMs = Date.now();
+      const reported = Date.parse(msg.paused_until);
+      // Honour the agent's pause window, bounded to (now, now + 24h].
+      const untilMs = Number.isFinite(reported) && reported > nowMs ? Math.min(reported, nowMs + 24 * 3600_000) : nowMs + 6 * 3600_000;
+      const untilIso = new Date(untilMs).toISOString();
+      const sizeText = sizeKb && thresholdKb ? ` (${sizeKb} KB > ${thresholdKb} KB)` : '';
+      const reason = `compact could not bring the session under the auto-compact threshold${sizeText}; the system prompt is probably too large`;
+      db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=?, compact_failure_error=?
+        WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?`
+      ).run(untilIso, reason, participant.id, ciRoomId, ciThreadId || 0, ciSubAgentId);
+      const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+      const displayName = ciOwner.subAgent?.label || actor?.name || 'agent';
+      const content = `${displayName} · ${reason}. Auto-compact paused until ${untilIso.slice(0, 16).replace('T', ' ')} UTC.`;
+      const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(ciRoomId, participant.id, content, ciThreadId);
+      broadcast(ciRoomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: ciRoomId, content, state: 'system_event', thread_id: ciThreadId, created_at: new Date().toISOString() } });
+      console.warn(`[server] ${compactKeyFor(ciRoomId, ciThreadId, ciSubAgentId)}: ${reason}; paused until ${untilIso}`);
     }
 
     // ── Agent finished responding
@@ -7918,13 +7998,11 @@ wss.on('connection', (ws, req) => {
         }
       }
       // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
-      // pendingCompacts is keyed `room:thread` (or `room` for legacy room-level) — split before using as ids.
+      // pendingCompacts keys come from compactKeyFor() — parse before using as ids.
       for (const [compactKey, cs] of pendingCompacts) {
         const idx = cs.agents.indexOf(agentActorId);
         if (idx !== -1) {
-          const [roomPart, threadPart] = String(compactKey).split(':');
-          const roomId = parseInt(roomPart);
-          const dcThreadId = threadPart ? parseInt(threadPart) : null;
+          const { roomId, threadId: dcThreadId } = parseCompactKey(compactKey);
           cs.agents.splice(idx, 1);
           cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
           if (cs.agents.length === 0 || cs.completed >= cs.total) {

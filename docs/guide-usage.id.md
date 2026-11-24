@@ -718,6 +718,10 @@ Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanism
 
 Saat auto-compact berjalan, progress bar compact muncul di panel thread (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan thread. Marker ini persisten dan tetap terlihat setelah refresh halaman.
 
+Marker menyebut sesi yang di-compact: sesi sub-agent menampilkan label sub-agent (misalnya `Hugo · session compacted`), bukan nama agent induknya. Sesi sub-agent dan sesi agent induknya di thread yang sama di-compact, diberi cooldown, dan di-reset secara terpisah; compact yang gagal hanya menjeda auto-compact untuk sesi itu.
+
+Jika compact tidak bisa menurunkan ukuran sesi di bawah ambang compact (biasanya karena system prompt agent atau sub-agent sendiri sudah mendekati ambang), auto-compact untuk sesi itu dijeda 6 jam, bukan dijalankan lagi setiap selesai merespons. Satu marker menjelaskannya, misalnya `Hugo · compact could not bring the session under the auto-compact threshold (412 KB > 300 KB); the system prompt is probably too large. Auto-compact paused until 2026-11-24 12:30 UTC.` Sesi yang berhasil mengecil tidak pernah dijeda. Untuk memperbaiki penyebabnya, persingkat system prompt; jeda berakhir dengan sendirinya.
+
 Kedua mekanisme melewati sesi yang berjalan di harness Codex — Codex tidak mendukung compact.
 
 ### Pesan Proaktif

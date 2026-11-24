@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.11.9";
+var CLIENT_VERSION = "0.11.10";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -257,6 +257,7 @@ var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateL
 var { createWorkJournal } = require("./lib/work-journal");
 var { buildErrorDetail } = require("./lib/harness-error");
 var { createKnowledgeRunner } = require("./lib/knowledge-agent");
+var { createCompactGuard } = require("./lib/compact-guard");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -706,6 +707,30 @@ var AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || "
 var compactsInFlight = /* @__PURE__ */ new Set();
 var COMPACT_IDLE_MS = parseInt(process.env.COMPACT_IDLE_TIMEOUT_MS || String(2 * 60 * 1e3));
 var COMPACT_HARD_MS = parseInt(process.env.COMPACT_HARD_TIMEOUT_MS || String(10 * 60 * 1e3));
+var COMPACT_INEFFECTIVE_COOLDOWN_MS = Math.max(6e4, parseInt(process.env.COMPACT_INEFFECTIVE_COOLDOWN_MS) || 6 * 60 * 6e4);
+var compactGuard = createCompactGuard({ cooldownMs: COMPACT_INEFFECTIVE_COOLDOWN_MS });
+// After a compact: drop pre-boundary entries, then measure what the next run will resume. A session
+// still over the threshold would be auto-compacted again after every run (compact loop), so the
+// key is paused and the server gets one compact_ineffective report for the pause window.
+function finishCompact({ sessionKey, workdir, origSessionId, newSessionId, report, delayMs = 3e3 }) {
+  return new Promise((resolve) => setTimeout(async () => {
+    truncateSessionFile(workdir, origSessionId);
+    const finalId = newSessionId || origSessionId;
+    if (finalId && finalId !== origSessionId) truncateSessionFile(workdir, finalId);
+    if (!finalId) return resolve(null);
+    const size = await getSessionFileSize(workdir, finalId);
+    const pause = compactGuard.recordResult(sessionKey, size, AUTO_COMPACT_THRESHOLD);
+    if (!pause) return resolve(null);
+    console.warn(`[stoa] compact left ${finalId.slice(0, 8)}... at ${(size / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold; auto-compact paused until ${new Date(pause.until).toISOString()}`);
+    send({ type: "compact_ineffective", ...report, claude_session_id: finalId, size_kb: Math.round(size / 1024), threshold_kb: Math.round(AUTO_COMPACT_THRESHOLD / 1024), paused_until: new Date(pause.until).toISOString() });
+    resolve(pause);
+  }, delayMs));
+}
+// Auto-compact (post-run check and 60-min sweep) only for a session over the threshold, not already
+// compacting, and not paused by an ineffective compact. Manual compact_trigger bypasses this.
+function shouldAutoCompact(sessionKey, fileSize) {
+  return fileSize > AUTO_COMPACT_THRESHOLD && !compactsInFlight.has(sessionKey) && !compactGuard.isPaused(sessionKey);
+}
 function compactWithTimeout(session) {
   return new Promise((resolve, reject) => {
     let timedOut = false;
@@ -1066,8 +1091,7 @@ setInterval(async () => {
     const sessionId = session.resumeId;
     if (!sessionId) continue;
     const fileSize = await getSessionFileSize(workdir, sessionId);
-    if (fileSize <= AUTO_COMPACT_THRESHOLD) continue;
-    if (compactsInFlight.has(sessionKey)) continue;
+    if (!shouldAutoCompact(sessionKey, fileSize)) continue;
     compactsInFlight.add(sessionKey);
     const skMeta = parseSessionKey(sessionKey);
     console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB) thread=${skMeta.threadId || 0}`);
@@ -1076,10 +1100,7 @@ setInterval(async () => {
       compactsInFlight.delete(sessionKey);
       if (result?.sessionId) session.resumeId = result.sessionId;
       send({ type: "compact_complete", claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId, result: result?.content || "" });
-      setTimeout(() => {
-        truncateSessionFile(workdir, sessionId);
-        if (result?.sessionId && result.sessionId !== sessionId) truncateSessionFile(workdir, result.sessionId);
-      }, 3e3);
+      finishCompact({ sessionKey, workdir, origSessionId: sessionId, newSessionId: result?.sessionId, report: { thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId } });
     }).catch((err) => {
       compactsInFlight.delete(sessionKey);
       console.error(`[stoa] worker auto-compact error: ${err.message}`);
@@ -1850,12 +1871,7 @@ async function handleAgentMessage(msg) {
     compactWithTimeout(session).then((result) => {
       console.log(`[stoa] compact: done for ${key}`);
       send({ type: "compact_complete", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, result: result?.content || "", claude_session_id: result?.sessionId || null });
-      setTimeout(() => {
-        truncateSessionFile(key, msg.claude_session_id);
-        if (result?.sessionId && result.sessionId !== msg.claude_session_id) {
-          truncateSessionFile(key, result.sessionId);
-        }
-      }, 3e3);
+      finishCompact({ sessionKey: key, workdir: workdirResolved, origSessionId: msg.claude_session_id || session.resumeId || null, newSessionId: result?.sessionId, report: { room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null } });
     }).catch((err) => {
       console.error(`[stoa] compact error: ${err.message}`);
       send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: err.message });
@@ -2426,8 +2442,7 @@ ${allNotes}`;
       if (triggerHarness === "claude" && sessionIdForCompact && targetDir) {
         setImmediate(async () => {
           const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
-          if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
-          if (compactsInFlight.has(sessionKey)) return;
+          if (!shouldAutoCompact(sessionKey, fileSize)) return;
           const sess = sessionPool.get(sessionKey);
           if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
@@ -2438,10 +2453,7 @@ ${allNotes}`;
             compactsInFlight.delete(sessionKey);
             if (result2?.sessionId) sess.resumeId = result2.sessionId;
             send({ type: "compact_complete", room_id, result: result2?.content || "", claude_session_id: result2?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact, thread_id: postRunMeta.threadId, sub_agent_id: postRunMeta.subAgentId });
-            setTimeout(() => {
-              truncateSessionFile(targetDir, sessionIdForCompact);
-              if (result2?.sessionId && result2.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result2.sessionId);
-            }, 3e3);
+            finishCompact({ sessionKey, workdir: targetDir, origSessionId: sessionIdForCompact, newSessionId: result2?.sessionId, report: { room_id, thread_id: postRunMeta.threadId, sub_agent_id: postRunMeta.subAgentId } });
           }).catch((err) => {
             compactsInFlight.delete(sessionKey);
             console.error(`[stoa] auto-compact error: ${err.message}`);
@@ -3294,4 +3306,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, reportJournalForRecovery, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, reportJournalForRecovery, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking, finishCompact, shouldAutoCompact };
