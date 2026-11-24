@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.11.10";
+var CLIENT_VERSION = "0.11.11";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -979,6 +979,27 @@ function watchClaudeRateLimits(session, sessionEnv) {
   if (!sameClaudeAccount({ ...process.env, ...sessionEnv || {} })) return;
   session.on("rate_limit_event", (info) => reportClaudeRateLimits(parseClaudeRateLimitEvent(info)));
 }
+// Claude Code records the system prompt once per conversation and reuses that record on every resume, even when
+// a later launch passes different text (--system-prompt-snapshot, default on). Stoa restarts a session with
+// --resume whenever the prompt hash changes, so without "off" an edited prompt would not apply until a compact.
+// Older CLIs lack the flag (and the snapshot behaviour), so it is passed only when `claude --help` lists it.
+var _snapshotFlagSupported = null;
+function claudeHelpHasSnapshotFlag(helpText) {
+  return /--system-prompt-snapshot\b/.test(String(helpText || ""));
+}
+function claudeSupportsSnapshotFlag() {
+  if (_snapshotFlagSupported === null) {
+    try {
+      _snapshotFlagSupported = claudeHelpHasSnapshotFlag(require("child_process").execFileSync("claude", ["--help"], { encoding: "utf8", timeout: 1e4, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }));
+    } catch {
+      return false;
+    }
+  }
+  return _snapshotFlagSupported;
+}
+function systemPromptFlags(systemPrompt) {
+  return [...claudeSupportsSnapshotFlag() ? ["--system-prompt-snapshot", "off"] : [], "--append-system-prompt", systemPrompt];
+}
 async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null, harness = "claude" }) {
   if (harness === "claude" && rid && !compactsInFlight.has(sessionKey)) {
     await sanitizeThinking(targetDir, rid, { thirdParty, aggressive });
@@ -995,7 +1016,7 @@ async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env,
   if (targetModel) flags.push("--model", targetModel);
   if (harness === "claude") {
     if (toolsSupported === false) flags.push("--tools", "");
-    if (systemPrompt) flags.push("--append-system-prompt", systemPrompt);
+    if (systemPrompt) flags.push(...systemPromptFlags(systemPrompt));
   }
   const session = createHarnessSession(harness, { workDir: targetDir, flags, resumeId: rid || null, env, systemPrompt: harness === "codex" ? systemPrompt : null, model: targetModel });
   session._systemPromptHash = systemPromptHash || null;
@@ -1024,7 +1045,7 @@ function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, sy
   let session = sessionPool.get(key);
   if (!session) {
     const flags = [];
-    if (harness === "claude" && systemPrompt) flags.push("--append-system-prompt", systemPrompt);
+    if (harness === "claude" && systemPrompt) flags.push(...systemPromptFlags(systemPrompt));
     session = createHarnessSession(harness, { workDir: path.resolve(workdir), env: env || null, flags: flags.length ? flags : void 0, systemPrompt: harness === "codex" ? systemPrompt : null });
     session._systemPromptHash = systemPromptHash || null;
     session._harness = harness;
@@ -1228,6 +1249,7 @@ async function startHarnessUpdate(harness) {
       error = sanitizeUpdateError(`${reason}: ${r.output}`, os.homedir()) || reason;
     }
     resetClaudeScanCache();
+    _snapshotFlagSupported = null;
     const detected = await detectHarnessesAsync();
     send({ type: "harnesses_update", ...detected });
     newVersion = detected.harness_status.find((s) => s.id === harness)?.version || null;
@@ -1300,7 +1322,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract", "knowledge_add"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract", "knowledge_add", "system_prompt_fresh"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -3306,4 +3328,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, reportJournalForRecovery, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking, finishCompact, shouldAutoCompact };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, journalSync, reconcileJournal, reportJournalForRecovery, ensureSkill, prependSkills, skillManifestHash, sanitizeThinking, finishCompact, shouldAutoCompact, systemPromptFlags, claudeHelpHasSnapshotFlag };

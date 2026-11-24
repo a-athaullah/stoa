@@ -10191,6 +10191,111 @@ async function run() {
       assert.ok(!p2.includes('## Your Purpose'), 'no purpose section without description');
     });
 
+    await test("Prompt — sub-agent identity + system_prompt ride in system_prompt only for a 'system_prompt_fresh' client", async () => {
+      if (!dsWs || !dsRoomId) { console.log('    (skipped)'); return; }
+      const headers = { 'x-agent-id': String(dsActorId), 'x-agent-secret': dsSecret };
+      const RULE = 'UNIQUE_SA_RULE_45_' + 'x'.repeat(200);
+      const mk = await req('POST', `/api/actors/${dsActorId}/sub-agents`, { label: 'freshsa', tier: 'quick', system_prompt: RULE, description: 'fresh purpose' });
+      assert.strictEqual(mk.status, 201, JSON.stringify(mk.body));
+      const sa = mk.body;
+      await req('POST', `/api/rooms/${dsRoomId}/sub-agents`, { sub_agent_id: sa.id });
+      const connect = async (features) => {
+        const ready = waitForWsMessage(dsWs, m => m.type === 'agent_ready');
+        dsWs.send(JSON.stringify({ type: 'agent_connect', actor_id: dsActorId, secret: dsSecret, features }));
+        await ready;
+      };
+      const run = async () => {
+        const trig = waitForWsMessage(dsWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === sa.id, 5000);
+        const r = await req('POST', `/api/rooms/${dsRoomId}/sub-agent-trigger`, { sub_agent_id: sa.id, task: 'describe yourself please' }, headers);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const m = await trig;
+        await completeSubAgentRun(dsWs, dsRoomId, m);
+        return m;
+      };
+      try {
+        await connect([]);
+        const legacy = await run();
+        assert.ok(legacy.prompt.includes(RULE), 'old client: sub-agent instructions stay in the turn prompt');
+        assert.ok(!(legacy.system_prompt || '').includes(RULE), 'old client: not in the system prompt');
+        await connect(['system_prompt_fresh']);
+        const fresh = await run();
+        assert.ok(!fresh.prompt.includes(RULE), 'fresh client: the turn prompt must not carry the sub-agent instructions');
+        assert.ok(!fresh.prompt.includes('operating as sub-agent'), 'fresh client: identity is not repeated per turn');
+        assert.ok(fresh.system_prompt.includes(RULE) && fresh.system_prompt.includes('operating as sub-agent "freshsa"') && fresh.system_prompt.includes('## Your Purpose\nfresh purpose'), 'fresh client: identity + instructions are in the system prompt');
+        assert.ok(fresh.prompt.length < legacy.prompt.length - RULE.length + 50, 'turn prompt shrinks by the instructions');
+        assert.notStrictEqual(fresh.system_prompt_hash, legacy.system_prompt_hash);
+        // An edit changes the hash (the client then restarts the session with the new prompt).
+        await req('PATCH', `/api/sub-agents/${sa.id}`, { system_prompt: RULE + ' edited' });
+        const after = await run();
+        assert.notStrictEqual(after.system_prompt_hash, fresh.system_prompt_hash);
+        assert.ok(after.system_prompt.includes(RULE + ' edited'));
+      } finally {
+        await connect([]).catch(() => {});
+        await req('DELETE', `/api/sub-agents/${sa.id}`);
+      }
+    });
+
+    await test('Prompt — main agent identity moves to system_prompt for a fresh client (and instructions stay out of the turn)', async () => {
+      if (!dsWs || !dsRoomId) { console.log('    (skipped)'); return; }
+      const run = async () => {
+        const trig = waitForWsMessage(dsWs, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: dsRoomId }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: dsRoomId, content: 'identity placement probe' }));
+          const m = await trig;
+          await completeRun(dsWs, dsRoomId, m);
+          return m;
+        } finally { humanWs.close(); }
+      };
+      const connect = async (features) => {
+        const ready = waitForWsMessage(dsWs, m => m.type === 'agent_ready');
+        dsWs.send(JSON.stringify({ type: 'agent_connect', actor_id: dsActorId, secret: dsSecret, features }));
+        await ready;
+      };
+      try {
+        await connect([]);
+        const legacy = await run();
+        assert.ok(legacy.prompt.includes('Progress Reporting'));
+        await connect(['system_prompt_fresh']);
+        const fresh = await run();
+        assert.ok(!fresh.prompt.includes('Progress Reporting'), 'static instructions not repeated per turn');
+        assert.ok(fresh.system_prompt.includes('Progress Reporting'));
+        assert.ok(fresh.prompt.includes('identity placement probe'), 'the actual message still rides in the turn');
+      } finally { await connect([]).catch(() => {}); }
+    });
+
+    await test('sub-agent system_prompt size warning at 16KB and 48KB (advice, never a rejection)', async () => {
+      if (!dsActorId) { console.log('    (skipped)'); return; }
+      const mk = async (label, kb) => req('POST', `/api/actors/${dsActorId}/sub-agents`, { label, tier: 'quick', system_prompt: 'a'.repeat(kb * 1024) });
+      const created = [];
+      try {
+        const small = await mk('warnsmall', 15); created.push(small.body.id);
+        assert.strictEqual(small.status, 201); assert.strictEqual(small.body.warning, undefined);
+        const mid = await mk('warnmid', 17); created.push(mid.body.id);
+        assert.strictEqual(mid.status, 201); assert.ok(/16KB/.test(mid.body.warning), mid.body.warning);
+        const big = await mk('warnbig', 50); created.push(big.body.id);
+        assert.strictEqual(big.status, 201); assert.ok(/48KB/.test(big.body.warning), big.body.warning);
+        const upd = await req('PATCH', `/api/sub-agents/${small.body.id}`, { system_prompt: 'a'.repeat(49 * 1024) });
+        assert.strictEqual(upd.status, 200); assert.ok(/48KB/.test(upd.body.warning));
+        const other = await req('PATCH', `/api/sub-agents/${small.body.id}`, { description: 'x' });
+        assert.strictEqual(other.body.warning, undefined, 'no warning when system_prompt is not part of the update');
+        const over = await mk('warnover', 65);
+        assert.strictEqual(over.status, 400);
+      } finally { for (const id of created) await req('DELETE', `/api/sub-agents/${id}`); }
+    });
+
+    await test('stoa.js — system prompt flags: snapshot off only when the CLI supports it', () => {
+      const stoa = require('./stoa.js');
+      assert.strictEqual(stoa.claudeHelpHasSnapshotFlag('  --system-prompt-snapshot <on|off>  Record'), true);
+      assert.strictEqual(stoa.claudeHelpHasSnapshotFlag('  --system-prompt <prompt>'), false);
+      assert.strictEqual(stoa.claudeHelpHasSnapshotFlag(null), false);
+      const f = stoa.systemPromptFlags('PROMPT');
+      assert.deepStrictEqual(f.slice(-2), ['--append-system-prompt', 'PROMPT']);
+      assert.ok(f.length === 2 || (f[0] === '--system-prompt-snapshot' && f[1] === 'off'));
+    });
+
     await test('Cleanup — description test data', async () => {
       if (dsWs) { dsWs.close(); dsWs = null; }
       for (const sa of [dsWith, dsNone]) if (sa) await req('DELETE', `/api/sub-agents/${sa.id}`);

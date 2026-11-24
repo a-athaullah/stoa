@@ -805,6 +805,16 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 ---
 
+### Static identity / sub-agent system_prompt live in the system prompt (task #45)
+
+**Problem (2026-11-24, Hugo):** `server.js` put `identityLine` (identity, role, purpose, the sub-agent's whole `system_prompt`, output rules) into `fullPrompt`, the turn prompt, on every trigger. A resumed session therefore stored one full copy per run (Hugo: 249 user entries of ~297KB in an 86MB file). The CLI's `--append-system-prompt` was NOT the cause: it is written to the session file about twice in total.
+
+**Decision:** for a client that advertises the `system_prompt_fresh` feature, `identityLine` is appended to the composed system prompt (and so enters `system_prompt_hash`) and is left out of the turn prompt. Older clients keep the old behaviour. Memory sections, history and the task stay in the turn prompt on purpose (they change per turn).
+
+**Gotcha:** Claude Code (2.1.x) records the system prompt once per conversation and reuses it on every `--resume`, even when a later launch passes different text (`--system-prompt-snapshot`, default on) until a compact. A hash-change restart would therefore never apply an edited prompt. `stoa.js` passes `--system-prompt-snapshot off` (via `systemPromptFlags`) when `claude --help` lists the flag; older CLIs without the flag have no snapshot behaviour. Consequence: an edited prompt (room, agent, sub-agent, skill catalog) applies on the next run, and the prompt-cache prefix restarts at that point.
+
+**Convention:** long reference material belongs in a file in the workdir, read on demand, not in `system_prompt`. Creating/updating a sub-agent whose `system_prompt` exceeds 16KB or 48KB returns a `warning` field (never a rejection; hard cap stays 64KB).
+
 ## Documentation Sync
 
 ### 5-Language Requirement
