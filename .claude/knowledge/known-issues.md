@@ -297,6 +297,20 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 ---
 
+### 7. Sub-Agent Session Compacted in a Loop, Marker Named the Parent (2026-11-24)
+**Symptom:** 409 "Ara · session compacted" markers in 95 minutes in one thread. The compacted session was the sub-agent Hugo's, whose 280 KB system prompt kept every session above the auto-compact threshold even right after `/compact`.
+
+**Cause:** (a) stoa.js auto-compacted again after every run because nothing checked whether the previous compact had brought the session under the threshold. (b) server.js handled sub-agent compact events as the parent's: marker named the parent agent, failure cooldown read/written only on the `sub_agent_id IS NULL` row, `context_tokens_used` reset for every session of the parent in the thread, and the parent and sub-agent shared one `pendingCompacts`/`recentCompacts` key.
+
+**Fix (branch bug/sub-agent-system-prompt-cap, PR #297):**
+- stoa.js `finishCompact` (all three compact paths): truncates, then measures the resumed session file. Still above `AUTO_COMPACT_THRESHOLD` → `lib/compact-guard.js` pauses that session key for `COMPACT_INEFFECTIVE_COOLDOWN_MS` (default 6 h) and the agent sends one `compact_ineffective` `{ room_id?, thread_id, sub_agent_id, claude_session_id, size_kb, threshold_kb, paused_until }`. `shouldAutoCompact` (post-run check + 60-min sweep) skips a paused key. A compact that shrinks the session clears the pause; keys that shrink are never paused. Manual compact bypasses the pause. The pause lives in agent memory: an agent restart allows one more attempt (and one more report).
+- server.js: every compact event resolves `sub_agent_id` through `resolveCompactSubAgent` (`sub_agents.parent_actor_id` = sending agent). A sub_agent_id that is not the sender's (or not a positive integer) drops the event — no fallback to the parent's row. Session writes use `sub_agent_id IS ?`. Keys come from `compactKeyFor(room, thread, subAgentId)` (`room:thread:sa<id>` for sub-agents); `parseCompactKey` for restore/disconnect; thread detail `is_compacting` also reports a pending sub-agent compact. Markers and `system_event` use the sub-agent label. A sub-agent compact does not broadcast `context_update` (the context bar tracks the parents' own sessions). `compact_error` writes the 30-min cooldown even without pending state. `compact_ineffective` writes the pause (bounded to now..+24 h) and the reason into `compact_failure_cooldown_until` / `compact_failure_error` of that session row and one system_event marker.
+
+**Not a finding:**
+- Parent and sub-agent compacting the same thread at once share the thread's progress bar in the UI (`compact_start`/`compact_done` carry `thread_id` only): the first `compact_done` hides the bar while the other still runs. Markers, cooldowns and DB state are per session; only the transient bar is shared.
+
+---
+
 ## Design Constraints
 
 ### 0. max_concurrent > 1 — No Workdir File Lock

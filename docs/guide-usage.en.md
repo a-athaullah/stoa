@@ -717,6 +717,10 @@ Stoa automatically compacts agent sessions without manual intervention. Two mech
 
 When auto-compact runs, a compact progress bar appears in the thread panel (same as manual compact) and a compact marker is saved in the thread's message history. The marker persists across page refreshes.
 
+The marker names the session that was compacted: a sub-agent's session shows the sub-agent's label (for example `Hugo · session compacted`), not the parent agent's name. A sub-agent session and its parent agent's session in the same thread are compacted, cooled down, and reset independently; a failed compact pauses auto-compact only for that session.
+
+If a compact cannot bring a session below the compact threshold (usually because the agent's or sub-agent's system prompt alone is close to the threshold), auto-compact for that session pauses for 6 hours instead of running again after every response. One marker explains it, for example `Hugo · compact could not bring the session under the auto-compact threshold (412 KB > 300 KB); the system prompt is probably too large. Auto-compact paused until 2026-11-24 12:30 UTC.` Sessions that do shrink are never paused. To fix the cause, shorten the system prompt; the pause ends on its own.
+
 Both mechanisms skip sessions running on the Codex harness — Codex does not support compact.
 
 ### Proactive Messages

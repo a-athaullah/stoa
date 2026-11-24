@@ -3251,6 +3251,67 @@ async function runAsyncUnitTests() {
 
   console.log('  [Async Fetch Tests]');
 
+  // Compact loop guard (lib/compact-guard.js + stoa.js finishCompact/shouldAutoCompact): a compact that
+  // leaves the session over the threshold pauses auto-compact for that session key and reports once.
+  await uta('compact guard — pauses only the key whose compact stayed over threshold; expires; shrink clears', async () => {
+    const { createCompactGuard } = require('./lib/compact-guard');
+    let t = 1000;
+    const g = createCompactGuard({ cooldownMs: 500, now: () => t });
+    assert.strictEqual(g.recordResult('shrunk', 10, 100), null, 'session under the threshold is not paused');
+    assert.strictEqual(g.isPaused('shrunk'), false);
+    const pause = g.recordResult('stuck', 150, 100);
+    assert.deepStrictEqual(pause, { until: 1500, sizeBytes: 150 });
+    assert.strictEqual(g.isPaused('stuck'), true);
+    assert.strictEqual(g.isPaused('other'), false, 'other keys are not paused');
+    t = 1499; assert.strictEqual(g.isPaused('stuck'), true);
+    t = 1500; assert.strictEqual(g.isPaused('stuck'), false, 'pause expires after cooldown');
+    g.recordResult('stuck', 150, 100);
+    assert.strictEqual(g.recordResult('stuck', 50, 100), null);
+    assert.strictEqual(g.isPaused('stuck'), false, 'a later compact that shrinks the session clears the pause');
+  });
+
+  await uta('stoa.js finishCompact — compact still over threshold: one compact_ineffective, auto-compact paused for that key only', async () => {
+    const fsC = require('fs'), osC = require('os'), pathC = require('path');
+    const stoa = require('./stoa.js');
+    const home = fsC.mkdtempSync(pathC.join(osC.tmpdir(), 'stoa-cg-home-'));
+    const prevHome = process.env.HOME;
+    const sent = [];
+    process.env.HOME = home;
+    stoa.__setDeps({ send: (m) => sent.push(m) });
+    try {
+      const workdir = '/tmp/stoa-cg-wd';
+      const projDir = pathC.join(home, '.claude', 'projects', workdir.replace(/\//g, '-'));
+      fsC.mkdirSync(projDir, { recursive: true });
+      // 6 MB > the 5000 KB threshold ceiling; 10 KB < the 100 KB floor — holds for any configured threshold.
+      const big = JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n' + JSON.stringify({ x: 'y'.repeat(6 * 1024 * 1024) }) + '\n';
+      fsC.writeFileSync(pathC.join(projDir, 'stuck-new.jsonl'), big);
+      fsC.writeFileSync(pathC.join(projDir, 'ok-new.jsonl'), JSON.stringify({ x: 'y'.repeat(10 * 1024) }) + '\n');
+      const stuckKey = `${workdir}::7::t:70::sub:5`;
+      const okKey = `${workdir}::7::t:70`;
+      assert.strictEqual(stoa.shouldAutoCompact(stuckKey, 6 * 1024 * 1024), true, 'precondition: oversized session is auto-compacted');
+      const pause = await stoa.finishCompact({ sessionKey: stuckKey, workdir, origSessionId: 'stuck-old', newSessionId: 'stuck-new', report: { room_id: 7, thread_id: 70, sub_agent_id: 5 }, delayMs: 0 });
+      assert.ok(pause, 'compact that stayed over threshold returns the pause');
+      const reports = sent.filter(m => m.type === 'compact_ineffective');
+      assert.strictEqual(reports.length, 1);
+      assert.strictEqual(reports[0].sub_agent_id, 5);
+      assert.strictEqual(reports[0].thread_id, 70);
+      assert.strictEqual(reports[0].claude_session_id, 'stuck-new');
+      assert.ok(reports[0].size_kb >= 6 * 1024 && reports[0].size_kb > reports[0].threshold_kb, JSON.stringify(reports[0]));
+      assert.ok(Date.parse(reports[0].paused_until) > Date.now());
+      assert.strictEqual(stoa.shouldAutoCompact(stuckKey, 6 * 1024 * 1024), false, 'paused key is not auto-compacted on the next run');
+      assert.strictEqual(stoa.shouldAutoCompact(okKey, 6 * 1024 * 1024), true, 'pause does not leak to the parent session key');
+      const okPause = await stoa.finishCompact({ sessionKey: okKey, workdir, origSessionId: 'ok-old', newSessionId: 'ok-new', report: { room_id: 7, thread_id: 70, sub_agent_id: null }, delayMs: 0 });
+      assert.strictEqual(okPause, null, 'compact that shrank the session is not paused');
+      assert.strictEqual(sent.filter(m => m.type === 'compact_ineffective').length, 1, 'no report for a session that shrank');
+      assert.strictEqual(stoa.shouldAutoCompact(okKey, 6 * 1024 * 1024), true);
+      assert.ok(fsC.statSync(pathC.join(projDir, 'stuck-new.jsonl')).size > 6 * 1024 * 1024 - 1, 'boundary-first file is not truncated further');
+    } finally {
+      process.env.HOME = prevHome;
+      stoa.__resetDeps();
+      fsC.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   await uta('createSemanticIndex — worker that cannot start → state failed, search resolves null (keyword fallback)', async () => {
     const Database = require('better-sqlite3');
     const { createSemanticIndex } = require('./lib/semantic-index');
@@ -9809,6 +9870,27 @@ async function run() {
       if (!slSubAgent) { console.log('    (skipped)'); return; }
       const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'x'.repeat(2201) });
       assert.strictEqual(r.status, 400);
+    });
+
+    await test('sub-agent system_prompt > 64KB → 400 on update and create; 64KB still OK; prompt unchanged on reject', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const prompt = async () => (await req('GET', `/api/actors/${slActorId}/sub-agents`)).body.find(x => x.id === slSubAgent.id).system_prompt;
+      const before = await prompt();
+      const big = 'x'.repeat(65537);
+      const upd = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: big });
+      assert.strictEqual(upd.status, 400);
+      assert.match(upd.body.error, /64KB/);
+      const bytes = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: '\u00e9'.repeat(32769) });
+      assert.strictEqual(bytes.status, 400, 'limit counts bytes, not characters');
+      const wrongType = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: 123 });
+      assert.strictEqual(wrongType.status, 400);
+      assert.strictEqual(await prompt(), before, 'rejected update leaves the prompt alone');
+      const ok64 = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: 'y'.repeat(65536) });
+      assert.strictEqual(ok64.status, 200);
+      const clear = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: null });
+      assert.strictEqual(clear.status, 200);
+      const cr = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'bigprompt', system_prompt: big });
+      assert.strictEqual(cr.status, 400);
     });
 
     await test('GET /api/sub-agents/999999/memory — not found → 404', async () => {
@@ -19543,7 +19625,7 @@ async function run() {
   await test('Auto-thread — compact_complete resolves thread_id from session row (code check)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
     const ccHandler = src.substring(src.indexOf("msg.type === 'compact_complete'"), src.indexOf("msg.type === 'compact_complete'") + 2000);
-    assert.ok(ccHandler.includes('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id'), 'compact_complete must resolve thread_id from session row');
+    assert.ok(ccHandler.includes('SELECT thread_id FROM ai_sessions WHERE claude_session_id'), 'compact_complete must resolve thread_id from session row');
     assert.ok(ccHandler.includes('cannot resolve thread_id'), 'compact_complete must warn when thread_id unresolvable');
   });
 
@@ -19555,6 +19637,184 @@ async function run() {
     const triggerSection = src.substring(src.indexOf('compact: done for'), src.indexOf('compact: done for') + 300);
     assert.ok(triggerSection.includes('thread_id: msg.thread_id'), 'compact_trigger complete must include thread_id');
   });
+
+  // Sub-agent compact events: marker label, per-session cooldown/reset, separate pending keys,
+  // and sub_agent_id ownership. Events are sent the way stoa.js sends them (sweep path omits room_id).
+  console.log('\n[Sub-agent compact]');
+  {
+    let scA = null, scB = null, scRoomId = null, scPid = null, scSubId = null, scForeignSubId = null;
+    const scThreads = {};
+    const db = require('./db');
+    const label = '__scHugo';
+    const row = (thread, sub) => db.prepare('SELECT claude_session_id, context_tokens_used, compact_failure_cooldown_until, compact_failure_error FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS ?').get(scPid, scRoomId, thread, sub);
+    const markers = (thread) => db.prepare("SELECT content FROM messages WHERE room_id=? AND thread_id=? AND state='system_event' ORDER BY id").all(scRoomId, thread).map(m => m.content);
+    const joinHuman = async () => {
+      const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      hws.send(JSON.stringify({ type: 'join_room', room_id: scRoomId }));
+      await waitForWsMessage(hws, m => m.type === 'history');
+      const seen = [];
+      hws.on('message', d => seen.push(JSON.parse(d.toString())));
+      return { hws, seen };
+    };
+    const settle = (ms = 300) => new Promise(r => setTimeout(r, ms));
+
+    await test('Sub-agent compact — setup: agent, foreign agent, sub-agents, room, threads, sessions', async () => {
+      scA = await createOnlineTestAgent('__test-subcompact-a', '/tmp/stoa-test-subcompact-a');
+      scB = await createOnlineTestAgent('__test-subcompact-b', '/tmp/stoa-test-subcompact-b');
+      assert.ok(scA?.workdirId && scB, 'online test agents');
+      scB.ws.close();
+      const r = await req('POST', '/api/rooms', { title: '__subcompact-room__', workdir_id: scA.workdirId, participant_ids: [scA.actorId] });
+      assert.strictEqual(r.status, 200);
+      scRoomId = r.body.id;
+      testRoomIds.push(scRoomId);
+      scPid = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(scRoomId, scA.actorId).id;
+      scSubId = Number(db.prepare('INSERT INTO sub_agents (parent_actor_id, label) VALUES (?,?)').run(scA.actorId, label).lastInsertRowid);
+      scForeignSubId = Number(db.prepare('INSERT INTO sub_agents (parent_actor_id, label) VALUES (?,?)').run(scB.actorId, '__scForeign').lastInsertRowid);
+      const ins = db.prepare(`INSERT INTO ai_sessions (participant_id, room_id, thread_id, sub_agent_id, claude_session_id, status, context_tokens_used) VALUES (?,?,?,?,?,'idle',?)`);
+      for (const name of ['label', 'keys', 'cooldown', 'forged', 'ineffective']) {
+        const t = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(scRoomId, scPid, `root ${name}`).lastInsertRowid);
+        scThreads[name] = t;
+        ins.run(scPid, scRoomId, t, null, `main-${name}-${t}`, 5000);
+        ins.run(scPid, scRoomId, t, scSubId, `sub-${name}-${t}`, 7000);
+      }
+    });
+
+    await test('Sub-agent compact — markers carry the sub-agent label; only the sub-agent session is updated and reset', async () => {
+      if (!scRoomId) { console.log('    (skipped)'); return; }
+      const t = scThreads.label;
+      const { hws, seen } = await joinHuman();
+      try {
+        const compacting = waitForWsMessage(hws, m => m.type === 'system_event' && m.status === 'session compacting' && m.thread_id === t);
+        const started = waitForWsMessage(hws, m => m.type === 'compact_start' && m.thread_id === t);
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', claude_session_id: `sub-label-${t}`, thread_id: t, sub_agent_id: scSubId }));
+        assert.strictEqual((await compacting).actor_name, label, '"session compacting" names the sub-agent');
+        assert.strictEqual((await started).participants[0].name, label);
+        const done = waitForWsMessage(hws, m => m.type === 'message_new' && m.message.thread_id === t && m.message.state === 'system_event');
+        scA.ws.send(JSON.stringify({ type: 'compact_complete', room_id: scRoomId, claude_session_id: `sub-label-new-${t}`, orig_session_id: `sub-label-${t}`, thread_id: t, sub_agent_id: scSubId, result: '' }));
+        assert.strictEqual((await done).message.content, `${label} · session compacted`);
+        await settle();
+        const sub = row(t, scSubId), main = row(t, null);
+        assert.strictEqual(sub.claude_session_id, `sub-label-new-${t}`);
+        assert.strictEqual(sub.context_tokens_used, 0, 'compacted sub-agent session reset');
+        assert.strictEqual(main.claude_session_id, `main-label-${t}`, 'parent session id untouched');
+        assert.strictEqual(main.context_tokens_used, 5000, 'parent context_tokens_used untouched');
+        assert.ok(!seen.some(m => m.type === 'context_update' && m.thread_id === t), 'no context_update zeroing the parent bar');
+      } finally { hws.close(); }
+    });
+
+    await test('Sub-agent compact — parent and sub-agent compacts in one thread keep separate pending state', async () => {
+      if (!scRoomId) { console.log('    (skipped)'); return; }
+      const t = scThreads.keys;
+      const { hws, seen } = await joinHuman();
+      try {
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `main-keys-${t}`, thread_id: t, sub_agent_id: null }));
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `sub-keys-${t}`, thread_id: t, sub_agent_id: scSubId }));
+        await settle();
+        const names = seen.filter(m => m.type === 'system_event' && m.thread_id === t).map(m => m.actor_name);
+        assert.deepStrictEqual(names, ['__test-subcompact-a', label], 'each session announces its own compact');
+        const td = await req('GET', `/api/rooms/${scRoomId}/threads/${t}`);
+        assert.strictEqual(td.body.is_compacting, true, 'thread shows compacting while either is pending');
+        scA.ws.send(JSON.stringify({ type: 'compact_complete', room_id: scRoomId, claude_session_id: `main-keys-new-${t}`, orig_session_id: `main-keys-${t}`, thread_id: t, sub_agent_id: null, result: '' }));
+        await settle();
+        assert.deepStrictEqual(markers(t), ['__test-subcompact-a · session compacted'], 'parent completion does not absorb the sub-agent compact');
+        assert.strictEqual(row(t, null).context_tokens_used, 0);
+        assert.strictEqual(row(t, scSubId).context_tokens_used, 7000, 'sub-agent session not reset by the parent compact');
+        assert.ok(seen.some(m => m.type === 'context_update' && m.thread_id === t && m.actor_id === scA.actorId), 'parent compact still resets the context bar');
+        scA.ws.send(JSON.stringify({ type: 'compact_complete', room_id: scRoomId, claude_session_id: `sub-keys-new-${t}`, orig_session_id: `sub-keys-${t}`, thread_id: t, sub_agent_id: scSubId, result: '' }));
+        await settle();
+        assert.deepStrictEqual(markers(t), ['__test-subcompact-a · session compacted', `${label} · session compacted`]);
+        assert.strictEqual(row(t, scSubId).claude_session_id, `sub-keys-new-${t}`);
+      } finally { hws.close(); }
+    });
+
+    await test('Sub-agent compact — compact_error cools down the sub-agent session only', async () => {
+      if (!scRoomId) { console.log('    (skipped)'); return; }
+      const t = scThreads.cooldown;
+      scA.ws.send(JSON.stringify({ type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `sub-cooldown-${t}`, thread_id: t, sub_agent_id: scSubId }));
+      await settle();
+      scA.ws.send(JSON.stringify({ type: 'compact_error', room_id: scRoomId, thread_id: t, sub_agent_id: scSubId, error: 'compact idle timeout' }));
+      await settle();
+      const sub = row(t, scSubId), main = row(t, null);
+      assert.ok(sub.compact_failure_cooldown_until > new Date().toISOString(), 'sub-agent row gets the cooldown');
+      assert.strictEqual(sub.compact_failure_error, 'compact idle timeout');
+      assert.strictEqual(main.compact_failure_cooldown_until, null, 'parent row not cooled down');
+      // Past the 30 s recent-compact window, the cooldown is what decides.
+      db.prepare('UPDATE ai_sessions SET compact_failure_cooldown_until=? WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL').run(new Date(Date.now() + 3600_000).toISOString(), scPid, scRoomId, scThreads.forged);
+      const { hws, seen } = await joinHuman();
+      try {
+        const t2 = scThreads.forged;
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `main-forged-${t2}`, thread_id: t2, sub_agent_id: null }));
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `sub-forged-${t2}`, thread_id: t2, sub_agent_id: scSubId }));
+        await settle();
+        const names = seen.filter(m => m.type === 'system_event' && m.thread_id === t2).map(m => m.actor_name);
+        assert.deepStrictEqual(names, [label], 'cooled-down parent suppressed, sub-agent of the same thread still starts');
+        scA.ws.send(JSON.stringify({ type: 'compact_complete', room_id: scRoomId, claude_session_id: `sub-forged-${t2}`, orig_session_id: `sub-forged-${t2}`, thread_id: t2, sub_agent_id: scSubId, result: '' }));
+        await settle();
+      } finally {
+        hws.close();
+        db.prepare('UPDATE ai_sessions SET compact_failure_cooldown_until=NULL WHERE participant_id=? AND room_id=? AND thread_id=?').run(scPid, scRoomId, scThreads.forged);
+      }
+    });
+
+    await test('Sub-agent compact — sub_agent_id of another agent is ignored (no session write, marker or cooldown)', async () => {
+      if (!scRoomId) { console.log('    (skipped)'); return; }
+      const t = scThreads.forged;
+      const before = { main: row(t, null), sub: row(t, scSubId), markers: markers(t) };
+      const { hws, seen } = await joinHuman();
+      try {
+        for (const m of [
+          { type: 'auto_compact_start', room_id: scRoomId, claude_session_id: `main-forged-${t}`, thread_id: t, sub_agent_id: scForeignSubId },
+          { type: 'compact_complete', room_id: scRoomId, claude_session_id: 'forged-new', orig_session_id: `main-forged-${t}`, thread_id: t, sub_agent_id: scForeignSubId, result: '' },
+          { type: 'compact_error', room_id: scRoomId, thread_id: t, sub_agent_id: scForeignSubId, error: 'x' },
+          { type: 'compact_ineffective', room_id: scRoomId, claude_session_id: `main-forged-${t}`, thread_id: t, sub_agent_id: scForeignSubId, size_kb: 900, threshold_kb: 300 },
+          { type: 'compact_complete', room_id: scRoomId, claude_session_id: 'forged-new-2', thread_id: t, sub_agent_id: 'abc', result: '' },
+        ]) scA.ws.send(JSON.stringify(m));
+        await settle();
+        assert.deepStrictEqual(row(t, null), before.main, 'parent row unchanged');
+        assert.deepStrictEqual(row(t, scSubId), before.sub, 'own sub-agent row unchanged');
+        assert.deepStrictEqual(markers(t), before.markers, 'no marker written');
+        assert.ok(!seen.some(m => ['system_event', 'compact_start', 'compact_done', 'message_new'].includes(m.type) && (m.thread_id === t || m.message?.thread_id === t)), JSON.stringify(seen.map(m => m.type)));
+      } finally { hws.close(); }
+    });
+
+    await test('Sub-agent compact — compact_ineffective: one readable marker, cooldown on that session, next start suppressed', async () => {
+      if (!scRoomId) { console.log('    (skipped)'); return; }
+      const t = scThreads.ineffective;
+      const until = new Date(Date.now() + 6 * 3600_000).toISOString();
+      scA.ws.send(JSON.stringify({ type: 'compact_ineffective', thread_id: t, sub_agent_id: scSubId, claude_session_id: `sub-ineffective-${t}`, size_kb: 412, threshold_kb: 300, paused_until: until }));
+      await settle();
+      const m = markers(t);
+      assert.strictEqual(m.length, 1);
+      assert.ok(m[0].startsWith(`${label} · compact could not bring the session under the auto-compact threshold (412 KB > 300 KB)`), m[0]);
+      assert.ok(m[0].includes('system prompt is probably too large') && m[0].includes(`paused until ${until.slice(0, 16).replace('T', ' ')} UTC`), m[0]);
+      const sub = row(t, scSubId);
+      assert.strictEqual(sub.compact_failure_cooldown_until, until);
+      assert.ok(sub.compact_failure_error.includes('412 KB > 300 KB'));
+      assert.strictEqual(row(t, null).compact_failure_cooldown_until, null, 'parent row not paused');
+      const { hws, seen } = await joinHuman();
+      try {
+        scA.ws.send(JSON.stringify({ type: 'auto_compact_start', claude_session_id: `sub-ineffective-${t}`, thread_id: t, sub_agent_id: scSubId }));
+        await settle();
+        assert.ok(!seen.some(x => x.type === 'system_event' && x.thread_id === t), 'paused sub-agent session does not start a compact');
+      } finally { hws.close(); }
+      // A pause window from the agent is capped at 24 h.
+      scA.ws.send(JSON.stringify({ type: 'compact_ineffective', room_id: scRoomId, thread_id: t, sub_agent_id: null, claude_session_id: `main-ineffective-${t}`, size_kb: 400, threshold_kb: 300, paused_until: '2099-01-01T00:00:00.000Z' }));
+      await settle();
+      assert.ok(Date.parse(row(t, null).compact_failure_cooldown_until) <= Date.now() + 24 * 3600_000 + 1000);
+      assert.ok(markers(t)[1].startsWith('__test-subcompact-a · compact could not'), 'parent marker uses the agent name');
+    });
+
+    await test('Sub-agent compact — cleanup', async () => {
+      if (scRoomId) {
+        await req('PATCH', `/api/rooms/${scRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${scRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== scRoomId);
+      }
+      db.prepare('DELETE FROM sub_agents WHERE id IN (?,?)').run(scSubId, scForeignSubId);
+      if (scA?.ws) scA.ws.close();
+      for (const a of [scA, scB]) if (a?.actorId) { await req('DELETE', `/api/actors/${a.actorId}`); orphanActorIds = orphanActorIds.filter(id => id !== a.actorId); }
+    });
+  }
 
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
