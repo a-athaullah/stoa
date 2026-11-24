@@ -9093,9 +9093,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const agentHasSkillCache = agentFeatures.get(ai.actor_id)?.has('skills') === true;
   const inlineSkills = !agentHasSkillCache && skillRefs.length ? inlineSkillPreamble(skillRefs) : '';
 
+  // Identity (and, for a sub-agent, its whole system_prompt) is static per session, so a client that
+  // advertises 'system_prompt_fresh' gets it in the system prompt: written once instead of once per turn
+  // into the session file. Older clients keep it in the turn prompt (their resumed sessions would ignore a changed one).
+  const identityInSystem = agentFeatures.get(ai.actor_id)?.has('system_prompt_fresh') === true;
   const fullPrompt = [
     inlineSkills,
-    identityLine,
+    identityInSystem ? '' : identityLine,
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
@@ -9160,7 +9164,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       const skillCatalog = stoaTools ? skills.catalog() : '';
       const baseSysPrompt = [getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT, skillCatalog].filter(Boolean).join('\n\n');
       const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;
-      const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw);
+      const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw) + (identityInSystem ? '\n\n---\n\n' + identityLine : '');
       const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
