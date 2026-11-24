@@ -9811,6 +9811,27 @@ async function run() {
       assert.strictEqual(r.status, 400);
     });
 
+    await test('sub-agent system_prompt > 64KB → 400 on update and create; 64KB still OK; prompt unchanged on reject', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const prompt = async () => (await req('GET', `/api/actors/${slActorId}/sub-agents`)).body.find(x => x.id === slSubAgent.id).system_prompt;
+      const before = await prompt();
+      const big = 'x'.repeat(65537);
+      const upd = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: big });
+      assert.strictEqual(upd.status, 400);
+      assert.match(upd.body.error, /64KB/);
+      const bytes = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: '\u00e9'.repeat(32769) });
+      assert.strictEqual(bytes.status, 400, 'limit counts bytes, not characters');
+      const wrongType = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: 123 });
+      assert.strictEqual(wrongType.status, 400);
+      assert.strictEqual(await prompt(), before, 'rejected update leaves the prompt alone');
+      const ok64 = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: 'y'.repeat(65536) });
+      assert.strictEqual(ok64.status, 200);
+      const clear = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { system_prompt: null });
+      assert.strictEqual(clear.status, 200);
+      const cr = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'bigprompt', system_prompt: big });
+      assert.strictEqual(cr.status, 400);
+    });
+
     await test('GET /api/sub-agents/999999/memory — not found → 404', async () => {
       const r = await req('GET', '/api/sub-agents/999999/memory');
       assert.strictEqual(r.status, 404);
