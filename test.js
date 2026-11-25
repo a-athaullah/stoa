@@ -3442,7 +3442,7 @@ async function runAsyncUnitTests() {
 
   // pm2 repair (lib/pm2-repair.js, task #47)
   {
-    const { createPm2Repair, resolvePm2, repairBlocker, isLocalMachine, spawnRunner, capOutput, OUTPUT_CAP } = require('./lib/pm2-repair');
+    const { createPm2Repair, resolvePm2, repairBlocker, envRepairBlock, isLocalMachine, spawnRunner, capOutput, OUTPUT_CAP } = require('./lib/pm2-repair');
     const fsR = require('fs'), osR = require('os'), pathR = require('path');
     const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
     const mkRepair = (o = {}) => {
@@ -3465,6 +3465,12 @@ async function runAsyncUnitTests() {
       assert.strictEqual(repairBlocker({ ...ok, local: false, supervised: false }), 'not_local');
       assert.strictEqual(repairBlocker({ ...ok, supervised: false, busy: true }), 'not_supervised');
       assert.strictEqual(repairBlocker({ ...ok, busy: true }), 'repair_in_progress');
+      const combos = [[true, true, null], [true, false, 'not_supervised'], [false, true, 'not_local'], [false, false, 'not_local']];
+      for (const [local, supervised, want] of combos) {
+        assert.strictEqual(envRepairBlock({ envUnhealthy: true, local, supervised }), want, `local=${local} pm2=${supervised}`);
+        assert.strictEqual(envRepairBlock({ envUnhealthy: false, local, supervised }), null, 'healthy agent has nothing to block');
+        assert.strictEqual(repairBlocker({ ...ok, local, supervised }), want, 'endpoint 409 = the same block');
+      }
       const here = { hostname: 'Aans-Mac.local', platform: 'darwin' };
       assert.strictEqual(isLocalMachine({ hostname: 'aans-mac.LOCAL', platform: 'darwin' }, here), true);
       assert.strictEqual(isLocalMachine({ hostname: 'kira', platform: 'darwin' }, here), false);
@@ -26273,6 +26279,8 @@ async function run() {
       assert.strictEqual(a.env_unhealthy, false);
       assert.strictEqual(a.env_unhealthy_reason, null);
       assert.strictEqual(a.repairable, false, 'healthy agent is not repairable');
+      assert.strictEqual(a.repair_block, null, 'healthy → no block, even though the remote twin is not local');
+      assert.strictEqual((await actorRow(remote.actorId)).repair_block, null);
       assert.strictEqual(a.repair_state, null);
     });
 
@@ -26303,12 +26311,14 @@ async function run() {
       assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false, 'non-boolean healthy ignored');
       const b = await unhealthy(local, 'os.userInfo() failed:\n' + 'x'.repeat(500));
       assert.strictEqual(b.repairable, true);
+      assert.strictEqual(b.repair_block, null, 'repairable → no block');
       assert.strictEqual(b.reason.length, 200, 'reason capped');
       assert.ok(!b.reason.includes('\n'));
       const a = await actorRow(local.actorId);
       assert.strictEqual(a.env_unhealthy, true);
       assert.strictEqual(a.env_unhealthy_reason, b.reason);
       assert.strictEqual(a.repairable, true);
+      assert.strictEqual(a.repair_block, null);
       await unhealthy(local);
       assert.strictEqual((await actorRow(local.actorId)).env_unhealthy_reason, 'os.userInfo() failed: No user exists for uid 501', 'new reason replaces the old');
     });
@@ -26316,9 +26326,28 @@ async function run() {
     await test('agent repair — agent on another machine → 409 not_local, not repairable', async () => {
       const b = await unhealthy(remote);
       assert.strictEqual(b.repairable, false);
+      assert.strictEqual(b.repair_block, 'not_local');
+      assert.strictEqual((await actorRow(remote.actorId)).repair_block, 'not_local');
       const r = await repair(remote.actorId);
       assert.strictEqual(r.status, 409, r.raw);
       assert.strictEqual(r.body.error, 'not_local');
+    });
+
+    await test('agent repair — remote agent without PM2 → repair_block not_local (not_local wins over not_supervised)', async () => {
+      const bare = await register('__test-repair-remote-bare');
+      const st = waitForWsMessage(human, m => m.type === 'actor_status' && m.actor?.id === bare.actorId);
+      bare.ws = await connectAs(bare, { boot_id: 'eeeeeeeeeeeeeeee', machine: { ...hostMachine, hostname: 'some-other-box' } });
+      const s0 = (await st).actor;
+      assert.strictEqual(s0.repair_block, null, 'actor_status carries repair_block (healthy on connect)');
+      assert.strictEqual(s0.repairable, false);
+      try {
+        const b = await unhealthy(bare);
+        assert.strictEqual(b.repair_block, 'not_local');
+        assert.strictEqual(b.repairable, false);
+        assert.strictEqual((await actorRow(bare.actorId)).repair_block, 'not_local');
+        const r = await repair(bare.actorId);
+        assert.strictEqual(r.status, 409, r.raw); assert.strictEqual(r.body.error, 'not_local');
+      } finally { await closeWs(bare.ws); }
     });
 
     await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health (broadcast)', async () => {
@@ -26326,6 +26355,7 @@ async function run() {
       await closeWs(remote.ws);
       const c = await cleared;
       assert.strictEqual(c.repairable, false);
+      assert.strictEqual(c.repair_block, null, 'block clears with the env health');
       const r = await repair(remote.actorId);
       assert.strictEqual(r.status, 409, r.raw);
       assert.strictEqual(r.body.error, 'agent_offline');
@@ -26398,12 +26428,15 @@ async function run() {
       local.ws = await connectAs(local, { boot_id: 'dddddddddddddddd', machine: hostMachine });
       const b = await unhealthy(local);
       assert.strictEqual(b.repairable, false, 'pm2 update cannot bring back an agent PM2 does not run');
+      assert.strictEqual(b.repair_block, 'not_supervised');
+      assert.strictEqual((await actorRow(local.actorId)).repair_block, 'not_supervised');
       const r = await repair(local.actorId);
       assert.strictEqual(r.status, 409, r.raw); assert.strictEqual(r.body.error, 'not_supervised');
       const healthy = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === local.actorId && m.env_unhealthy === false);
       local.ws.send(JSON.stringify({ type: 'env_health', healthy: true }));
       const h = await healthy;
       assert.strictEqual(h.reason, null);
+      assert.strictEqual(h.repair_block, null);
       assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
     });
 

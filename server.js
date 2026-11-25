@@ -27,7 +27,7 @@ const { createSubAgents } = require('./lib/sub-agents');
 const { createSkills } = require('./lib/skills');
 const { createSkillsHttp } = require('./lib/skills-http');
 const { createHarnessAccounts, MACHINE_ID_RE } = require('./lib/harness-accounts');
-const { createPm2Repair, resolvePm2, repairBlocker, isLocalMachine, isExecutableFile } = require('./lib/pm2-repair');
+const { createPm2Repair, resolvePm2, repairBlocker, envRepairBlock, isLocalMachine, isExecutableFile } = require('./lib/pm2-repair');
 const { cleanReason: cleanEnvReason } = require('./lib/env-canary');
 const { claudeModelKey, claudeModelLabel, rankClaudeModelIds, KNOWN_HARNESSES, validateHarnessStatus, sanitizeUpdateError } = require('./harness-session');
 const { createAutomationCrud } = require('./lib/automation-crud');
@@ -5298,10 +5298,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const actor = db.prepare('SELECT id FROM actors WHERE id=? AND type=?').get(actorId, 'ai');
     if (!actor) return json(res, { error: 'agent not found' }, 404);
     const blocker = repairBlocker({
+      ...agentRepairFacts(actorId),
       online: agentClients.get(actorId)?.readyState === 1,
-      envUnhealthy: agentEnvHealth.has(actorId),
-      local: isLocalMachine(agentMachines.get(actorId)),
-      supervised: agentSupervisors.get(actorId) === 'pm2',
       busy: pm2Repair.busy(),
     });
     if (blocker) return json(res, { error: blocker }, 409);
@@ -6019,16 +6017,21 @@ const pm2Repair = createPm2Repair({
   reconnectTimeoutMs: positiveIntEnv('PM2_REPAIR_RECONNECT_TIMEOUT_MS', undefined),
   log: (m) => console.log(m),
 });
-function agentRepairable(actorId) {
-  return agentEnvHealth.has(actorId) && agentSupervisors.get(actorId) === 'pm2' && isLocalMachine(agentMachines.get(actorId));
+function agentRepairFacts(actorId) {
+  return {
+    envUnhealthy: agentEnvHealth.has(actorId),
+    local: isLocalMachine(agentMachines.get(actorId)),
+    supervised: agentSupervisors.get(actorId) === 'pm2',
+  };
 }
 function envHealthFields(actorId) {
   const h = agentEnvHealth.get(actorId);
-  return { env_unhealthy: !!h, env_unhealthy_reason: h?.reason ?? null, repairable: agentRepairable(actorId), repair_state: pm2Repair.state(actorId) };
+  const block = envRepairBlock(agentRepairFacts(actorId));
+  return { env_unhealthy: !!h, env_unhealthy_reason: h?.reason ?? null, repairable: !!h && !block, repair_block: block, repair_state: pm2Repair.state(actorId) };
 }
 function broadcastAgentEnvStatus(actorId) {
   const f = envHealthFields(actorId);
-  broadcastGlobal({ type: 'agent_env_status', actor_id: actorId, env_unhealthy: f.env_unhealthy, reason: f.env_unhealthy_reason, repairable: f.repairable, repair_state: f.repair_state });
+  broadcastGlobal({ type: 'agent_env_status', actor_id: actorId, env_unhealthy: f.env_unhealthy, reason: f.env_unhealthy_reason, repairable: f.repairable, repair_block: f.repair_block, repair_state: f.repair_state });
 }
 const agentClaudeCandidates = new Map(); // actor_id → { cli_version, candidates: string[] } (scanned from the agent's claude binary)
 const MAX_CLAUDE_CANDIDATES = 50;
