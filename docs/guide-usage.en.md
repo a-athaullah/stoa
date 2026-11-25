@@ -686,6 +686,21 @@ To sign out the agent's Claude account (e.g., to switch accounts or test the re-
 
 > Both commands are restricted to rooms with exactly one AI agent, because Claude credentials are machine-global — re-authenticating affects all agents on that machine.
 
+### Login Session Health
+
+Stoa monitors each agent's login environment roughly every 60 seconds. The check verifies that the OS user identity is still accessible — a condition that can silently break when macOS switches login sessions (for example, when WindowServer restarts), leaving daemon processes such as PM2 and the agent stranded in an old session.
+
+**When the check fails three times in a row**, a "Login session is stale" banner appears on the agent's card in **Settings > AI Agent**. The banner shows the reason reported by the agent. It disappears automatically once the agent reports a healthy environment.
+
+**Repair** — if the agent runs on the same machine as the Stoa server and is managed by PM2, a **Repair** button appears in the banner. Click it and confirm — the repair runs `pm2 update` on the agent's machine, which **restarts all PM2-managed agent processes** and stops any work they are running. After the restart, agents reconnect and the banner clears; a "Repair finished" toast confirms success. If the repair fails, a toast shows the error and the Repair button returns.
+
+If the agent is on a different machine or is not managed by PM2, the banner instead shows a prompt to run `pm2 update` manually in a Terminal on the agent's machine.
+
+**Repair constraints:**
+- Only one repair can run at a time.
+- There is a ~30-second cooldown after each repair before another can start.
+- If `pm2 update` exits but the agent does not reconnect within 2 minutes, the repair is marked as failed; the agent must be recovered manually from the Terminal.
+
 ### Working Directories
 
 Each agent has one or more **working directories** — these are the folders where the agent's Claude session runs. You can:
