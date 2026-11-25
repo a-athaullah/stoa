@@ -30,6 +30,8 @@ function initGlobalWs() {
       if (msg.type === 'harness_accounts_updated' && typeof uaHandleUpdated === 'function') uaHandleUpdated(msg);
       if (msg.type === 'agent_restart_status' && typeof sHandleRestartStatus === 'function') sHandleRestartStatus(msg);
       if (msg.type === 'harness_update_status' && typeof sHandleHarnessUpdateStatus === 'function') sHandleHarnessUpdateStatus(msg);
+      if (msg.type === 'agent_env_status' && typeof sHandleEnvStatus === 'function') sHandleEnvStatus(msg);
+      if (msg.type === 'agent_repair_status' && typeof sHandleRepairStatus === 'function') sHandleRepairStatus(msg);
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'actor_updated') handleActorUpdated(msg);
@@ -170,6 +172,10 @@ function handleActorStatus(actor) {
   if (typeof sSyncCliUi === 'function') {
     const merged = allActors.find(a => a.id === actor.id);
     sSyncCliUi(merged ? { ...merged, ...actor } : actor, actor);
+  }
+  if (typeof sSyncEnvUi === 'function') {
+    const merged = allActors.find(a => a.id === actor.id);
+    sSyncEnvUi(merged ? { ...merged, ...actor } : actor, actor);
   }
   // Update detail header action buttons if this agent is selected
   if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId === actor.id) {

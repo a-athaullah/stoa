@@ -223,7 +223,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.11.11";
+var CLIENT_VERSION = "0.11.12";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -258,8 +258,17 @@ var { createWorkJournal } = require("./lib/work-journal");
 var { buildErrorDetail } = require("./lib/harness-error");
 var { createKnowledgeRunner } = require("./lib/knowledge-agent");
 var { createCompactGuard } = require("./lib/compact-guard");
+var { createEnvCanary, parseIntervalMs: parseCanaryIntervalMs } = require("./lib/env-canary");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
+// Stale login session detection (task #47): reported to the server, which offers Repair (pm2 update).
+var envCanary = createEnvCanary({
+  userInfo: () => os.userInfo(),
+  execFile: (...a) => require("child_process").execFile(...a),
+  send: (m) => send(m),
+  intervalMs: parseCanaryIntervalMs(process.env.ENV_CANARY_INTERVAL_MS),
+  log: (m) => console.warn(m)
+});
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
 delete process.env.STOA_CF_ACCESS_CLIENT_ID;
 delete process.env.STOA_CF_ACCESS_CLIENT_SECRET;
@@ -1322,7 +1331,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract", "knowledge_add", "system_prompt_fresh"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update", "knowledge_extract", "knowledge_add", "system_prompt_fresh", "env_health"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -1406,6 +1415,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === "agent_ready") {
     consecutiveFailures = 0;
     setOutboxReady(true);
+    envCanary.connected();
     console.log("[stoa] Ready, waiting for triggers...");
     if (msg.recover_journal === true) {
       try {
@@ -3267,6 +3277,7 @@ if (ACTOR_TYPE === "ai") {
   setInterval(reconcileJournal, JOURNAL_RECONCILE_MS).unref();
   preConnectUpdate().then(() => {
     connect();
+    envCanary.start();
     updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
     setInterval(() => sweepStaleTriggers(Date.now()), STALE_SWEEP_INTERVAL_MS);
   });

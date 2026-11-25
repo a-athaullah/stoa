@@ -687,6 +687,21 @@ Untuk keluar dari akun Claude agent (misalnya untuk ganti akun atau test flow re
 
 > Kedua command ini dibatasi untuk room dengan tepat satu AI agent, karena kredensial Claude bersifat global per mesin — re-autentikasi berlaku untuk semua agent di mesin tersebut.
 
+### Kesehatan Sesi Login
+
+Stoa memantau lingkungan login tiap agent sekitar setiap 60 detik. Pemeriksaan ini memverifikasi bahwa identitas pengguna OS masih dapat diakses — kondisi yang bisa diam-diam bermasalah saat macOS berganti sesi login (misalnya saat WindowServer restart), meninggalkan proses daemon seperti PM2 dan agent di sesi lama.
+
+**Jika pemeriksaan gagal tiga kali berturut-turut**, banner "Login session is stale" muncul pada kartu agent di **Settings > AI Agent**. Banner menampilkan alasan yang dilaporkan agent. Banner hilang otomatis setelah agent melaporkan lingkungan yang sehat kembali.
+
+**Repair** — jika agent berjalan di mesin yang sama dengan server Stoa dan dikelola oleh PM2, tombol **Repair** muncul di banner. Klik lalu konfirmasi — repair menjalankan `pm2 update` di mesin agent, yang **me-restart semua proses agent yang dikelola PM2** dan menghentikan pekerjaan yang sedang berjalan. Setelah restart, agent tersambung kembali dan banner hilang; toast "Repair finished" mengonfirmasi keberhasilan. Jika repair gagal, toast menampilkan error dan tombol Repair kembali muncul.
+
+Jika agent berada di mesin lain atau tidak dikelola PM2, banner menampilkan panduan untuk menjalankan `pm2 update` secara manual di Terminal pada mesin agent tersebut.
+
+**Batasan repair:**
+- Hanya satu repair yang bisa berjalan pada satu waktu.
+- Ada cooldown sekitar 30 detik setelah tiap repair sebelum repair berikutnya bisa dimulai.
+- Jika `pm2 update` selesai tapi agent tidak tersambung kembali dalam 2 menit, repair ditandai gagal; agent harus dipulihkan secara manual dari Terminal.
+
 ### Working Directory
 
 Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:

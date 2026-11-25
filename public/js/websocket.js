@@ -672,6 +672,7 @@ async function resyncActors() {
   let fresh;
   try { fresh = await fjson('/api/actors'); } catch { return; }
   if (seq !== _actorResyncSeq || !Array.isArray(fresh)) return;
+  if (typeof sResyncEnvHealth === 'function') sResyncEnvHealth(fresh);
   for (const f of fresh) {
     if (!f || !Number.isInteger(f.id)) continue;
     const known = allActors.find(x => x.id === f.id);

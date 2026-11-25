@@ -209,6 +209,11 @@ function waitUp(port, tries = 50) {
     STOA_UPDATE_REPO_DIR: path.join(tmpUpdateDir, 'live'),
     STOA_UPDATE_STATE_FILE: path.join(tmpUpdateDir, 'update-state.json'),
     STOA_TEST_PROCESS_MANAGER: 'launchd',
+    // Repair (pm2 update) runs a fake pm2 test.js writes here — never the real daemon — and resolves
+    // fast enough for the cooldown / agent-did-not-return tests.
+    STOA_TEST_PM2_BIN: path.join(tmpUpdateDir, 'fake-pm2', 'pm2'),
+    PM2_REPAIR_COOLDOWN_MS: '300',
+    PM2_REPAIR_RECONNECT_TIMEOUT_MS: '1500',
     // Venice platforms are pinned to api.venice.ai; test.js serves a mock Venice on this loopback port
     // (honoured only with STOA_TEST=1, see lib/venice.js veniceBaseUrl).
     STOA_TEST_VENICE_PORT: String(await getFreePort()),

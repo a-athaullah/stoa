@@ -27,6 +27,8 @@ const { createSubAgents } = require('./lib/sub-agents');
 const { createSkills } = require('./lib/skills');
 const { createSkillsHttp } = require('./lib/skills-http');
 const { createHarnessAccounts, MACHINE_ID_RE } = require('./lib/harness-accounts');
+const { createPm2Repair, resolvePm2, repairBlocker, envRepairBlock, isLocalMachine, isExecutableFile } = require('./lib/pm2-repair');
+const { cleanReason: cleanEnvReason } = require('./lib/env-canary');
 const { claudeModelKey, claudeModelLabel, rankClaudeModelIds, KNOWN_HARNESSES, validateHarnessStatus, sanitizeUpdateError } = require('./harness-session');
 const { createAutomationCrud } = require('./lib/automation-crud');
 const { createSlackHistory } = require('./lib/slack-history');
@@ -4563,7 +4565,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, default_model, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => {
-      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: publicHarnessStatus(r.id), supervisor: agentSupervisors.get(r.id) ?? null, restart_state: agentRestarts.get(r.id)?.state ?? null };
+      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: publicHarnessStatus(r.id), supervisor: agentSupervisors.get(r.id) ?? null, restart_state: agentRestarts.get(r.id)?.state ?? null, ...envHealthFields(r.id) };
       if (r.type === 'ai') {
         const h = r.adapter || 'claude';
         out.harness_default_model = getHarnessDefaultModel(r.id, h);
@@ -5287,6 +5289,25 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true, state: 'requested' });
   }
 
+  // POST /api/actors/:id/repair — agent stuck in a stale login session (env_unhealthy): run `pm2 update`
+  // from the server's own (launchd, healthy) session. Restarts EVERY agent of this machine; the UI
+  // confirms first. Human sessions only, like restart (not in lib/agent-scope.js).
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/repair$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare('SELECT id FROM actors WHERE id=? AND type=?').get(actorId, 'ai');
+    if (!actor) return json(res, { error: 'agent not found' }, 404);
+    const blocker = repairBlocker({
+      ...agentRepairFacts(actorId),
+      online: agentClients.get(actorId)?.readyState === 1,
+      busy: pm2Repair.busy(),
+    });
+    if (blocker) return json(res, { error: blocker }, 409);
+    if (!pm2Repair.start(actorId, agentBootIds.get(actorId))) return json(res, { error: 'repair_in_progress' }, 409);
+    console.log(`[agent] Actor #${actorId} repair (pm2 update) requested from UI`);
+    return json(res, { ok: true, repair_state: 'requested' }, 202);
+  }
+
   // POST /api/actors/:id/harnesses/check — ask agent to re-detect harnesses
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/harnesses\/check$/)) {
     if (!requireAuth(req, res, url)) return;
@@ -5974,6 +5995,44 @@ function setAgentRestartState(actorId, state, extra = {}) {
   else if (entry) entry.state = state;
   broadcastGlobal({ type: 'agent_restart_status', actor_id: actorId, state, ...extra });
 }
+
+// Stale login session (task #47): actor_id → { healthy:false, reason, since } while the agent's canary
+// (lib/env-canary.js) reports env_unhealthy. Dropped on disconnect — the agent repeats it on reconnect.
+const agentEnvHealth = new Map();
+const agentMachines = new Map(); // actor_id → { hostname, platform } from agent_connect (repair locality)
+function positiveIntEnv(name, fallback) {
+  const n = parseInt(process.env[name], 10);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+// Under STOA_TEST=1 (run-tests.js) only the fake pm2 at STOA_TEST_PM2_BIN is ever run — never the real
+// daemon, even when that variable is missing.
+const testPm2Bin = process.env.STOA_TEST === '1' ? (process.env.STOA_TEST_PM2_BIN || '') : null;
+const pm2Repair = createPm2Repair({
+  onState: (actorId, state, extra) => {
+    broadcastGlobal({ type: 'agent_repair_status', actor_id: actorId, repair_state: state, ...extra });
+    broadcastAgentEnvStatus(actorId);
+  },
+  resolveBinary: testPm2Bin !== null ? () => (testPm2Bin && isExecutableFile(testPm2Bin) ? testPm2Bin : null) : resolvePm2,
+  cooldownMs: positiveIntEnv('PM2_REPAIR_COOLDOWN_MS', undefined),
+  reconnectTimeoutMs: positiveIntEnv('PM2_REPAIR_RECONNECT_TIMEOUT_MS', undefined),
+  log: (m) => console.log(m),
+});
+function agentRepairFacts(actorId) {
+  return {
+    envUnhealthy: agentEnvHealth.has(actorId),
+    local: isLocalMachine(agentMachines.get(actorId)),
+    supervised: agentSupervisors.get(actorId) === 'pm2',
+  };
+}
+function envHealthFields(actorId) {
+  const h = agentEnvHealth.get(actorId);
+  const block = envRepairBlock(agentRepairFacts(actorId));
+  return { env_unhealthy: !!h, env_unhealthy_reason: h?.reason ?? null, repairable: !!h && !block, repair_block: block, repair_state: pm2Repair.state(actorId) };
+}
+function broadcastAgentEnvStatus(actorId) {
+  const f = envHealthFields(actorId);
+  broadcastGlobal({ type: 'agent_env_status', actor_id: actorId, env_unhealthy: f.env_unhealthy, reason: f.env_unhealthy_reason, repairable: f.repairable, repair_block: f.repair_block, repair_state: f.repair_state });
+}
 const agentClaudeCandidates = new Map(); // actor_id → { cli_version, candidates: string[] } (scanned from the agent's claude binary)
 const MAX_CLAUDE_CANDIDATES = 50;
 
@@ -6652,6 +6711,10 @@ wss.on('connection', (ws, req) => {
       agentBootIds.set(agentActorId, bootId);
       const restart = agentRestarts.get(agentActorId);
       if (restart && (!bootId || bootId !== restart.boot_id)) setAgentRestartState(agentActorId, 'done');
+      const m = msg.machine;
+      agentMachines.set(agentActorId, m && typeof m === 'object' && typeof m.hostname === 'string' && typeof m.platform === 'string'
+        ? { hostname: m.hostname.slice(0, 200), platform: m.platform.slice(0, 20) } : null);
+      pm2Repair.agentConnected(agentActorId, bootId);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       if (EXPECTED_CLIENT_VERSION && msg.client_version && msg.client_version.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
         console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);
@@ -6663,7 +6726,7 @@ wss.on('connection', (ws, req) => {
       harnessAccounts.agentConnected(agentActorId, msg.machine);
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
-      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null, supervisor: agentSupervisors.get(agentActorId), restart_state: agentRestarts.get(agentActorId)?.state ?? null } });
+      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null, supervisor: agentSupervisors.get(agentActorId), restart_state: agentRestarts.get(agentActorId)?.state ?? null, ...envHealthFields(agentActorId) } });
       // R23: push all room settings so agent is always in sync regardless of connect order.
       const agentRooms = db.prepare("SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?").all(agentActorId).map(r => r.room_id);
       for (const rid of agentRooms) {
@@ -6691,6 +6754,18 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'claude_md_import', workdir: wd.path }));
       }
       if (unmigratedWds.length) console.log(`[claude_md] requested import for ${unmigratedWds.length} workdir(s) of Actor #${agentActorId}`);
+    }
+
+    // ── Agent's stale login session canary changed state (lib/env-canary.js)
+    if (msg.type === 'env_health' && agentActorId && typeof msg.healthy === 'boolean') {
+      const was = agentEnvHealth.get(agentActorId);
+      if (msg.healthy) agentEnvHealth.delete(agentActorId);
+      else agentEnvHealth.set(agentActorId, { healthy: false, reason: cleanEnvReason(msg.reason), since: was?.since ?? Date.now() });
+      const now = agentEnvHealth.get(agentActorId);
+      if (!!was !== !!now || was?.reason !== now?.reason) {
+        console.log(`[agent] Actor #${agentActorId} env ${now ? `unhealthy: ${now.reason}` : 'healthy again'}`);
+        broadcastAgentEnvStatus(agentActorId);
+      }
     }
 
     // ── Agent acks a manual restart request (only meaningful while one is outstanding)
@@ -7962,6 +8037,8 @@ wss.on('connection', (ws, req) => {
       }
       agentSupervisors.delete(agentActorId);
       agentBootIds.delete(agentActorId);
+      agentMachines.delete(agentActorId);
+      if (agentEnvHealth.delete(agentActorId)) broadcastAgentEnvStatus(agentActorId);
       // Timings survive (runs outlive a reconnect); the queue snapshot is rebuilt from the next report.
       for (const id of agentRunQueues.get(agentActorId)?.queued || []) clearQueuedPosition(id);
       agentRunQueues.delete(agentActorId);

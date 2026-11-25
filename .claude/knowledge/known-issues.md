@@ -815,6 +815,16 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 **Convention:** long reference material belongs in a file in the workdir, read on demand, not in `system_prompt`. Creating/updating a sub-agent whose `system_prompt` exceeds 16KB or 48KB returns a `warning` field (never a rejection; hard cap stays 64KB).
 
+### Stale login session: env_unhealthy + Repair via `pm2 update` (task #47)
+
+**Problem (2026-11-24):** WindowServer died, macOS started a new login session; the PM2 daemon and all agents stayed in the old one (`os.userInfo()` → "No user exists for uid 501", `/usr/bin/id` fails, Chromium and git over SSH break) while still looking online. The `com.PM2` launchd job does not help: its `pm2 resurrect` attaches to the old daemon that is still alive.
+
+**Decision:** agents detect it with a canary (`lib/env-canary.js`), the UI shows a banner, and Repair runs `pm2 update` from the server (launchd = healthy session). Only agents on the server's own machine and under PM2 are repairable. Repair restarts EVERY agent of the machine; Aan accepted that (2026-11-24) over leaving broken agents connected, so there is no idle guard — the UI confirm dialog says so. Automatic repair (stage 3) is not built.
+
+**What if pm2 is missing or `pm2 update` fails half way?** Missing → `failed` ("pm2 not found on this machine") before anything runs. Non-zero exit or 120 s timeout → `failed` with the reason, output tail in `logs/stoa.log`; the agents may be down at that point (pm2 already killed the daemon) and need a manual `pm2 resurrect`/`pm2 update` from a Terminal — the server never retries on its own. pm2 runs detached with a file (not a pipe) for output, so a server crash mid-update does not kill it. A success whose agent never reconnects becomes `failed` after 120 s.
+
+**Gotcha:** `machineIdentity()` (lib/harness-probe.js) reads the user via `osUser()`, which tolerates the `os.userInfo()` throw. Keep it that way: otherwise `agent_connect.machine` is null in a stale session and the agent is never `repairable`.
+
 ## Documentation Sync
 
 ### 5-Language Requirement
