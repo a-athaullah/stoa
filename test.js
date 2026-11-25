@@ -3349,6 +3349,228 @@ async function runAsyncUnitTests() {
     assert.strictEqual(reads.at(-1), require('path').join('/home/u', '.pm2', 'pm2.pid'), 'default PM2_HOME = ~/.pm2');
   });
 
+  // Stale login session canary (lib/env-canary.js, task #47)
+  {
+    const { createEnvCanary, parseIntervalMs, MAX_REASON } = require('./lib/env-canary');
+    const mkCanary = (o = {}) => {
+      const sent = [];
+      const st = { userInfoThrows: false, idErr: null, idOut: '501\n', idHang: false, idCalls: [] };
+      const canary = createEnvCanary({
+        platform: 'darwin', timeoutMs: o.timeoutMs ?? 1000, send: (m) => sent.push(m),
+        userInfo: () => { if (st.userInfoThrows) throw new Error('No user exists for uid 501'); return { username: 'u' }; },
+        execFile: (file, args, opts, cb) => {
+          st.idCalls.push([file, args, opts.timeout]);
+          if (st.idHang) return;
+          setImmediate(() => (st.idErr ? cb(new Error(st.idErr), '', '') : cb(null, st.idOut, '')));
+        },
+        ...o,
+      });
+      return { canary, sent, st };
+    };
+
+    await uta('env canary — healthy session sends nothing; /usr/bin/id -u runs with a timeout', async () => {
+      const { canary, sent, st } = mkCanary();
+      for (let i = 0; i < 5; i++) await canary.tick();
+      assert.deepStrictEqual(sent, []);
+      assert.deepStrictEqual(st.idCalls[0], ['/usr/bin/id', ['-u'], 1000]);
+      canary.connected();
+      assert.deepStrictEqual(sent, [], 'a healthy agent reports nothing on reconnect');
+    });
+
+    await uta('env canary — 3 consecutive failures → one healthy:false; a success in between resets the count', async () => {
+      const { canary, sent, st } = mkCanary();
+      st.userInfoThrows = true;
+      await canary.tick(); await canary.tick();
+      st.userInfoThrows = false;
+      await canary.tick();
+      st.userInfoThrows = true;
+      await canary.tick(); await canary.tick();
+      assert.deepStrictEqual(sent, [], 'interrupted streak: only 2 consecutive failures');
+      await canary.tick();
+      assert.deepStrictEqual(sent, [{ type: 'env_health', healthy: false, reason: 'os.userInfo() failed: No user exists for uid 501' }]);
+      await canary.tick(); await canary.tick();
+      assert.strictEqual(sent.length, 1, 'reported once per transition, not every tick');
+      canary.connected();
+      assert.deepStrictEqual(sent[1], sent[0], 'still unhealthy → repeated on reconnect (the server forgot it)');
+    });
+
+    await uta('env canary — /usr/bin/id failure counts; one success → healthy:true once', async () => {
+      const { canary, sent, st } = mkCanary();
+      st.idErr = 'spawn /usr/bin/id EAGAIN';
+      for (let i = 0; i < 3; i++) await canary.tick();
+      assert.strictEqual(sent.length, 1);
+      assert.strictEqual(sent[0].healthy, false);
+      assert.match(sent[0].reason, /^\/usr\/bin\/id failed: spawn \/usr\/bin\/id EAGAIN$/);
+      st.idErr = null;
+      await canary.tick();
+      assert.deepStrictEqual(sent[1], { type: 'env_health', healthy: true });
+      await canary.tick();
+      assert.strictEqual(sent.length, 2, 'recovery reported once');
+      canary.connected();
+      assert.strictEqual(sent.length, 2, 'healthy again → nothing on reconnect');
+      st.idOut = 'id: cannot find name for user ID 501\n';
+      for (let i = 0; i < 3; i++) await canary.tick();
+      assert.match(sent[2].reason, /returned no uid/, 'non-numeric output is a failure too');
+    });
+
+    await uta('env canary — hung /usr/bin/id times out (own timer) and counts as a failure', async () => {
+      const { canary, sent, st } = mkCanary({ timeoutMs: 30 });
+      st.idHang = true;
+      const t0 = Date.now();
+      for (let i = 0; i < 3; i++) await canary.tick();
+      assert.ok(Date.now() - t0 < 1000, 'each tick resolves after the timeout');
+      assert.strictEqual(sent.length, 1);
+      assert.strictEqual(sent[0].reason, '/usr/bin/id timed out after 30ms');
+    });
+
+    await uta('env canary — overlapping ticks share one probe; reason sanitized and capped; win32 skips /usr/bin/id', async () => {
+      const { canary, st } = mkCanary();
+      await Promise.all([canary.tick(), canary.tick(), canary.tick()]);
+      assert.strictEqual(st.idCalls.length, 1, 'a slow probe is not stacked');
+      const long = mkCanary();
+      long.st.idErr = 'x\n\u0007'.repeat(300);
+      for (let i = 0; i < 3; i++) await long.canary.tick();
+      assert.ok(long.sent[0].reason.length <= MAX_REASON);
+      assert.ok(!/[\x00-\x1f]/.test(long.sent[0].reason), 'no control chars');
+      const win = mkCanary({ platform: 'win32' });
+      for (let i = 0; i < 3; i++) await win.canary.tick();
+      assert.strictEqual(win.st.idCalls.length, 0);
+      assert.strictEqual(parseIntervalMs('250'), 250);
+      for (const bad of [undefined, '', 'abc', '50', '1.5', String(2 * 3600_000)]) assert.strictEqual(parseIntervalMs(bad), 60000, String(bad));
+    });
+  }
+
+  // pm2 repair (lib/pm2-repair.js, task #47)
+  {
+    const { createPm2Repair, resolvePm2, repairBlocker, isLocalMachine, spawnRunner, capOutput, OUTPUT_CAP } = require('./lib/pm2-repair');
+    const fsR = require('fs'), osR = require('os'), pathR = require('path');
+    const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
+    const mkRepair = (o = {}) => {
+      const states = []; const runs = []; let t = 1000;
+      const ctl = { result: { code: 0, output: 'ok' }, hold: null };
+      const repair = createPm2Repair({
+        onState: (id, s, extra) => states.push([id, s, extra]),
+        resolveBinary: () => '/fake/bin/pm2',
+        run: async (bin, args, opts) => { runs.push([bin, args, opts.timeoutMs]); if (ctl.hold) await ctl.hold; if (ctl.result instanceof Error) throw ctl.result; return ctl.result; },
+        now: () => t, cooldownMs: 30_000, reconnectTimeoutMs: 40, ...o,
+      });
+      return { repair, states, runs, ctl, advance: (ms) => { t += ms; } };
+    };
+
+    await uta('pm2 repair — repairBlocker order and isLocalMachine', async () => {
+      const ok = { online: true, envUnhealthy: true, local: true, supervised: true, busy: false };
+      assert.strictEqual(repairBlocker(ok), null);
+      assert.strictEqual(repairBlocker({ ...ok, online: false, envUnhealthy: false }), 'agent_offline');
+      assert.strictEqual(repairBlocker({ ...ok, envUnhealthy: false, local: false }), 'not_unhealthy');
+      assert.strictEqual(repairBlocker({ ...ok, local: false, supervised: false }), 'not_local');
+      assert.strictEqual(repairBlocker({ ...ok, supervised: false, busy: true }), 'not_supervised');
+      assert.strictEqual(repairBlocker({ ...ok, busy: true }), 'repair_in_progress');
+      const here = { hostname: 'Aans-Mac.local', platform: 'darwin' };
+      assert.strictEqual(isLocalMachine({ hostname: 'aans-mac.LOCAL', platform: 'darwin' }, here), true);
+      assert.strictEqual(isLocalMachine({ hostname: 'kira', platform: 'darwin' }, here), false);
+      assert.strictEqual(isLocalMachine({ hostname: 'Aans-Mac.local', platform: 'linux' }, here), false, 'same name, other OS');
+      for (const m of [null, undefined, {}, { hostname: '', platform: 'darwin' }, { hostname: 5, platform: 'darwin' }]) assert.strictEqual(isLocalMachine(m, here), false);
+    });
+
+    await uta('pm2 repair — requested → running (fixed argv) → done only after exit 0 AND reconnect with a new boot_id', async () => {
+      const { repair, states, runs } = mkRepair();
+      assert.strictEqual(repair.start(7, 'aaaaaaaa'), true);
+      assert.strictEqual(repair.state(7), 'requested');
+      await tick(5);
+      assert.deepStrictEqual(runs, [['/fake/bin/pm2', ['update'], 120000]]);
+      repair.agentConnected(7, 'aaaaaaaa');
+      repair.agentConnected(8, 'cccccccc');
+      assert.strictEqual(repair.state(7), 'running', 'same boot_id (blip) or another agent does not finish it');
+      repair.agentConnected(7, 'bbbbbbbb');
+      assert.deepStrictEqual(states.map(s => s[1]), ['requested', 'running', 'done']);
+      assert.strictEqual(repair.state(7), null);
+    });
+
+    await uta('pm2 repair — agent back before pm2 exits → done at exit; one at a time; cooldown then free', async () => {
+      const { repair, states, ctl, advance } = mkRepair();
+      let release; ctl.hold = new Promise(r => { release = r; });
+      repair.start(7, 'aaaaaaaa');
+      await tick(5);
+      repair.agentConnected(7, 'bbbbbbbb');
+      assert.strictEqual(repair.state(7), 'running', 'pm2 has not exited yet');
+      assert.strictEqual(repair.busy(), true);
+      assert.strictEqual(repair.start(9, 'x'), false, 'global: a second repair is refused');
+      release(); await tick(5);
+      assert.deepStrictEqual(states.map(s => s[1]), ['requested', 'running', 'done']);
+      assert.strictEqual(repair.busy(), true, 'cooldown right after the end');
+      assert.strictEqual(repair.start(7, 'bbbbbbbb'), false);
+      advance(29_999); assert.strictEqual(repair.busy(), true);
+      advance(1); assert.strictEqual(repair.busy(), false);
+      assert.strictEqual(repair.start(7, 'bbbbbbbb'), true);
+    });
+
+    await uta('pm2 repair — pm2 not found → failed without running anything', async () => {
+      const { repair, states, runs } = mkRepair({ resolveBinary: () => null });
+      repair.start(7, 'a');
+      await tick(5);
+      assert.deepStrictEqual(runs, []);
+      assert.deepStrictEqual(states.map(s => [s[1], s[2].error]), [['requested', undefined], ['failed', 'pm2 not found on this machine']]);
+      assert.strictEqual(repair.busy(), true, 'a failure starts the cooldown too');
+    });
+
+    await uta('pm2 repair — non-zero exit, runner throw, timeout → failed with the reason; later reconnect is ignored', async () => {
+      for (const [result, want] of [
+        [{ code: 1, error: 'exited with code 1', output: 'boom' }, 'exited with code 1'],
+        [new Error('spawn EACCES'), 'spawn EACCES'],
+        [{ code: null, error: 'timed out after 120s', output: '' }, 'timed out after 120s'],
+        [undefined, 'pm2 update failed'],
+      ]) {
+        const { repair, states, ctl } = mkRepair();
+        ctl.result = result;
+        repair.start(7, 'a');
+        await tick(5);
+        assert.deepStrictEqual(states.at(-1), [7, 'failed', { error: want }]);
+        repair.agentConnected(7, 'b');
+        assert.strictEqual(states.length, 3, 'no done after failed');
+      }
+    });
+
+    await uta('pm2 repair — exit 0 but the agent never returns → failed after the reconnect timeout', async () => {
+      const { repair, states } = mkRepair();
+      repair.start(7, 'a');
+      await tick(5);
+      assert.strictEqual(repair.state(7), 'running');
+      await tick(80);
+      assert.deepStrictEqual(states.at(-1), [7, 'failed', { error: 'agent did not reconnect after pm2 update' }]);
+    });
+
+    await uta('pm2 repair — resolvePm2 order: PATH, then /opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin; relative PATH entries ignored', async () => {
+      const seen = [];
+      assert.strictEqual(resolvePm2({ env: { PATH: 'rel/bin:/a/bin' }, home: '/h', isExecutable: (f) => { seen.push(f); return false; } }), null);
+      assert.deepStrictEqual(seen, ['/a/bin/pm2', '/opt/homebrew/bin/pm2', '/usr/local/bin/pm2', '/h/.npm-global/bin/pm2']);
+      assert.strictEqual(resolvePm2({ env: { PATH: '/a/bin' }, home: '/h', isExecutable: (f) => f === '/usr/local/bin/pm2' || f === '/h/.npm-global/bin/pm2' }), '/usr/local/bin/pm2');
+    });
+
+    await uta('pm2 repair — spawnRunner: real child, no shell, output to a capped log, exit code and timeout', async () => {
+      if (process.platform === 'win32') return;
+      const dir = fsR.mkdtempSync(pathR.join(osR.tmpdir(), 'stoa-pm2r-'));
+      try {
+        const bin = pathR.join(dir, 'pm2');
+        fsR.writeFileSync(bin, '#!/bin/sh\necho "args=$*"\nexit "${FAKE_EXIT:-0}"\n', { mode: 0o755 });
+        const logFile = pathR.join(dir, 'out.log');
+        const ok = await spawnRunner(bin, ['update; touch pwned'], { logFile, timeoutMs: 5000 });
+        assert.strictEqual(ok.code, 0); assert.strictEqual(ok.error, null);
+        assert.strictEqual(ok.output.trim(), 'args=update; touch pwned', 'argv passed verbatim, never through a shell');
+        assert.strictEqual(fsR.existsSync(pathR.join(dir, 'pwned')), false);
+        const bad = await spawnRunner(bin, ['update'], { logFile, timeoutMs: 5000, env: { ...process.env, FAKE_EXIT: '3' } });
+        assert.strictEqual(bad.code, 3); assert.strictEqual(bad.error, 'exited with code 3');
+        fsR.writeFileSync(bin, '#!/bin/sh\nsleep 5\n', { mode: 0o755 });
+        const t0 = Date.now();
+        const slow = await spawnRunner(bin, ['update'], { logFile, timeoutMs: 200 });
+        assert.ok(Date.now() - t0 < 3000, 'killed at the timeout');
+        assert.match(slow.error, /^timed out after/);
+        const missing = await spawnRunner(pathR.join(dir, 'nope'), ['update'], { logFile, timeoutMs: 1000 });
+        assert.ok(missing.code !== 0 && missing.error, 'missing binary → error, not a throw');
+        assert.strictEqual(capOutput('y'.repeat(OUTPUT_CAP + 50)).length, OUTPUT_CAP + 1);
+      } finally { fsR.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
   await uta('agent restart msg — manual: restarts NOW even while busy, acks restarting with counts; version path still waits for idle', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
@@ -26001,6 +26223,193 @@ async function run() {
 
     await test('agent restart — teardown', async () => {
       for (const ws of [rsAgent?.ws, plainAgent?.ws, human]) { try { ws?.close(); } catch {} }
+    });
+  }
+
+  // POST /api/actors/:id/repair — stale login session (env_unhealthy) → pm2 update (task #47)
+  console.log('\n[Agent Repair]');
+  if (!process.env.STOA_TEST_PM2_BIN) {
+    console.log('    (skipped — STOA_TEST_PM2_BIN not set, run via run-tests.js)');
+  } else {
+    const fsR = require('fs'), osR = require('os'), pathR = require('path');
+    const fakeBin = process.env.STOA_TEST_PM2_BIN;
+    const calls = fakeBin + '.calls', exitFile = fakeBin + '.exit';
+    let local = null, remote = null, human = null;
+    const hostMachine = { id: 'a1b2c3d4e5f60718', hostname: osR.hostname().toUpperCase(), platform: process.platform };
+    const connectAs = async (a, extra) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: a.actorId, secret: a.secret, client_version: '0.0.1', features: ['env_health'], ...extra }));
+      await ready;
+      return ws;
+    };
+    const register = async (name) => {
+      const reg = await req('POST', '/api/agent/register', { token: await mintInstallToken(name) });
+      assert.strictEqual(reg.status, 200, reg.raw);
+      orphanActorIds.push(reg.body.actor_id);
+      return { actorId: reg.body.actor_id, secret: reg.body.secret };
+    };
+    const actorRow = async (id) => (await req('GET', '/api/actors')).body.find(a => a.id === id);
+    const closeWs = async (ws) => { const c = new Promise(r => ws.once('close', r)); ws.close(); await c; await new Promise(r => setTimeout(r, 100)); };
+    const repair = (id, headers) => req('POST', `/api/actors/${id}/repair`, null, headers);
+    const unhealthy = async (a, reason = 'os.userInfo() failed: No user exists for uid 501') => {
+      const b = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === a.actorId && m.env_unhealthy === true);
+      a.ws.send(JSON.stringify({ type: 'env_health', healthy: false, reason }));
+      return b;
+    };
+    const waitCooldown = () => new Promise(r => setTimeout(r, 400));
+
+    await test('agent repair — setup: local pm2 agent, remote pm2 agent, human global ws', async () => {
+      fsR.mkdirSync(pathR.dirname(fakeBin), { recursive: true });
+      fsR.rmSync(fakeBin, { force: true });
+      local = await register('__test-repair-local');
+      remote = await register('__test-repair-remote');
+      local.ws = await connectAs(local, { supervisor: 'pm2', boot_id: 'aaaaaaaaaaaaaaaa', machine: hostMachine });
+      remote.ws = await connectAs(remote, { supervisor: 'pm2', boot_id: 'cccccccccccccccc', machine: { ...hostMachine, hostname: 'some-other-box' } });
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await new Promise(r => setTimeout(r, 100));
+      const a = await actorRow(local.actorId);
+      assert.strictEqual(a.env_unhealthy, false);
+      assert.strictEqual(a.env_unhealthy_reason, null);
+      assert.strictEqual(a.repairable, false, 'healthy agent is not repairable');
+      assert.strictEqual(a.repair_state, null);
+    });
+
+    await test('agent repair — no session 401, agent secret 403, unknown/human actor 404', async () => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      let anon, asAgent;
+      try {
+        anon = await repair(local.actorId);
+        asAgent = await repair(local.actorId, { 'x-agent-id': String(local.actorId), 'x-agent-secret': local.secret });
+      } finally { sessionCookie = s; deviceCookie = d; }
+      assert.strictEqual(anon.status, 401);
+      assert.strictEqual(asAgent.status, 403); assert.strictEqual(asAgent.body.error, 'agent_scope_denied');
+      assert.strictEqual((await repair(999999)).status, 404);
+      const humanId = (await req('GET', '/api/settings')).body.human_id;
+      assert.strictEqual((await repair(humanId)).status, 404, 'human actor is not an agent');
+    });
+
+    await test('agent repair — healthy agent → 409 not_unhealthy', async () => {
+      const r = await repair(local.actorId);
+      assert.strictEqual(r.status, 409, r.raw);
+      assert.strictEqual(r.body.error, 'not_unhealthy');
+    });
+
+    await test('agent repair — env_health false → agent_env_status broadcast + /api/actors fields; bad payloads ignored', async () => {
+      local.ws.send(JSON.stringify({ type: 'env_health', healthy: 'no' }));
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false, 'non-boolean healthy ignored');
+      const b = await unhealthy(local, 'os.userInfo() failed:\n' + 'x'.repeat(500));
+      assert.strictEqual(b.repairable, true);
+      assert.strictEqual(b.reason.length, 200, 'reason capped');
+      assert.ok(!b.reason.includes('\n'));
+      const a = await actorRow(local.actorId);
+      assert.strictEqual(a.env_unhealthy, true);
+      assert.strictEqual(a.env_unhealthy_reason, b.reason);
+      assert.strictEqual(a.repairable, true);
+      await unhealthy(local);
+      assert.strictEqual((await actorRow(local.actorId)).env_unhealthy_reason, 'os.userInfo() failed: No user exists for uid 501', 'new reason replaces the old');
+    });
+
+    await test('agent repair — agent on another machine → 409 not_local, not repairable', async () => {
+      const b = await unhealthy(remote);
+      assert.strictEqual(b.repairable, false);
+      const r = await repair(remote.actorId);
+      assert.strictEqual(r.status, 409, r.raw);
+      assert.strictEqual(r.body.error, 'not_local');
+    });
+
+    await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health (broadcast)', async () => {
+      const cleared = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === remote.actorId && m.env_unhealthy === false);
+      await closeWs(remote.ws);
+      const c = await cleared;
+      assert.strictEqual(c.repairable, false);
+      const r = await repair(remote.actorId);
+      assert.strictEqual(r.status, 409, r.raw);
+      assert.strictEqual(r.body.error, 'agent_offline');
+      assert.strictEqual((await actorRow(remote.actorId)).env_unhealthy, false);
+    });
+
+    await test('agent repair — pm2 binary missing → 202 then failed broadcast, nothing run', async () => {
+      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed');
+      const r = await repair(local.actorId);
+      assert.strictEqual(r.status, 202, r.raw);
+      assert.deepStrictEqual(r.body, { ok: true, repair_state: 'requested' });
+      assert.strictEqual((await failed).error, 'pm2 not found on this machine');
+      assert.strictEqual(fsR.existsSync(calls), false);
+    });
+
+    await test('agent repair — 202 runs `pm2 update` once; repair_in_progress while running; done on reconnect with new boot_id', async () => {
+      await waitCooldown();
+      fsR.writeFileSync(fakeBin, '#!/bin/sh\necho "$*" >> "$0.calls"\nsleep 0.3\nexit "$(cat "$0.exit" 2>/dev/null || echo 0)"\n', { mode: 0o755 });
+      fsR.rmSync(calls, { force: true }); fsR.rmSync(exitFile, { force: true });
+      const seen = [];
+      const onMsg = (d) => { const m = JSON.parse(d); if (m.type === 'agent_repair_status' && m.actor_id === local.actorId) seen.push(m.repair_state); };
+      human.on('message', onMsg);
+      const running = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'running');
+      const r = await repair(local.actorId);
+      assert.strictEqual(r.status, 202, r.raw);
+      await running;
+      assert.strictEqual((await actorRow(local.actorId)).repair_state, 'running');
+      const again = await repair(local.actorId);
+      assert.strictEqual(again.status, 409); assert.strictEqual(again.body.error, 'repair_in_progress');
+      await new Promise(res => setTimeout(res, 500));
+      assert.strictEqual(fsR.readFileSync(calls, 'utf8'), 'update\n', 'fixed argv, run exactly once');
+      assert.strictEqual((await actorRow(local.actorId)).repair_state, 'running', 'pm2 exited 0 but the agent has not come back');
+      await closeWs(local.ws);
+      local.ws = await connectAs(local, { supervisor: 'pm2', boot_id: 'aaaaaaaaaaaaaaaa', machine: hostMachine });
+      assert.strictEqual((await actorRow(local.actorId)).repair_state, 'running', 'reconnect with the same boot_id is a blip');
+      await closeWs(local.ws);
+      const done = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'done');
+      local.ws = await connectAs(local, { supervisor: 'pm2', boot_id: 'bbbbbbbbbbbbbbbb', machine: hostMachine });
+      await done;
+      human.off('message', onMsg);
+      assert.deepStrictEqual(seen, ['requested', 'running', 'done']);
+      const a = await actorRow(local.actorId);
+      assert.strictEqual(a.repair_state, null);
+      assert.strictEqual(a.env_unhealthy, false, 'the new process starts healthy');
+      const cool = await (async () => { await unhealthy(local); return repair(local.actorId); })();
+      assert.strictEqual(cool.status, 409); assert.strictEqual(cool.body.error, 'repair_in_progress', 'cooldown right after a repair');
+    });
+
+    await test('agent repair — pm2 update exits non-zero → failed with the reason', async () => {
+      await waitCooldown();
+      fsR.writeFileSync(exitFile, '4');
+      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed', 5000);
+      const r = await repair(local.actorId);
+      assert.strictEqual(r.status, 202, r.raw);
+      assert.strictEqual((await failed).error, 'exited with code 4');
+      assert.strictEqual((await actorRow(local.actorId)).repair_state, null);
+    });
+
+    await test('agent repair — pm2 update ok but the agent never returns → failed after the timeout', async () => {
+      await waitCooldown();
+      fsR.rmSync(exitFile, { force: true });
+      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed', 5000);
+      assert.strictEqual((await repair(local.actorId)).status, 202);
+      assert.strictEqual((await failed).error, 'agent did not reconnect after pm2 update');
+    });
+
+    await test('agent repair — unsupervised local agent → 409 not_supervised; healthy:true clears the banner', async () => {
+      await waitCooldown();
+      await closeWs(local.ws);
+      local.ws = await connectAs(local, { boot_id: 'dddddddddddddddd', machine: hostMachine });
+      const b = await unhealthy(local);
+      assert.strictEqual(b.repairable, false, 'pm2 update cannot bring back an agent PM2 does not run');
+      const r = await repair(local.actorId);
+      assert.strictEqual(r.status, 409, r.raw); assert.strictEqual(r.body.error, 'not_supervised');
+      const healthy = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === local.actorId && m.env_unhealthy === false);
+      local.ws.send(JSON.stringify({ type: 'env_health', healthy: true }));
+      const h = await healthy;
+      assert.strictEqual(h.reason, null);
+      assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
+    });
+
+    await test('agent repair — teardown', async () => {
+      for (const ws of [local?.ws, remote?.ws, human]) { try { ws?.close(); } catch {} }
+      fsR.rmSync(pathR.dirname(fakeBin), { recursive: true, force: true });
     });
   }
 
