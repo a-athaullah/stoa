@@ -1165,6 +1165,7 @@ function renderAgentDetail(id) {
   const bodyEl = document.getElementById('s-agent-detail-body');
   if (!bodyEl) return;
   bodyEl.innerHTML = '';
+  bodyEl.appendChild(buildEnvBanner(actor));
   bodyEl.appendChild(buildAgentSettingsCard(actor));
   bodyEl.appendChild(buildAgentSystemPromptSection(actor));
   bodyEl.appendChild(buildSubAgentsSection(actor));

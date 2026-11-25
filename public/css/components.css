@@ -581,6 +581,30 @@
 .s-restart-btn.is-active svg { animation: s-restart-pulse 1.2s ease-in-out infinite; }
 @keyframes s-restart-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .s-restart-btn.is-active svg { animation: none; } }
+.s-env-banner {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 16px; border-radius: 12px;
+  background: var(--h-warn-bg); color: var(--h-warn-ink); border: 1px solid var(--h-warn-line);
+  font-family: var(--h-sans); font-size: 13px; line-height: 1.5;
+}
+.s-env-banner[hidden] { display: none; }
+.s-env-banner-title { font-family: var(--h-serif); font-size: 15px; }
+.s-env-banner-text, .s-env-banner-reason { margin: 0; overflow-wrap: anywhere; }
+.s-env-banner-reason code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--h-warn-ink) 9%, transparent);
+}
+.s-env-banner-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }
+.s-env-banner-hint { font-size: 12px; opacity: .85; }
+.s-env-repair-btn {
+  min-height: 32px; padding: 5px 16px; border-radius: 999px; cursor: pointer;
+  font-family: var(--h-sans); font-size: 12.5px;
+  background: var(--h-warn-ink); color: var(--h-warn-bg); border: 1px solid var(--h-warn-ink);
+}
+.s-env-repair-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--h-warn-ink) 85%, var(--h-warn-bg)); }
+.s-env-repair-btn:focus-visible { outline: 2px solid var(--h-warn-ink); outline-offset: 2px; }
+.s-env-repair-btn:disabled { opacity: .5; cursor: default; }
+@media (max-width: 680px) { .s-env-repair-btn { min-height: 36px; } }
 .s-rename-input {
   padding: 4px 10px; border-radius: 8px; background: var(--h-surface);
   min-width: 180px; font-family: var(--h-serif); font-size: 17px; color: var(--h-ink);
