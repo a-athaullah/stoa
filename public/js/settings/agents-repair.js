@@ -1,15 +1,22 @@
 // Stale login session (env_unhealthy) banner and the Repair flow (`pm2 update` on the server's machine).
 
-// actorId -> { reason, repairable } — only unhealthy agents are kept. Fed by /api/actors, actor_status, agent_env_status.
+// actorId -> { reason, repairable, block } — only unhealthy agents are kept. Fed by /api/actors, actor_status, agent_env_status.
 const sEnvHealth = new Map();
 // actorId -> { state: 'requested'|'running', wentOffline? } — fed by agent_repair_status and actor_status.repair_state
 const sRepairState = new Map();
 const S_REPAIR_ACTIVE = new Set(['requested', 'running']);
 const S_ENV_REASON_MAX = 200;
+const S_REPAIR_BLOCKS = new Set(['not_local', 'not_supervised']);
+const S_REPAIR_BLOCK_HINTS = {
+  not_local: 'This agent is not on the Stoa server\'s machine. On its machine, run pm2 update from a fresh terminal.',
+  not_supervised: 'This agent is not running under PM2, so Repair cannot restart it. Stop it and start it again from a fresh terminal on its machine.',
+};
+const S_REPAIR_BLOCK_FALLBACK = 'Repair is not available for this agent. Restart it from a fresh terminal on its machine.';
 const S_REPAIR_ERRORS = {
   agent_offline: 'The agent is offline — nothing to repair right now',
   not_unhealthy: 'The agent no longer reports a stale login session',
   not_local: 'This agent runs on another machine — run pm2 update there',
+  not_supervised: 'This agent is not running under PM2, so pm2 update cannot bring it back — restart it from a Terminal on its machine',
   repair_in_progress: 'A repair is already running or just finished — try again in a moment',
 };
 
@@ -25,11 +32,15 @@ function _patchActorRows(actorId, fields) {
   }
 }
 
-function _setEnvHealth(actorId, unhealthy, reason, repairable) {
-  if (unhealthy) sEnvHealth.set(actorId, { reason: _envReason(reason), repairable: !!repairable });
+function _repairBlock(v) {
+  return S_REPAIR_BLOCKS.has(v) ? v : null;
+}
+
+function _setEnvHealth(actorId, unhealthy, reason, repairable, block) {
+  if (unhealthy) sEnvHealth.set(actorId, { reason: _envReason(reason), repairable: !!repairable, block: repairable ? null : _repairBlock(block) });
   else sEnvHealth.delete(actorId);
   const env = sEnvHealth.get(actorId);
-  _patchActorRows(actorId, { env_unhealthy: !!env, env_unhealthy_reason: env?.reason ?? null, repairable: !!env?.repairable });
+  _patchActorRows(actorId, { env_unhealthy: !!env, env_unhealthy_reason: env?.reason ?? null, repairable: !!env?.repairable, repair_block: env?.block ?? null });
 }
 
 function _setRepairEntry(actorId, state) {
@@ -50,7 +61,7 @@ function _repairBusyElsewhere(actorId) {
 // Seeds from a full actor row (/api/actors or the connect broadcast). A payload without the key says nothing.
 function sSeedEnvFromActor(actor) {
   if (!actor || !Number.isInteger(actor.id)) return;
-  if ('env_unhealthy' in actor) _setEnvHealth(actor.id, actor.online !== false && actor.env_unhealthy, actor.env_unhealthy_reason, actor.repairable);
+  if ('env_unhealthy' in actor) _setEnvHealth(actor.id, actor.online !== false && actor.env_unhealthy, actor.env_unhealthy_reason, actor.repairable, actor.repair_block);
   if ('repair_state' in actor && !sRepairState.has(actor.id) && S_REPAIR_ACTIVE.has(actor.repair_state)) _setRepairEntry(actor.id, actor.repair_state);
 }
 
@@ -115,7 +126,7 @@ function _fillEnvBanner(el, actor) {
   } else {
     const hint = document.createElement('span');
     hint.className = 's-env-banner-hint';
-    hint.textContent = 'This agent is not on the Stoa server\'s machine. On its machine, run pm2 update from a fresh terminal.';
+    hint.textContent = S_REPAIR_BLOCK_HINTS[env.block] || S_REPAIR_BLOCK_FALLBACK;
     foot.appendChild(hint);
   }
   el.appendChild(foot);
@@ -168,6 +179,7 @@ async function _requestRepair(actorId) {
     if (!r.ok) {
       if (r.status === 401) showLogin();
       if (data.error === 'not_unhealthy' || data.error === 'agent_offline') _setEnvHealth(actorId, false);
+      else if (S_REPAIR_BLOCKS.has(data.error)) _setEnvHealth(actorId, true, env.reason, false, data.error);
       showToast(data.message || S_REPAIR_ERRORS[data.error] || data.error || 'Failed to request repair', { error: true });
       return;
     }
@@ -180,7 +192,7 @@ async function _requestRepair(actorId) {
 function sHandleEnvStatus(msg) {
   const id = Number(msg.actor_id);
   if (!Number.isInteger(id) || id <= 0 || typeof msg.env_unhealthy !== 'boolean') return;
-  _setEnvHealth(id, msg.env_unhealthy, msg.reason, msg.repairable);
+  _setEnvHealth(id, msg.env_unhealthy, msg.reason, msg.repairable, msg.repair_block);
   // A finished repair is announced by agent_repair_status; here only a live state is taken.
   if (S_REPAIR_ACTIVE.has(msg.repair_state)) _setRepairEntry(id, msg.repair_state);
   _renderAllEnvUi();
@@ -213,7 +225,7 @@ function sSyncEnvUi(actor, update = actor) {
     _setEnvHealth(actor.id, false);
     if (had) had.wentOffline = true;
   } else {
-    if ('env_unhealthy' in update) _setEnvHealth(actor.id, update.env_unhealthy, update.env_unhealthy_reason, update.repairable);
+    if ('env_unhealthy' in update) _setEnvHealth(actor.id, update.env_unhealthy, update.env_unhealthy_reason, update.repairable, update.repair_block);
     if ('repair_state' in update) {
       if (S_REPAIR_ACTIVE.has(update.repair_state)) _setRepairEntry(actor.id, update.repair_state);
       else if (had) {
@@ -231,7 +243,7 @@ function sResyncEnvHealth(actors) {
   if (!Array.isArray(actors)) return;
   for (const a of actors) {
     if (!a || !Number.isInteger(a.id)) continue;
-    if ('env_unhealthy' in a) _setEnvHealth(a.id, a.online !== false && a.env_unhealthy, a.env_unhealthy_reason, a.repairable);
+    if ('env_unhealthy' in a) _setEnvHealth(a.id, a.online !== false && a.env_unhealthy, a.env_unhealthy_reason, a.repairable, a.repair_block);
     if (!('repair_state' in a)) continue;
     const had = sRepairState.get(a.id);
     _setRepairEntry(a.id, a.repair_state);
