@@ -36588,6 +36588,46 @@ async function run() {
       } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
     });
 
+    await test('skills.gc on a DB with no skill file never wipes a blob dir that holds blobs', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      try {
+        // The live install's blob dir as a throwaway server on its own (empty) DB sees it.
+        const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+        const liveBlobs = ['live-one', 'live-two'].map((c) => {
+          const fp = path.join(dir, sha(c).slice(0, 2), sha(c));
+          fsS.mkdirSync(path.dirname(fp), { recursive: true });
+          fsS.writeFileSync(fp, c);
+          return fp;
+        });
+        const S = createSkills({ db: d, blobsDir: dir });
+        assert.strictEqual(d.prepare('SELECT COUNT(*) n FROM skill_files').get().n, 0);
+        assert.strictEqual(S.gc(), 0, 'nothing removed');
+        for (const fp of liveBlobs) assert.ok(fsS.existsSync(fp), `${path.basename(fp)} kept`);
+        // As soon as the DB references one blob, the others are orphans again and go.
+        const own = S.create({ name: 'gc-own', description: 'd', files: [{ path: 'a.bin', content_base64: b64('own-bytes') }] }).body.skill;
+        assert.ok(own && own.id);
+        assert.strictEqual(S.gc(), 2, 'the two blobs no row references');
+        for (const fp of liveBlobs) assert.ok(!fsS.existsSync(fp), `${path.basename(fp)} removed`);
+        assert.ok(fsS.existsSync(path.join(dir, sha('own-bytes').slice(0, 2), sha('own-bytes'))), 'a referenced blob stays');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    await test('sharedLiveDirs — an isolated DB_PATH on a live file dir is flagged, the live install is not', async () => {
+      const { sharedLiveDirs } = require('./lib/gc-isolation');
+      const root = path.resolve('/srv/stoa');
+      const all = ['uploads', 'connector-media', 'skill-blobs'];
+      assert.deepStrictEqual(sharedLiveDirs({}, root), [], 'live install: no DB_PATH');
+      assert.deepStrictEqual(sharedLiveDirs({ DB_PATH: path.join(root, 'db', 'stoa.db') }, root), [], 'live install: DB_PATH set to the default file');
+      assert.deepStrictEqual(sharedLiveDirs({ DB_PATH: '/tmp/x/stoa.db' }, root), all, 'throwaway server with no dir override (capture.js before the fix)');
+      assert.deepStrictEqual(sharedLiveDirs({ DB_PATH: '/tmp/x/stoa.db', STOA_UPLOADS_DIR: '/tmp/x/u', STOA_CONNECTOR_MEDIA_DIR: '/tmp/x/m' }, root), ['skill-blobs']);
+      assert.deepStrictEqual(sharedLiveDirs({ DB_PATH: '/tmp/x/stoa.db', STOA_UPLOADS_DIR: '/tmp/x/u', STOA_CONNECTOR_MEDIA_DIR: '/tmp/x/m', STOA_SKILL_BLOBS_DIR: '/tmp/x/b' }, root), [], 'fully isolated');
+      assert.deepStrictEqual(sharedLiveDirs({ DB_PATH: '/tmp/x/stoa.db', STOA_UPLOADS_DIR: '/tmp/x/u', STOA_CONNECTOR_MEDIA_DIR: '/tmp/x/m', STOA_SKILL_BLOBS_DIR: path.join(root, 'data', 'skill-blobs', '.') }, root), ['skill-blobs'], 'the default spelled out by hand is still the live dir');
+      // This very test server: run-tests.js isolates DB_PATH and all three dirs.
+      assert.ok(process.env.DB_PATH, 'run-tests.js sets DB_PATH');
+      assert.deepStrictEqual(sharedLiveDirs(process.env, __dirname), [], 'run-tests.js isolates every file dir');
+    });
+
     await test('frontmatter round trip — block scalars, quoting, unknown keys kept raw', async () => {
       const fm = B.parseFrontmatter('\uFEFF---\r\nname: x\r\ndescription: |\r\n  line one\r\n  line two\r\nmetadata:\r\n  a: b\r\nallowed-tools: Read, Grep # comment\r\n---\r\nbody\r\n');
       assert.deepStrictEqual([fm.fields.description, fm.fields['allowed-tools'], fm.body], ['line one\nline two', 'Read, Grep', 'body\n']);

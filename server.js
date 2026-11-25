@@ -35,6 +35,7 @@ const { createSlackHistory } = require('./lib/slack-history');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
+const { sharedLiveDirs } = require('./lib/gc-isolation');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sendJson } = require('./lib/http-compress');
 const { createStaticFiles } = require('./lib/static-files');
@@ -1289,6 +1290,11 @@ const CONNECTOR_MEDIA_DIR = path.resolve(process.env.STOA_CONNECTOR_MEDIA_DIR ||
 // Skill file blobs (lib/skills.js). Outside uploads/ on purpose: nothing serves this directory, blobs are
 // only read through /api/skill-blobs with an ownership / enabled check.
 const SKILL_BLOBS_DIR = path.resolve(process.env.STOA_SKILL_BLOBS_DIR || path.join(__dirname, 'data', 'skill-blobs'));
+// A server on its own DB_PATH that still uses a live file dir must not GC it: its DB references none of
+// the live files (lib/gc-isolation.js).
+const SHARED_LIVE_DIRS = sharedLiveDirs(process.env, __dirname);
+// A smoke boot runs no GC at all, so it has nothing to warn about.
+if (SHARED_LIVE_DIRS.length && !SMOKE_BOOT) console.warn(`[gc] DB_PATH is isolated but ${SHARED_LIVE_DIRS.join(', ')} still point at the live install: file GC skipped for them. Set STOA_UPLOADS_DIR / STOA_CONNECTOR_MEDIA_DIR / STOA_SKILL_BLOBS_DIR too.`);
 
 // Sync HUMAN_NAME env → human actor on startup (default: "Human")
 {
@@ -1359,7 +1365,7 @@ fs.mkdirSync(CONNECTOR_MEDIA_DIR, { recursive: true });
     setTimeout(() => { cleanupUploads(); scheduleNext(); }, next - now);
   };
   // A smoke boot shares uploads/ with the live server.
-  if (!SMOKE_BOOT) scheduleNext();
+  if (!SMOKE_BOOT && !SHARED_LIVE_DIRS.includes('uploads')) scheduleNext();
 }
 
 // ── Scheduled triggers: proactive scheduler ────────────────────────────────
@@ -1487,13 +1493,13 @@ function gcTick() {
   // Run async — GC must never block scheduler tick
   setImmediate(() => {
     try {
-      const orphans = auditUploads(db, UPLOADS_DIR);
+      const orphans = SHARED_LIVE_DIRS.includes('uploads') ? [] : auditUploads(db, UPLOADS_DIR);
       if (orphans.length) {
         const deleted = reclaimUploads(orphans);
         console.log(`[gc] reclaimed ${deleted} orphaned upload(s)`);
       }
       const bundlesCleaned = gcDebugBundles(db);
-      const skillBlobsCleaned = skills.gc();
+      const skillBlobsCleaned = SHARED_LIVE_DIRS.includes('skill-blobs') ? 0 : skills.gc();
       if (skillBlobsCleaned) console.log(`[gc] removed ${skillBlobsCleaned} unreferenced skill blob(s)`);
       if (bundlesCleaned) console.log(`[gc] cleaned ${bundlesCleaned} debug bundle(s)`);
     } catch (e) { console.error('[gc] tick error:', e.message); }

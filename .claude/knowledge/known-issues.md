@@ -523,6 +523,10 @@ Reasoning models on `openai_chat` platforms (Venice, Gemini/DeepSeek/OpenRouter-
 
 **Why the dirs are env-overridable (`STOA_UPLOADS_DIR`, `STOA_CONNECTOR_MEDIA_DIR`):** the test server used to share the repo `uploads/`. Its GC compared the live files with the DB copy (copied without `-wal`, so recent messages were missing) and deleted live attachments (2026-10-26, msgs 45023/45265). `run-tests.js` now points both at temp dirs and fails the run if a live upload disappears. Never point a throwaway server at the live dirs.
 
+**Throwaway servers — isolate DB_PATH AND all three file dirs (2026-11-19 incident):** every file in `data/skill-blobs` was deleted in one sweep while the DB rows stayed (skills listed 26/59/25 files, `skill_use` returned `dir: null`). Likely cause: `.claude/tools/screenshots/capture.js` booted a demo server with its own `DB_PATH` but the default blob dir; its first `gcTick()` saw no `skill_files` rows and removed every blob. Rule: any server started with a non-default `DB_PATH` must also set `STOA_UPLOADS_DIR`, `STOA_CONNECTOR_MEDIA_DIR` and `STOA_SKILL_BLOBS_DIR` to temp dirs (`run-tests.js` and `capture.js` do). Two backstops if a script forgets:
+- `lib/gc-isolation.js` `sharedLiveDirs()`: with `DB_PATH` off the default and a dir still at its default, `server.js` logs one `[gc] DB_PATH is isolated but ...` warning and skips the upload GC (`auditUploads`, daily `cleanupUploads`) and/or `skills.gc()` for that dir. The live install (no `DB_PATH`, or `DB_PATH` = `db/stoa.db`) is unaffected.
+- `skills.gc()` returns 0 and logs `[skills-gc] skipped` when `skill_files` is empty but the dir holds blobs. Trade-off: blobs of the very last deleted skill stay on disk until another skill exists — a small leak, never a wipe.
+
 ---
 
 ### Ollama Proxy Token (R20)
