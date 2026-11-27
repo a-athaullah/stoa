@@ -688,13 +688,17 @@ To sign out the agent's Claude account (e.g., to switch accounts or test the re-
 
 ### Login Session Health
 
-Stoa monitors each agent's login environment roughly every 60 seconds. The check verifies that the OS user identity is still accessible — a condition that can silently break when macOS switches login sessions (for example, when WindowServer restarts), leaving daemon processes such as PM2 and the agent stranded in an old session.
+Stoa monitors each agent's login environment roughly every 60 seconds. The check runs in a fresh subprocess so it detects stale sessions that the agent's own long-running process would not notice. The check verifies that the OS user identity is still accessible — a condition that can silently break when macOS switches login sessions (for example, when WindowServer restarts), leaving daemon processes such as PM2 and the agent stranded in an old session.
 
-**When the check fails three times in a row**, a "Login session is stale" banner appears on the agent's card in **Settings > AI Agent**. The banner shows the reason reported by the agent. It disappears automatically once the agent reports a healthy environment.
+**When the check fails three times in a row** (~3 minutes at the default interval), a "Login session is stale" banner appears on the agent's card in **Settings > AI Agent**. The banner shows the reason reported by the agent. It disappears automatically once the agent reports a healthy environment.
 
-**Repair** — if the agent runs on the same machine as the Stoa server and is managed by PM2, a **Repair** button appears in the banner. Click it and confirm — the repair runs `pm2 update` on the agent's machine, which **restarts all PM2-managed agent processes** and stops any work they are running. After the restart, agents reconnect and the banner clears; a "Repair finished" toast confirms success. If the repair fails, a toast shows the error and the Repair button returns.
+**Repair button** — a **Repair** icon button is permanently shown in the agent card header in **Settings > AI Agent**, next to the restart, update, and power icons. It is enabled for agents that are online, run on the same machine as the Stoa server, and are managed by PM2. For other agents (offline, remote machine, or not supervised by PM2) the button is disabled and the tooltip explains why.
 
-If the agent is on a different machine or is not managed by PM2, the banner instead shows a prompt to run `pm2 update` manually in a Terminal on the agent's machine.
+You do not need to wait for a stale-session banner to use Repair — the button is always available for eligible agents. When the banner is visible, a **Repair** button also appears inside it; both buttons trigger the same action and share the same in-progress state.
+
+**What Repair does:** clicking Repair and confirming the dialog runs `pm2 update` on the agent's machine, which **restarts all PM2-managed agent processes** and stops any work they are running. After the restart, agents reconnect and the banner clears; a "Repair finished" toast confirms success. If the repair fails, a toast shows the error and the button returns to its ready state.
+
+If an agent is on a different machine or is not managed by PM2, hover the disabled Repair button to see the reason and what to do instead (for example, run `pm2 update` manually in a Terminal on the agent's machine).
 
 **Repair constraints:**
 - Only one repair can run at a time.
