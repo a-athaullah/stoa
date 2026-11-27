@@ -3351,14 +3351,23 @@ async function runAsyncUnitTests() {
 
   // Stale login session canary (lib/env-canary.js, task #47)
   {
-    const { createEnvCanary, parseIntervalMs, MAX_REASON } = require('./lib/env-canary');
+    const { createEnvCanary, parseIntervalMs, MAX_REASON, CHILD_PROBE_SCRIPT } = require('./lib/env-canary');
+    const FAKE_NODE = '/fake/node';
     const mkCanary = (o = {}) => {
       const sent = [];
-      const st = { userInfoThrows: false, idErr: null, idOut: '501\n', idHang: false, idCalls: [] };
+      const st = { userInfoThrows: false, idErr: null, idOut: '501\n', idHang: false, idCalls: [],
+        childErr: null, childStderr: '', childOut: '501', childHang: false, childThrows: null, childCalls: [] };
       const canary = createEnvCanary({
-        platform: 'darwin', timeoutMs: o.timeoutMs ?? 1000, send: (m) => sent.push(m),
+        platform: 'darwin', timeoutMs: o.timeoutMs ?? 1000, send: (m) => sent.push(m), execPath: FAKE_NODE,
+        env: { PATH: '/usr/bin', NODE_OPTIONS: '--inspect=9229 --require /tmp/evil.js', HOME: '/Users/u' },
         userInfo: () => { if (st.userInfoThrows) throw new Error('No user exists for uid 501'); return { username: 'u' }; },
         execFile: (file, args, opts, cb) => {
+          if (file === FAKE_NODE) {
+            st.childCalls.push([file, args, opts]);
+            if (st.childThrows) throw new Error(st.childThrows);
+            if (st.childHang) return;
+            return setImmediate(() => (st.childErr ? cb(new Error(st.childErr), '', st.childStderr) : cb(null, st.childOut, '')));
+          }
           st.idCalls.push([file, args, opts.timeout]);
           if (st.idHang) return;
           setImmediate(() => (st.idErr ? cb(new Error(st.idErr), '', '') : cb(null, st.idOut, '')));
@@ -3368,11 +3377,76 @@ async function runAsyncUnitTests() {
       return { canary, sent, st };
     };
 
+    await uta('env canary — regression #48: in-process os.userInfo() and /usr/bin/id fine, fresh process fails → unhealthy', async () => {
+      const { canary, sent, st } = mkCanary();
+      st.childErr = 'Command failed: node -e ...';
+      st.childStderr = 'A system error occurred: uv_os_get_passwd returned ENOENT (no such file or directory)\n';
+      for (let i = 0; i < 2; i++) await canary.tick();
+      assert.deepStrictEqual(sent, []);
+      await canary.tick();
+      assert.deepStrictEqual(sent, [{ type: 'env_health', healthy: false,
+        reason: 'new process os.userInfo() failed: A system error occurred: uv_os_get_passwd returned ENOENT (no such file or directory)' }]);
+      assert.strictEqual(st.idCalls.length, 3, '/usr/bin/id still checked, and it passed');
+      const [file, args, opts] = st.childCalls[0];
+      assert.strictEqual(file, FAKE_NODE, 'probe runs the agent\'s own node binary');
+      assert.deepStrictEqual(args, ['-e', CHILD_PROBE_SCRIPT]);
+      assert.strictEqual(opts.timeout, 1000);
+      assert.strictEqual(opts.env.NODE_OPTIONS, undefined, 'NODE_OPTIONS (inspector/--require) not inherited');
+      assert.strictEqual(opts.env.HOME, '/Users/u', 'rest of the env kept');
+      st.childErr = null;
+      await canary.tick();
+      assert.deepStrictEqual(sent[1], { type: 'env_health', healthy: true });
+    });
+
+    await uta('env canary — child spawn throws, prints no uid, or hangs → each counts as a failure', async () => {
+      const thrown = mkCanary();
+      thrown.st.childThrows = 'spawn EAGAIN';
+      for (let i = 0; i < 3; i++) await thrown.canary.tick();
+      assert.strictEqual(thrown.sent[0]?.reason, 'new process os.userInfo() failed: spawn EAGAIN');
+      const noUid = mkCanary();
+      noUid.st.childOut = '';
+      for (let i = 0; i < 3; i++) await noUid.canary.tick();
+      assert.strictEqual(noUid.sent[0]?.reason, 'new process os.userInfo() returned no uid');
+      const errNoStderr = mkCanary();
+      errNoStderr.st.childErr = 'Command failed: killed';
+      for (let i = 0; i < 3; i++) await errNoStderr.canary.tick();
+      assert.strictEqual(errNoStderr.sent[0]?.reason, 'new process os.userInfo() failed: Command failed: killed', 'empty stderr → execFile message');
+      const hung = mkCanary({ timeoutMs: 30 });
+      hung.st.childHang = true;
+      for (let i = 0; i < 3; i++) await hung.canary.tick();
+      assert.strictEqual(hung.sent[0]?.reason, 'new process os.userInfo() timed out after 30ms');
+    });
+
+    await uta('env canary — CHILD_PROBE_SCRIPT in a real node: prints the uid, or exits 1 with the error on stderr', async () => {
+      const { execFileSync, spawnSync } = require('child_process');
+      const fs = require('fs');
+      const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'stoa-canary-'));
+      try {
+        const okPre = path.join(dir, 'ok.js'), badPre = path.join(dir, 'bad.js');
+        fs.writeFileSync(okPre, 'require("os").userInfo = () => ({ uid: 4242 });');
+        fs.writeFileSync(badPre, 'require("os").userInfo = () => { throw new Error("uv_os_get_passwd returned ENOENT"); };');
+        assert.strictEqual(execFileSync(process.execPath, ['-r', okPre, '-e', CHILD_PROBE_SCRIPT], { encoding: 'utf8' }), '4242');
+        const bad = spawnSync(process.execPath, ['-r', badPre, '-e', CHILD_PROBE_SCRIPT], { encoding: 'utf8' });
+        assert.strictEqual(bad.status, 1);
+        assert.strictEqual(bad.stdout, '');
+        assert.strictEqual(bad.stderr, 'uv_os_get_passwd returned ENOENT');
+        // End to end with the real execFile: a fake "node" that fails like a stale session does.
+        const fakeNode = path.join(dir, 'node');
+        fs.writeFileSync(fakeNode, '#!/bin/sh\necho "No user exists for uid 501" >&2\nexit 1\n', { mode: 0o755 });
+        const sent = [];
+        const real = createEnvCanary({ platform: 'darwin', execPath: fakeNode, userInfo: () => ({}), send: (m) => sent.push(m),
+          execFile: require('child_process').execFile, timeoutMs: 5000 });
+        for (let i = 0; i < 3; i++) await real.tick();
+        assert.strictEqual(sent[0]?.reason, 'new process os.userInfo() failed: No user exists for uid 501');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
     await uta('env canary — healthy session sends nothing; /usr/bin/id -u runs with a timeout', async () => {
       const { canary, sent, st } = mkCanary();
       for (let i = 0; i < 5; i++) await canary.tick();
       assert.deepStrictEqual(sent, []);
       assert.deepStrictEqual(st.idCalls[0], ['/usr/bin/id', ['-u'], 1000]);
+      assert.strictEqual(st.childCalls.length, 5, 'fresh-process probe every tick');
       canary.connected();
       assert.deepStrictEqual(sent, [], 'a healthy agent reports nothing on reconnect');
     });
@@ -3427,6 +3501,7 @@ async function runAsyncUnitTests() {
       const { canary, st } = mkCanary();
       await Promise.all([canary.tick(), canary.tick(), canary.tick()]);
       assert.strictEqual(st.idCalls.length, 1, 'a slow probe is not stacked');
+      assert.strictEqual(st.childCalls.length, 1);
       const long = mkCanary();
       long.st.idErr = 'x\n\u0007'.repeat(300);
       for (let i = 0; i < 3; i++) await long.canary.tick();
@@ -3435,6 +3510,7 @@ async function runAsyncUnitTests() {
       const win = mkCanary({ platform: 'win32' });
       for (let i = 0; i < 3; i++) await win.canary.tick();
       assert.strictEqual(win.st.idCalls.length, 0);
+      assert.strictEqual(win.st.childCalls.length, 0, 'no stale-session failure mode on Windows');
       assert.strictEqual(parseIntervalMs('250'), 250);
       for (const bad of [undefined, '', 'abc', '50', '1.5', String(2 * 3600_000)]) assert.strictEqual(parseIntervalMs(bad), 60000, String(bad));
     });
