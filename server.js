@@ -5289,9 +5289,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true, state: 'requested' });
   }
 
-  // POST /api/actors/:id/repair — agent stuck in a stale login session (env_unhealthy): run `pm2 update`
-  // from the server's own (launchd, healthy) session. Restarts EVERY agent of this machine; the UI
-  // confirms first. Human sessions only, like restart (not in lib/agent-scope.js).
+  // POST /api/actors/:id/repair — agent stuck in a stale login session: run `pm2 update` from the
+  // server's own (launchd, healthy) session. Allowed for any online local PM2 agent, flagged
+  // env_unhealthy or not (task #48). Restarts EVERY agent of this machine; the UI confirms first.
+  // Human sessions only, like restart (not in lib/agent-scope.js).
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/repair$/)) {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
     const actorId = parseInt(url.pathname.split('/')[3]);
@@ -6019,15 +6020,15 @@ const pm2Repair = createPm2Repair({
 });
 function agentRepairFacts(actorId) {
   return {
-    envUnhealthy: agentEnvHealth.has(actorId),
     local: isLocalMachine(agentMachines.get(actorId)),
     supervised: agentSupervisors.get(actorId) === 'pm2',
   };
 }
+// Offline agents carry no block: the UI offers nothing for them, and the endpoint answers agent_offline.
 function envHealthFields(actorId) {
   const h = agentEnvHealth.get(actorId);
-  const block = envRepairBlock(agentRepairFacts(actorId));
-  return { env_unhealthy: !!h, env_unhealthy_reason: h?.reason ?? null, repairable: !!h && !block, repair_block: block, repair_state: pm2Repair.state(actorId) };
+  const block = agentClients.has(actorId) ? envRepairBlock(agentRepairFacts(actorId)) : null;
+  return { env_unhealthy: !!h, env_unhealthy_reason: h?.reason ?? null, repairable: agentClients.has(actorId) && !block, repair_block: block, repair_state: pm2Repair.state(actorId) };
 }
 function broadcastAgentEnvStatus(actorId) {
   const f = envHealthFields(actorId);
@@ -8038,7 +8039,8 @@ wss.on('connection', (ws, req) => {
       agentSupervisors.delete(agentActorId);
       agentBootIds.delete(agentActorId);
       agentMachines.delete(agentActorId);
-      if (agentEnvHealth.delete(agentActorId)) broadcastAgentEnvStatus(agentActorId);
+      agentEnvHealth.delete(agentActorId);
+      broadcastAgentEnvStatus(agentActorId); // repairable/repair_block drop with the connection, healthy or not
       // Timings survive (runs outlive a reconnect); the queue snapshot is rebuilt from the next report.
       for (const id of agentRunQueues.get(agentActorId)?.queued || []) clearQueuedPosition(id);
       agentRunQueues.delete(agentActorId);

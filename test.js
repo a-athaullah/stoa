@@ -3351,14 +3351,23 @@ async function runAsyncUnitTests() {
 
   // Stale login session canary (lib/env-canary.js, task #47)
   {
-    const { createEnvCanary, parseIntervalMs, MAX_REASON } = require('./lib/env-canary');
+    const { createEnvCanary, parseIntervalMs, MAX_REASON, CHILD_PROBE_SCRIPT } = require('./lib/env-canary');
+    const FAKE_NODE = '/fake/node';
     const mkCanary = (o = {}) => {
       const sent = [];
-      const st = { userInfoThrows: false, idErr: null, idOut: '501\n', idHang: false, idCalls: [] };
+      const st = { userInfoThrows: false, idErr: null, idOut: '501\n', idHang: false, idCalls: [],
+        childErr: null, childStderr: '', childOut: '501', childHang: false, childThrows: null, childCalls: [] };
       const canary = createEnvCanary({
-        platform: 'darwin', timeoutMs: o.timeoutMs ?? 1000, send: (m) => sent.push(m),
+        platform: 'darwin', timeoutMs: o.timeoutMs ?? 1000, send: (m) => sent.push(m), execPath: FAKE_NODE,
+        env: { PATH: '/usr/bin', NODE_OPTIONS: '--inspect=9229 --require /tmp/evil.js', HOME: '/Users/u' },
         userInfo: () => { if (st.userInfoThrows) throw new Error('No user exists for uid 501'); return { username: 'u' }; },
         execFile: (file, args, opts, cb) => {
+          if (file === FAKE_NODE) {
+            st.childCalls.push([file, args, opts]);
+            if (st.childThrows) throw new Error(st.childThrows);
+            if (st.childHang) return;
+            return setImmediate(() => (st.childErr ? cb(new Error(st.childErr), '', st.childStderr) : cb(null, st.childOut, '')));
+          }
           st.idCalls.push([file, args, opts.timeout]);
           if (st.idHang) return;
           setImmediate(() => (st.idErr ? cb(new Error(st.idErr), '', '') : cb(null, st.idOut, '')));
@@ -3368,11 +3377,76 @@ async function runAsyncUnitTests() {
       return { canary, sent, st };
     };
 
+    await uta('env canary — regression #48: in-process os.userInfo() and /usr/bin/id fine, fresh process fails → unhealthy', async () => {
+      const { canary, sent, st } = mkCanary();
+      st.childErr = 'Command failed: node -e ...';
+      st.childStderr = 'A system error occurred: uv_os_get_passwd returned ENOENT (no such file or directory)\n';
+      for (let i = 0; i < 2; i++) await canary.tick();
+      assert.deepStrictEqual(sent, []);
+      await canary.tick();
+      assert.deepStrictEqual(sent, [{ type: 'env_health', healthy: false,
+        reason: 'new process os.userInfo() failed: A system error occurred: uv_os_get_passwd returned ENOENT (no such file or directory)' }]);
+      assert.strictEqual(st.idCalls.length, 3, '/usr/bin/id still checked, and it passed');
+      const [file, args, opts] = st.childCalls[0];
+      assert.strictEqual(file, FAKE_NODE, 'probe runs the agent\'s own node binary');
+      assert.deepStrictEqual(args, ['-e', CHILD_PROBE_SCRIPT]);
+      assert.strictEqual(opts.timeout, 1000);
+      assert.strictEqual(opts.env.NODE_OPTIONS, undefined, 'NODE_OPTIONS (inspector/--require) not inherited');
+      assert.strictEqual(opts.env.HOME, '/Users/u', 'rest of the env kept');
+      st.childErr = null;
+      await canary.tick();
+      assert.deepStrictEqual(sent[1], { type: 'env_health', healthy: true });
+    });
+
+    await uta('env canary — child spawn throws, prints no uid, or hangs → each counts as a failure', async () => {
+      const thrown = mkCanary();
+      thrown.st.childThrows = 'spawn EAGAIN';
+      for (let i = 0; i < 3; i++) await thrown.canary.tick();
+      assert.strictEqual(thrown.sent[0]?.reason, 'new process os.userInfo() failed: spawn EAGAIN');
+      const noUid = mkCanary();
+      noUid.st.childOut = '';
+      for (let i = 0; i < 3; i++) await noUid.canary.tick();
+      assert.strictEqual(noUid.sent[0]?.reason, 'new process os.userInfo() returned no uid');
+      const errNoStderr = mkCanary();
+      errNoStderr.st.childErr = 'Command failed: killed';
+      for (let i = 0; i < 3; i++) await errNoStderr.canary.tick();
+      assert.strictEqual(errNoStderr.sent[0]?.reason, 'new process os.userInfo() failed: Command failed: killed', 'empty stderr → execFile message');
+      const hung = mkCanary({ timeoutMs: 30 });
+      hung.st.childHang = true;
+      for (let i = 0; i < 3; i++) await hung.canary.tick();
+      assert.strictEqual(hung.sent[0]?.reason, 'new process os.userInfo() timed out after 30ms');
+    });
+
+    await uta('env canary — CHILD_PROBE_SCRIPT in a real node: prints the uid, or exits 1 with the error on stderr', async () => {
+      const { execFileSync, spawnSync } = require('child_process');
+      const fs = require('fs');
+      const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'stoa-canary-'));
+      try {
+        const okPre = path.join(dir, 'ok.js'), badPre = path.join(dir, 'bad.js');
+        fs.writeFileSync(okPre, 'require("os").userInfo = () => ({ uid: 4242 });');
+        fs.writeFileSync(badPre, 'require("os").userInfo = () => { throw new Error("uv_os_get_passwd returned ENOENT"); };');
+        assert.strictEqual(execFileSync(process.execPath, ['-r', okPre, '-e', CHILD_PROBE_SCRIPT], { encoding: 'utf8' }), '4242');
+        const bad = spawnSync(process.execPath, ['-r', badPre, '-e', CHILD_PROBE_SCRIPT], { encoding: 'utf8' });
+        assert.strictEqual(bad.status, 1);
+        assert.strictEqual(bad.stdout, '');
+        assert.strictEqual(bad.stderr, 'uv_os_get_passwd returned ENOENT');
+        // End to end with the real execFile: a fake "node" that fails like a stale session does.
+        const fakeNode = path.join(dir, 'node');
+        fs.writeFileSync(fakeNode, '#!/bin/sh\necho "No user exists for uid 501" >&2\nexit 1\n', { mode: 0o755 });
+        const sent = [];
+        const real = createEnvCanary({ platform: 'darwin', execPath: fakeNode, userInfo: () => ({}), send: (m) => sent.push(m),
+          execFile: require('child_process').execFile, timeoutMs: 5000 });
+        for (let i = 0; i < 3; i++) await real.tick();
+        assert.strictEqual(sent[0]?.reason, 'new process os.userInfo() failed: No user exists for uid 501');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
     await uta('env canary — healthy session sends nothing; /usr/bin/id -u runs with a timeout', async () => {
       const { canary, sent, st } = mkCanary();
       for (let i = 0; i < 5; i++) await canary.tick();
       assert.deepStrictEqual(sent, []);
       assert.deepStrictEqual(st.idCalls[0], ['/usr/bin/id', ['-u'], 1000]);
+      assert.strictEqual(st.childCalls.length, 5, 'fresh-process probe every tick');
       canary.connected();
       assert.deepStrictEqual(sent, [], 'a healthy agent reports nothing on reconnect');
     });
@@ -3427,6 +3501,7 @@ async function runAsyncUnitTests() {
       const { canary, st } = mkCanary();
       await Promise.all([canary.tick(), canary.tick(), canary.tick()]);
       assert.strictEqual(st.idCalls.length, 1, 'a slow probe is not stacked');
+      assert.strictEqual(st.childCalls.length, 1);
       const long = mkCanary();
       long.st.idErr = 'x\n\u0007'.repeat(300);
       for (let i = 0; i < 3; i++) await long.canary.tick();
@@ -3435,6 +3510,7 @@ async function runAsyncUnitTests() {
       const win = mkCanary({ platform: 'win32' });
       for (let i = 0; i < 3; i++) await win.canary.tick();
       assert.strictEqual(win.st.idCalls.length, 0);
+      assert.strictEqual(win.st.childCalls.length, 0, 'no stale-session failure mode on Windows');
       assert.strictEqual(parseIntervalMs('250'), 250);
       for (const bad of [undefined, '', 'abc', '50', '1.5', String(2 * 3600_000)]) assert.strictEqual(parseIntervalMs(bad), 60000, String(bad));
     });
@@ -3458,17 +3534,16 @@ async function runAsyncUnitTests() {
     };
 
     await uta('pm2 repair — repairBlocker order and isLocalMachine', async () => {
-      const ok = { online: true, envUnhealthy: true, local: true, supervised: true, busy: false };
+      const ok = { online: true, local: true, supervised: true, busy: false };
       assert.strictEqual(repairBlocker(ok), null);
-      assert.strictEqual(repairBlocker({ ...ok, online: false, envUnhealthy: false }), 'agent_offline');
-      assert.strictEqual(repairBlocker({ ...ok, envUnhealthy: false, local: false }), 'not_unhealthy');
+      assert.strictEqual(repairBlocker({ ...ok, envUnhealthy: false }), null, 'health is not a precondition (#48)');
+      assert.strictEqual(repairBlocker({ ...ok, online: false, local: false }), 'agent_offline');
       assert.strictEqual(repairBlocker({ ...ok, local: false, supervised: false }), 'not_local');
       assert.strictEqual(repairBlocker({ ...ok, supervised: false, busy: true }), 'not_supervised');
       assert.strictEqual(repairBlocker({ ...ok, busy: true }), 'repair_in_progress');
       const combos = [[true, true, null], [true, false, 'not_supervised'], [false, true, 'not_local'], [false, false, 'not_local']];
       for (const [local, supervised, want] of combos) {
-        assert.strictEqual(envRepairBlock({ envUnhealthy: true, local, supervised }), want, `local=${local} pm2=${supervised}`);
-        assert.strictEqual(envRepairBlock({ envUnhealthy: false, local, supervised }), null, 'healthy agent has nothing to block');
+        assert.strictEqual(envRepairBlock({ local, supervised }), want, `local=${local} pm2=${supervised}`);
         assert.strictEqual(repairBlocker({ ...ok, local, supervised }), want, 'endpoint 409 = the same block');
       }
       const here = { hostname: 'Aans-Mac.local', platform: 'darwin' };
@@ -21514,6 +21589,119 @@ async function run() {
     assert.deepStrictEqual([echo(912).querySelectorAll('.t-content').length, echo(912).querySelector('.t-content').textContent], [1, 'Matched again.'], 'a re-sent row refreshes the echo text in place');
   });
 
+  await test('agent repair UI — header and banner Repair share one state, one request, every agent online (task #48)', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const camel = s => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const matches = (e, sel) => {
+      const m = sel.match(/^\.([\w-]+)(?:\[data-([\w-]+)(?:="([^"]*)")?\])?$/);
+      if (!m || !e.classList.contains(m[1])) return false;
+      if (!m[2]) return true;
+      const v = e.dataset[camel(m[2])];
+      return v !== undefined && (m[3] === undefined || String(v) === m[3]);
+    };
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.attrs = {}; this.style = {}; this.title = ''; this.hidden = false; this.disabled = false; this._text = ''; this.className = ''; this.handlers = {};
+        const self = this;
+        this.classList = {
+          contains: c => self.className.split(/\s+/).includes(c),
+          toggle: (c, on) => { const set = new Set(self.className.split(/\s+/).filter(Boolean)); if (on) set.add(c); else set.delete(c); self.className = [...set].join(' '); },
+        };
+      }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this._html = String(v); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.children.push(c)); }
+      replaceChildren(...cs) { this.children = cs; this._text = ''; }
+      addEventListener(t, fn) { this.handlers[t] = fn; }
+      click() { if (!this.disabled) (this.onclick || this.handlers.click)?.({ stopPropagation() {} }); }
+      focus() {}
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    }
+    const body = new El('body');
+    const notice = new El('div');
+    const toasts = [];
+    const posts = [];
+    let reply = null;
+    const ctx = {
+      localStorage: { getItem: () => null },
+      document: { createElement: t => new El(t), getElementById: id => (id === 'app-top-notice' ? notice : null), querySelectorAll: sel => body.querySelectorAll(sel), addEventListener() {} },
+      allActors: [], settingsActors: [],
+      showToast: (m, o) => toasts.push([m, !!o?.error]), showLogin() {}, hideAppNotice() { notice.style.display = 'none'; },
+      fetch: (url, opts) => { posts.push([url, opts?.method]); return new Promise(r => { reply = r; }); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/settings/agents.js', 'public/js/settings/agents-repair.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const respond = async (status, data) => { reply({ ok: status < 300, status, json: async () => data }); for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+    const row = (id, extra) => ({ id, name: `A${id}`, type: 'ai', online: true, env_unhealthy: false, env_unhealthy_reason: null, repairable: true, repair_block: null, repair_state: null, ...extra });
+    const local = row(11);
+    const remote = row(12, { repairable: false, repair_block: 'not_local' });
+    const sick = row(13, { env_unhealthy: true, env_unhealthy_reason: 'uv_os_get_passwd returned ENOENT' });
+    ctx.allActors.push(local, remote, sick);
+    ctx.settingsActors = ctx.allActors;
+    const mount = a => { const h = run('makeRepairHeaderBtn')(a, 16); const b = run('buildEnvBanner')(a); body.append(h, b); return { h, b }; };
+    const L = mount(local), R = mount(remote), S = mount(sick);
+    const look = btn => [btn.disabled, btn.classList.contains('is-active'), btn.title];
+    const bannerBtn = b => b.querySelector('.s-env-repair-btn[data-repair-actor]');
+    const TITLE = run('S_REPAIR_TITLE');
+
+    assert.deepStrictEqual(look(L.h), [false, false, TITLE], 'healthy local pm2 agent: header Repair is usable (manual repair)');
+    assert.strictEqual(L.b.hidden, true, 'healthy agent: no banner');
+    assert.match(L.h._html, /^<svg[^>]*aria-hidden="true"/, 'icon only, decorative SVG');
+    assert.strictEqual(L.h.getAttribute('aria-label'), 'Repair login session');
+    assert.deepStrictEqual(look(R.h).slice(0, 2), [true, false]);
+    assert.match(R.h.title, /another machine/, 'not repairable → disabled with the reason as tooltip');
+    assert.deepStrictEqual([S.b.hidden, look(bannerBtn(S.b)).slice(0, 2), look(S.h)[0]], [false, [false, false], false], 'stale session: banner with Repair, header Repair too');
+
+    S.h.click();
+    assert.strictEqual(notice.style.display, 'flex', 'header click asks for confirmation first');
+    assert.match(notice.textContent, /ALL agent processes on it restart/);
+    assert.strictEqual(posts.length, 0);
+    notice.children[1].children[0].click();
+    assert.deepStrictEqual(posts, [['/api/actors/13/repair', 'POST']]);
+    assert.deepStrictEqual([look(S.h).slice(0, 2), bannerBtn(S.b).disabled, look(L.h)], [[true, true], true, [true, false, 'Another repair is running']], 'in flight: both of its buttons locked, other agents blocked');
+    await run('_requestRepair(13)');
+    await run('_requestRepair(11)');
+    assert.strictEqual(posts.length, 1, 'banner/other header while in flight → no second request');
+    await respond(202, { ok: true, repair_state: 'requested' });
+    assert.deepStrictEqual([look(S.h).slice(0, 2), S.b.textContent.startsWith('Repairing the login session'), bannerBtn(S.b)], [[true, true], true, null], 'requested: header pulses, banner shows progress without a button');
+
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 13, repair_state: 'running' });
+    assert.strictEqual(look(L.h)[2], 'Another repair is running', 'repair is global: other headers stay locked');
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 13, repair_state: 'done' });
+    assert.deepStrictEqual([look(S.h), S.b.hidden, look(L.h)], [[false, false, TITLE], true, [false, false, TITLE]], 'done: banner gone, both headers usable again');
+    assert.deepStrictEqual(toasts.pop(), ['Repair finished — A13 is back online', false]);
+
+    // Manual repair of a healthy agent from the header; the banner appears only for the run.
+    L.h.click(); notice.children[1].children[0].click();
+    await respond(202, { ok: true, repair_state: 'requested' });
+    assert.deepStrictEqual([L.b.hidden, L.b.textContent.startsWith('Repairing the login session')], [false, true]);
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 11, repair_state: 'failed', error: 'pm2 exited 1' });
+    assert.deepStrictEqual([look(L.h), L.b.hidden, toasts.pop()], [[false, false, TITLE], true, ['Repair of A11 failed: pm2 exited 1', true]]);
+
+    // 409 with a block code → the header turns disabled with that reason.
+    L.h.click(); notice.children[1].children[0].click();
+    await respond(409, { error: 'not_supervised' });
+    assert.deepStrictEqual([look(L.h).slice(0, 2), /PM2/.test(L.h.title), local.repair_block, toasts.pop()[1]], [[true, false], true, 'not_supervised', true]);
+
+    // Offline → disabled; the connect broadcast (with the env fields) brings it back. Rows follow the maps.
+    run('sSyncEnvUi')({ ...sick, online: false }, { id: 13, online: false });
+    assert.deepStrictEqual([look(S.h), sick.repairable, sick.repair_block], [[true, false, 'Offline — nothing to repair'], false, 'agent_offline']);
+    run('sSyncEnvUi')({ ...sick, online: true }, { id: 13, online: true, env_unhealthy: false, env_unhealthy_reason: null, repairable: true, repair_block: null, repair_state: null });
+    assert.deepStrictEqual(look(S.h), [false, false, TITLE]);
+    assert.notStrictEqual(look(S.h)[2], 'Offline', 'settings/init.js retitles buttons titled exactly "Offline" — never use that title');
+
+    // agent_env_status: repairable is honoured for a healthy agent too; a re-render seeds from the patched row.
+    run('sHandleEnvStatus')({ type: 'agent_env_status', actor_id: 12, env_unhealthy: false, reason: null, repairable: true, repair_block: null, repair_state: null });
+    assert.deepStrictEqual([look(R.h)[0], R.b.hidden, look(mount(remote).h)[0]], [false, true, false]);
+  });
+
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -26278,9 +26466,11 @@ async function run() {
       const a = await actorRow(local.actorId);
       assert.strictEqual(a.env_unhealthy, false);
       assert.strictEqual(a.env_unhealthy_reason, null);
-      assert.strictEqual(a.repairable, false, 'healthy agent is not repairable');
-      assert.strictEqual(a.repair_block, null, 'healthy → no block, even though the remote twin is not local');
-      assert.strictEqual((await actorRow(remote.actorId)).repair_block, null);
+      assert.strictEqual(a.repairable, true, 'healthy local PM2 agent is repairable (manual repair, #48)');
+      assert.strictEqual(a.repair_block, null);
+      const r = await actorRow(remote.actorId);
+      assert.strictEqual(r.repairable, false);
+      assert.strictEqual(r.repair_block, 'not_local', 'block is reported for healthy agents too');
       assert.strictEqual(a.repair_state, null);
     });
 
@@ -26299,10 +26489,17 @@ async function run() {
       assert.strictEqual((await repair(humanId)).status, 404, 'human actor is not an agent');
     });
 
-    await test('agent repair — healthy agent → 409 not_unhealthy', async () => {
+    await test('agent repair — healthy agent → 202 (manual repair allowed); pm2 missing → failed, nothing run', async () => {
+      assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
+      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed');
       const r = await repair(local.actorId);
-      assert.strictEqual(r.status, 409, r.raw);
-      assert.strictEqual(r.body.error, 'not_unhealthy');
+      assert.strictEqual(r.status, 202, r.raw);
+      assert.deepStrictEqual(r.body, { ok: true, repair_state: 'requested' });
+      assert.strictEqual((await failed).error, 'pm2 not found on this machine');
+      assert.strictEqual(fsR.existsSync(calls), false);
+      const healthyRemote = await repair(remote.actorId);
+      assert.strictEqual(healthyRemote.status, 409, healthyRemote.raw);
+      assert.strictEqual(healthyRemote.body.error, 'not_local', 'healthy remote agent still blocked by locality');
     });
 
     await test('agent repair — env_health false → agent_env_status broadcast + /api/actors fields; bad payloads ignored', async () => {
@@ -26338,7 +26535,8 @@ async function run() {
       const st = waitForWsMessage(human, m => m.type === 'actor_status' && m.actor?.id === bare.actorId);
       bare.ws = await connectAs(bare, { boot_id: 'eeeeeeeeeeeeeeee', machine: { ...hostMachine, hostname: 'some-other-box' } });
       const s0 = (await st).actor;
-      assert.strictEqual(s0.repair_block, null, 'actor_status carries repair_block (healthy on connect)');
+      assert.strictEqual(s0.env_unhealthy, false);
+      assert.strictEqual(s0.repair_block, 'not_local', 'actor_status carries repair_block for a healthy agent on connect');
       assert.strictEqual(s0.repairable, false);
       try {
         const b = await unhealthy(bare);
@@ -26350,7 +26548,7 @@ async function run() {
       } finally { await closeWs(bare.ws); }
     });
 
-    await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health (broadcast)', async () => {
+    await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health and repair fields (broadcast)', async () => {
       const cleared = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === remote.actorId && m.env_unhealthy === false);
       await closeWs(remote.ws);
       const c = await cleared;
@@ -26360,15 +26558,6 @@ async function run() {
       assert.strictEqual(r.status, 409, r.raw);
       assert.strictEqual(r.body.error, 'agent_offline');
       assert.strictEqual((await actorRow(remote.actorId)).env_unhealthy, false);
-    });
-
-    await test('agent repair — pm2 binary missing → 202 then failed broadcast, nothing run', async () => {
-      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed');
-      const r = await repair(local.actorId);
-      assert.strictEqual(r.status, 202, r.raw);
-      assert.deepStrictEqual(r.body, { ok: true, repair_state: 'requested' });
-      assert.strictEqual((await failed).error, 'pm2 not found on this machine');
-      assert.strictEqual(fsR.existsSync(calls), false);
     });
 
     await test('agent repair — 202 runs `pm2 update` once; repair_in_progress while running; done on reconnect with new boot_id', async () => {
@@ -26436,7 +26625,10 @@ async function run() {
       local.ws.send(JSON.stringify({ type: 'env_health', healthy: true }));
       const h = await healthy;
       assert.strictEqual(h.reason, null);
-      assert.strictEqual(h.repair_block, null);
+      assert.strictEqual(h.repair_block, 'not_supervised', 'still online, still not under PM2');
+      assert.strictEqual(h.repairable, false);
+      const r2 = await repair(local.actorId);
+      assert.strictEqual(r2.status, 409, r2.raw); assert.strictEqual(r2.body.error, 'not_supervised', 'healthy unsupervised agent blocked too');
       assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
     });
 

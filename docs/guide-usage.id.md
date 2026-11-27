@@ -689,13 +689,17 @@ Untuk keluar dari akun Claude agent (misalnya untuk ganti akun atau test flow re
 
 ### Kesehatan Sesi Login
 
-Stoa memantau lingkungan login tiap agent sekitar setiap 60 detik. Pemeriksaan ini memverifikasi bahwa identitas pengguna OS masih dapat diakses — kondisi yang bisa diam-diam bermasalah saat macOS berganti sesi login (misalnya saat WindowServer restart), meninggalkan proses daemon seperti PM2 dan agent di sesi lama.
+Stoa memantau lingkungan login tiap agent sekitar setiap 60 detik. Pemeriksaan berjalan di subprocess baru sehingga bisa mendeteksi sesi yang basi — kondisi yang tidak akan terlihat oleh proses agent yang sudah lama berjalan. Pemeriksaan ini memverifikasi bahwa identitas pengguna OS masih dapat diakses — kondisi yang bisa diam-diam bermasalah saat macOS berganti sesi login (misalnya saat WindowServer restart), meninggalkan proses daemon seperti PM2 dan agent di sesi lama.
 
-**Jika pemeriksaan gagal tiga kali berturut-turut**, banner "Login session is stale" muncul pada kartu agent di **Settings > AI Agent**. Banner menampilkan alasan yang dilaporkan agent. Banner hilang otomatis setelah agent melaporkan lingkungan yang sehat kembali.
+**Jika pemeriksaan gagal tiga kali berturut-turut** (~3 menit dengan interval default), banner "Login session is stale" muncul pada kartu agent di **Settings > AI Agent**. Banner menampilkan alasan yang dilaporkan agent. Banner hilang otomatis setelah agent melaporkan lingkungan yang sehat kembali.
 
-**Repair** — jika agent berjalan di mesin yang sama dengan server Stoa dan dikelola oleh PM2, tombol **Repair** muncul di banner. Klik lalu konfirmasi — repair menjalankan `pm2 update` di mesin agent, yang **me-restart semua proses agent yang dikelola PM2** dan menghentikan pekerjaan yang sedang berjalan. Setelah restart, agent tersambung kembali dan banner hilang; toast "Repair finished" mengonfirmasi keberhasilan. Jika repair gagal, toast menampilkan error dan tombol Repair kembali muncul.
+**Tombol Repair** — ikon **Repair** selalu tampil di header kartu agent di **Settings > AI Agent**, sejajar dengan ikon restart, update, dan power. Tombol aktif untuk agent yang online, berjalan di mesin yang sama dengan server Stoa, dan dikelola PM2. Untuk agent lain (offline, mesin berbeda, atau tidak di bawah PM2) tombol dinonaktifkan dan tooltip menjelaskan alasannya.
 
-Jika agent berada di mesin lain atau tidak dikelola PM2, banner menampilkan panduan untuk menjalankan `pm2 update` secara manual di Terminal pada mesin agent tersebut.
+Tidak perlu menunggu banner sesi basi untuk memakai Repair — tombol selalu tersedia untuk agent yang memenuhi syarat. Saat banner tampil, tombol **Repair** juga muncul di dalam banner; kedua tombol memicu aksi yang sama dan berbagi state yang sama.
+
+**Yang dilakukan Repair:** klik Repair lalu konfirmasi dialog — repair menjalankan `pm2 update` di mesin agent, yang **me-restart semua proses agent yang dikelola PM2** dan menghentikan pekerjaan yang sedang berjalan. Setelah restart, agent tersambung kembali dan banner hilang; toast "Repair finished" mengonfirmasi keberhasilan. Jika repair gagal, toast menampilkan error dan tombol kembali ke state siap.
+
+Jika agent berada di mesin lain atau tidak dikelola PM2, arahkan kursor ke tombol Repair yang dinonaktifkan untuk melihat alasan dan langkah alternatifnya (misalnya, jalankan `pm2 update` secara manual di Terminal pada mesin agent tersebut).
 
 **Batasan repair:**
 - Hanya satu repair yang bisa berjalan pada satu waktu.
