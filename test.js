@@ -21514,6 +21514,119 @@ async function run() {
     assert.deepStrictEqual([echo(912).querySelectorAll('.t-content').length, echo(912).querySelector('.t-content').textContent], [1, 'Matched again.'], 'a re-sent row refreshes the echo text in place');
   });
 
+  await test('agent repair UI — header and banner Repair share one state, one request, every agent online (task #48)', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const camel = s => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const matches = (e, sel) => {
+      const m = sel.match(/^\.([\w-]+)(?:\[data-([\w-]+)(?:="([^"]*)")?\])?$/);
+      if (!m || !e.classList.contains(m[1])) return false;
+      if (!m[2]) return true;
+      const v = e.dataset[camel(m[2])];
+      return v !== undefined && (m[3] === undefined || String(v) === m[3]);
+    };
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.attrs = {}; this.style = {}; this.title = ''; this.hidden = false; this.disabled = false; this._text = ''; this.className = ''; this.handlers = {};
+        const self = this;
+        this.classList = {
+          contains: c => self.className.split(/\s+/).includes(c),
+          toggle: (c, on) => { const set = new Set(self.className.split(/\s+/).filter(Boolean)); if (on) set.add(c); else set.delete(c); self.className = [...set].join(' '); },
+        };
+      }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this._html = String(v); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.children.push(c)); }
+      replaceChildren(...cs) { this.children = cs; this._text = ''; }
+      addEventListener(t, fn) { this.handlers[t] = fn; }
+      click() { if (!this.disabled) (this.onclick || this.handlers.click)?.({ stopPropagation() {} }); }
+      focus() {}
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    }
+    const body = new El('body');
+    const notice = new El('div');
+    const toasts = [];
+    const posts = [];
+    let reply = null;
+    const ctx = {
+      localStorage: { getItem: () => null },
+      document: { createElement: t => new El(t), getElementById: id => (id === 'app-top-notice' ? notice : null), querySelectorAll: sel => body.querySelectorAll(sel), addEventListener() {} },
+      allActors: [], settingsActors: [],
+      showToast: (m, o) => toasts.push([m, !!o?.error]), showLogin() {}, hideAppNotice() { notice.style.display = 'none'; },
+      fetch: (url, opts) => { posts.push([url, opts?.method]); return new Promise(r => { reply = r; }); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/settings/agents.js', 'public/js/settings/agents-repair.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    const respond = async (status, data) => { reply({ ok: status < 300, status, json: async () => data }); for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+    const row = (id, extra) => ({ id, name: `A${id}`, type: 'ai', online: true, env_unhealthy: false, env_unhealthy_reason: null, repairable: true, repair_block: null, repair_state: null, ...extra });
+    const local = row(11);
+    const remote = row(12, { repairable: false, repair_block: 'not_local' });
+    const sick = row(13, { env_unhealthy: true, env_unhealthy_reason: 'uv_os_get_passwd returned ENOENT' });
+    ctx.allActors.push(local, remote, sick);
+    ctx.settingsActors = ctx.allActors;
+    const mount = a => { const h = run('makeRepairHeaderBtn')(a, 16); const b = run('buildEnvBanner')(a); body.append(h, b); return { h, b }; };
+    const L = mount(local), R = mount(remote), S = mount(sick);
+    const look = btn => [btn.disabled, btn.classList.contains('is-active'), btn.title];
+    const bannerBtn = b => b.querySelector('.s-env-repair-btn[data-repair-actor]');
+    const TITLE = run('S_REPAIR_TITLE');
+
+    assert.deepStrictEqual(look(L.h), [false, false, TITLE], 'healthy local pm2 agent: header Repair is usable (manual repair)');
+    assert.strictEqual(L.b.hidden, true, 'healthy agent: no banner');
+    assert.match(L.h._html, /^<svg[^>]*aria-hidden="true"/, 'icon only, decorative SVG');
+    assert.strictEqual(L.h.getAttribute('aria-label'), 'Repair login session');
+    assert.deepStrictEqual(look(R.h).slice(0, 2), [true, false]);
+    assert.match(R.h.title, /another machine/, 'not repairable → disabled with the reason as tooltip');
+    assert.deepStrictEqual([S.b.hidden, look(bannerBtn(S.b)).slice(0, 2), look(S.h)[0]], [false, [false, false], false], 'stale session: banner with Repair, header Repair too');
+
+    S.h.click();
+    assert.strictEqual(notice.style.display, 'flex', 'header click asks for confirmation first');
+    assert.match(notice.textContent, /ALL agent processes on it restart/);
+    assert.strictEqual(posts.length, 0);
+    notice.children[1].children[0].click();
+    assert.deepStrictEqual(posts, [['/api/actors/13/repair', 'POST']]);
+    assert.deepStrictEqual([look(S.h).slice(0, 2), bannerBtn(S.b).disabled, look(L.h)], [[true, true], true, [true, false, 'Another repair is running']], 'in flight: both of its buttons locked, other agents blocked');
+    await run('_requestRepair(13)');
+    await run('_requestRepair(11)');
+    assert.strictEqual(posts.length, 1, 'banner/other header while in flight → no second request');
+    await respond(202, { ok: true, repair_state: 'requested' });
+    assert.deepStrictEqual([look(S.h).slice(0, 2), S.b.textContent.startsWith('Repairing the login session'), bannerBtn(S.b)], [[true, true], true, null], 'requested: header pulses, banner shows progress without a button');
+
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 13, repair_state: 'running' });
+    assert.strictEqual(look(L.h)[2], 'Another repair is running', 'repair is global: other headers stay locked');
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 13, repair_state: 'done' });
+    assert.deepStrictEqual([look(S.h), S.b.hidden, look(L.h)], [[false, false, TITLE], true, [false, false, TITLE]], 'done: banner gone, both headers usable again');
+    assert.deepStrictEqual(toasts.pop(), ['Repair finished — A13 is back online', false]);
+
+    // Manual repair of a healthy agent from the header; the banner appears only for the run.
+    L.h.click(); notice.children[1].children[0].click();
+    await respond(202, { ok: true, repair_state: 'requested' });
+    assert.deepStrictEqual([L.b.hidden, L.b.textContent.startsWith('Repairing the login session')], [false, true]);
+    run('sHandleRepairStatus')({ type: 'agent_repair_status', actor_id: 11, repair_state: 'failed', error: 'pm2 exited 1' });
+    assert.deepStrictEqual([look(L.h), L.b.hidden, toasts.pop()], [[false, false, TITLE], true, ['Repair of A11 failed: pm2 exited 1', true]]);
+
+    // 409 with a block code → the header turns disabled with that reason.
+    L.h.click(); notice.children[1].children[0].click();
+    await respond(409, { error: 'not_supervised' });
+    assert.deepStrictEqual([look(L.h).slice(0, 2), /PM2/.test(L.h.title), local.repair_block, toasts.pop()[1]], [[true, false], true, 'not_supervised', true]);
+
+    // Offline → disabled; the connect broadcast (with the env fields) brings it back. Rows follow the maps.
+    run('sSyncEnvUi')({ ...sick, online: false }, { id: 13, online: false });
+    assert.deepStrictEqual([look(S.h), sick.repairable, sick.repair_block], [[true, false, 'Offline — nothing to repair'], false, 'agent_offline']);
+    run('sSyncEnvUi')({ ...sick, online: true }, { id: 13, online: true, env_unhealthy: false, env_unhealthy_reason: null, repairable: true, repair_block: null, repair_state: null });
+    assert.deepStrictEqual(look(S.h), [false, false, TITLE]);
+    assert.notStrictEqual(look(S.h)[2], 'Offline', 'settings/init.js retitles buttons titled exactly "Offline" — never use that title');
+
+    // agent_env_status: repairable is honoured for a healthy agent too; a re-render seeds from the patched row.
+    run('sHandleEnvStatus')({ type: 'agent_env_status', actor_id: 12, env_unhealthy: false, reason: null, repairable: true, repair_block: null, repair_state: null });
+    assert.deepStrictEqual([look(R.h)[0], R.b.hidden, look(mount(remote).h)[0]], [false, true, false]);
+  });
+
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {
     const vm = require('vm');
     const fs = require('fs');

@@ -418,6 +418,7 @@ function svgSpinnerTiny() { return `<svg class="s-spinner" width="13" height="13
 function svgUpdate(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v9M5 8l3 3 3-3"/><path d="M3 13h10"/></svg>`; }
 function svgRefresh(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3"/><path d="M14 2.5v3h-3"/></svg>`; }
 function svgPower(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 2v6"/><path d="M4.6 4.4a5 5 0 1 0 6.8 0"/></svg>`; }
+function svgRepair(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.2 2.3a3.4 3.4 0 0 0-3.8 4.5L2.6 10.6a1.5 1.5 0 0 0 2.1 2.1l3.8-3.8a3.4 3.4 0 0 0 4.5-3.8l-2 2-1.9-.4-.4-1.9z"/></svg>`; }
 function svgCopy(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4A1.5 1.5 0 0 0 2.5 3.5V9A1.5 1.5 0 0 0 4 10.5h1"/></svg>`; }
 
 function openSettings(tab) {
@@ -1298,7 +1299,7 @@ function renderAgentDetailHeader(container, actor) {
     delBtn.replaceWith(pill);
   });
 
-  actions.append(refreshBtn, updBtn, _makeRestartBtn(actor, 16), delBtn);
+  actions.append(refreshBtn, updBtn, _makeRestartBtn(actor, 16), makeRepairHeaderBtn(actor, 16), delBtn);
   container.append(avWrap, nameStat, actions);
 }
 
