@@ -3534,17 +3534,16 @@ async function runAsyncUnitTests() {
     };
 
     await uta('pm2 repair — repairBlocker order and isLocalMachine', async () => {
-      const ok = { online: true, envUnhealthy: true, local: true, supervised: true, busy: false };
+      const ok = { online: true, local: true, supervised: true, busy: false };
       assert.strictEqual(repairBlocker(ok), null);
-      assert.strictEqual(repairBlocker({ ...ok, online: false, envUnhealthy: false }), 'agent_offline');
-      assert.strictEqual(repairBlocker({ ...ok, envUnhealthy: false, local: false }), 'not_unhealthy');
+      assert.strictEqual(repairBlocker({ ...ok, envUnhealthy: false }), null, 'health is not a precondition (#48)');
+      assert.strictEqual(repairBlocker({ ...ok, online: false, local: false }), 'agent_offline');
       assert.strictEqual(repairBlocker({ ...ok, local: false, supervised: false }), 'not_local');
       assert.strictEqual(repairBlocker({ ...ok, supervised: false, busy: true }), 'not_supervised');
       assert.strictEqual(repairBlocker({ ...ok, busy: true }), 'repair_in_progress');
       const combos = [[true, true, null], [true, false, 'not_supervised'], [false, true, 'not_local'], [false, false, 'not_local']];
       for (const [local, supervised, want] of combos) {
-        assert.strictEqual(envRepairBlock({ envUnhealthy: true, local, supervised }), want, `local=${local} pm2=${supervised}`);
-        assert.strictEqual(envRepairBlock({ envUnhealthy: false, local, supervised }), null, 'healthy agent has nothing to block');
+        assert.strictEqual(envRepairBlock({ local, supervised }), want, `local=${local} pm2=${supervised}`);
         assert.strictEqual(repairBlocker({ ...ok, local, supervised }), want, 'endpoint 409 = the same block');
       }
       const here = { hostname: 'Aans-Mac.local', platform: 'darwin' };
@@ -26467,9 +26466,11 @@ async function run() {
       const a = await actorRow(local.actorId);
       assert.strictEqual(a.env_unhealthy, false);
       assert.strictEqual(a.env_unhealthy_reason, null);
-      assert.strictEqual(a.repairable, false, 'healthy agent is not repairable');
-      assert.strictEqual(a.repair_block, null, 'healthy → no block, even though the remote twin is not local');
-      assert.strictEqual((await actorRow(remote.actorId)).repair_block, null);
+      assert.strictEqual(a.repairable, true, 'healthy local PM2 agent is repairable (manual repair, #48)');
+      assert.strictEqual(a.repair_block, null);
+      const r = await actorRow(remote.actorId);
+      assert.strictEqual(r.repairable, false);
+      assert.strictEqual(r.repair_block, 'not_local', 'block is reported for healthy agents too');
       assert.strictEqual(a.repair_state, null);
     });
 
@@ -26488,10 +26489,17 @@ async function run() {
       assert.strictEqual((await repair(humanId)).status, 404, 'human actor is not an agent');
     });
 
-    await test('agent repair — healthy agent → 409 not_unhealthy', async () => {
+    await test('agent repair — healthy agent → 202 (manual repair allowed); pm2 missing → failed, nothing run', async () => {
+      assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
+      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed');
       const r = await repair(local.actorId);
-      assert.strictEqual(r.status, 409, r.raw);
-      assert.strictEqual(r.body.error, 'not_unhealthy');
+      assert.strictEqual(r.status, 202, r.raw);
+      assert.deepStrictEqual(r.body, { ok: true, repair_state: 'requested' });
+      assert.strictEqual((await failed).error, 'pm2 not found on this machine');
+      assert.strictEqual(fsR.existsSync(calls), false);
+      const healthyRemote = await repair(remote.actorId);
+      assert.strictEqual(healthyRemote.status, 409, healthyRemote.raw);
+      assert.strictEqual(healthyRemote.body.error, 'not_local', 'healthy remote agent still blocked by locality');
     });
 
     await test('agent repair — env_health false → agent_env_status broadcast + /api/actors fields; bad payloads ignored', async () => {
@@ -26527,7 +26535,8 @@ async function run() {
       const st = waitForWsMessage(human, m => m.type === 'actor_status' && m.actor?.id === bare.actorId);
       bare.ws = await connectAs(bare, { boot_id: 'eeeeeeeeeeeeeeee', machine: { ...hostMachine, hostname: 'some-other-box' } });
       const s0 = (await st).actor;
-      assert.strictEqual(s0.repair_block, null, 'actor_status carries repair_block (healthy on connect)');
+      assert.strictEqual(s0.env_unhealthy, false);
+      assert.strictEqual(s0.repair_block, 'not_local', 'actor_status carries repair_block for a healthy agent on connect');
       assert.strictEqual(s0.repairable, false);
       try {
         const b = await unhealthy(bare);
@@ -26539,7 +26548,7 @@ async function run() {
       } finally { await closeWs(bare.ws); }
     });
 
-    await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health (broadcast)', async () => {
+    await test('agent repair — offline agent → 409 agent_offline; disconnect clears env health and repair fields (broadcast)', async () => {
       const cleared = waitForWsMessage(human, m => m.type === 'agent_env_status' && m.actor_id === remote.actorId && m.env_unhealthy === false);
       await closeWs(remote.ws);
       const c = await cleared;
@@ -26549,15 +26558,6 @@ async function run() {
       assert.strictEqual(r.status, 409, r.raw);
       assert.strictEqual(r.body.error, 'agent_offline');
       assert.strictEqual((await actorRow(remote.actorId)).env_unhealthy, false);
-    });
-
-    await test('agent repair — pm2 binary missing → 202 then failed broadcast, nothing run', async () => {
-      const failed = waitForWsMessage(human, m => m.type === 'agent_repair_status' && m.actor_id === local.actorId && m.repair_state === 'failed');
-      const r = await repair(local.actorId);
-      assert.strictEqual(r.status, 202, r.raw);
-      assert.deepStrictEqual(r.body, { ok: true, repair_state: 'requested' });
-      assert.strictEqual((await failed).error, 'pm2 not found on this machine');
-      assert.strictEqual(fsR.existsSync(calls), false);
     });
 
     await test('agent repair — 202 runs `pm2 update` once; repair_in_progress while running; done on reconnect with new boot_id', async () => {
@@ -26625,7 +26625,10 @@ async function run() {
       local.ws.send(JSON.stringify({ type: 'env_health', healthy: true }));
       const h = await healthy;
       assert.strictEqual(h.reason, null);
-      assert.strictEqual(h.repair_block, null);
+      assert.strictEqual(h.repair_block, 'not_supervised', 'still online, still not under PM2');
+      assert.strictEqual(h.repairable, false);
+      const r2 = await repair(local.actorId);
+      assert.strictEqual(r2.status, 409, r2.raw); assert.strictEqual(r2.body.error, 'not_supervised', 'healthy unsupervised agent blocked too');
       assert.strictEqual((await actorRow(local.actorId)).env_unhealthy, false);
     });
 
